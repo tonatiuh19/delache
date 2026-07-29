@@ -1,0 +1,7 @@
+{
+  "hosting": {
+    "buildCommand": "npm run build",
+    "buildOutputDir": "dist/spa",
+    "nodeVersion": "22"
+  }
+}

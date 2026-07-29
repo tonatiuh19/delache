@@ -1,0 +1,184 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 33% 99%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 214 87% 34%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 62% 96%;
+    --secondary-foreground: 214 87% 34%;
+    --muted: 210 25% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 214 100% 58%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 24% 91%;
+    --input: 214 24% 91%;
+    --ring: 214 87% 34%;
+    --radius: 0.9rem;
+    --sidebar-background: 210 33% 99%;
+    --sidebar-foreground: 222 47% 11%;
+    --sidebar-primary: 214 87% 34%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 214 62% 96%;
+    --sidebar-accent-foreground: 214 87% 34%;
+    --sidebar-border: 214 24% 91%;
+    --sidebar-ring: 214 87% 34%;
+  }
+
+  * {
+    @apply border-border;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "DM Sans", sans-serif;
+  }
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+  :where(p, span, li, h1, h2, h3, h4, h5, h6, a, button, label, td, th) {
+    overflow-wrap: anywhere;
+  }
+}
+
+@layer components {
+  .hero-gradient {
+    background: linear-gradient(110deg, #0b4ea2 10%, #2979ff 75%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .hero-grid {
+    background-image:
+      linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px);
+    background-size: 72px 72px;
+  }
+  .section-space {
+    padding: 7rem 0;
+  }
+  .eyebrow {
+    color: #0b4ea2;
+    font-size: 0.65rem;
+    font-weight: 800;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+  }
+  .section-title {
+    margin-top: 1.25rem;
+    font-family: "Manrope", sans-serif;
+    font-size: clamp(2.4rem, 5vw, 4.5rem);
+    font-weight: 700;
+    letter-spacing: -0.065em;
+    line-height: 1.04;
+  }
+  .section-copy {
+    margin-top: 1.5rem;
+    max-width: 32rem;
+    color: #64748b;
+    font-size: 1rem;
+    line-height: 1.8;
+  }
+  .service-card {
+    min-height: 300px;
+    border: 1px solid #e5eaf1;
+    border-radius: 1.5rem;
+    background: #fff;
+    padding: 1.5rem;
+    transition:
+      border-color 0.25s,
+      box-shadow 0.25s,
+      transform 0.25s;
+  }
+  .service-card:hover {
+    border-color: #b9d2f8;
+    box-shadow: 0 20px 45px rgba(11, 78, 162, 0.1);
+  }
+  .icon-box {
+    display: grid;
+    height: 2.75rem;
+    width: 2.75rem;
+    place-items: center;
+    border-radius: 0.8rem;
+    background: #eaf2ff;
+    color: #0b4ea2;
+  }
+  .dashboard-shell {
+    background-image:
+      radial-gradient(
+        circle at 70% -30%,
+        rgba(41, 121, 255, 0.3),
+        transparent 45%
+      ),
+      linear-gradient(135deg, #162842, #0b1527);
+  }
+  .platform-window {
+    background-image: radial-gradient(
+      circle at 20% 0%,
+      rgba(41, 121, 255, 0.12),
+      transparent 35%
+    );
+  }
+  .map-art {
+    background-color: #182c46;
+    background-image:
+      linear-gradient(
+        125deg,
+        transparent 42%,
+        rgba(92, 157, 209, 0.2) 43%,
+        transparent 44%
+      ),
+      linear-gradient(
+        30deg,
+        transparent 48%,
+        rgba(92, 157, 209, 0.16) 49%,
+        transparent 50%
+      ),
+      repeating-linear-gradient(
+        150deg,
+        transparent,
+        transparent 19px,
+        rgba(255, 255, 255, 0.035) 20px,
+        transparent 21px
+      );
+  }
+  .contact-input {
+    display: block;
+    width: 100%;
+    margin-top: 0.5rem;
+    border-radius: 0.7rem;
+    border: 1px solid #e2e8f0;
+    padding: 0.7rem 0.8rem;
+    font-size: 0.8rem;
+    color: #0f172a;
+    outline: none;
+    transition:
+      border 0.2s,
+      box-shadow 0.2s;
+  }
+  .contact-input:focus {
+    border-color: #2979ff;
+    box-shadow: 0 0 0 3px rgba(41, 121, 255, 0.12);
+  }
+}
+
+@media (max-width: 640px) {
+  .section-space {
+    padding: 5rem 0;
+  }
+}
