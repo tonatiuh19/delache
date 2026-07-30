@@ -14,6 +14,7 @@
     "jsx": "react-jsx",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
 
     "strict": false,
@@ -33,6 +34,7 @@
     "client/**/*",
     "api/**/*",
     "shared/**/*",
+    "lib/**/*",
     "netlify/functions/**/*",
     "scripts/**/*.ts",
     "vite.config.ts",

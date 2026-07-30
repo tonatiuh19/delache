@@ -108,7 +108,7 @@ Always use these aliases instead of relative imports.
 - Configure theme and design tokens in `client/global.css` and `tailwind.config.ts`
 - **Always follow the color palette defined in `client/global.css`** - use existing theme colors
 - **NEVER use arbitrary Tailwind color classes** (e.g. `text-emerald-500`, `bg-amber-400`, `border-red-500`, `text-violet-600`, `bg-slate-100`) — always use semantic design-system tokens: `primary`, `accent`, `destructive`, `muted`, `secondary`, `foreground`, `background`, `border`, `card`, `input`, `ring`
-- **Color token reference from `global.css`**: `primary` = deep blue (trust/brand), `accent` = emerald green (success/CTA), `destructive` = red (errors/danger), `muted` = neutral gray, `secondary` = light gray. Exception: the dark sidebar (`bg-[#0b0f1a]`) is intentional.
+- **Color token reference from `global.css`**: `primary` = deep blue (trust/brand ≈ `#0B4EA2`), `accent` = bright blue CTA (≈ `#2979FF`), `destructive` = red (errors/danger), `muted` = neutral gray, `secondary` = light blue-gray. Exception: the dark sidebar (`bg-[#0b0f1a]`) is intentional.
 - **Keep designs simple, cool, and engaging** - prioritize clean UX
 
 ## API Development

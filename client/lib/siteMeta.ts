@@ -221,6 +221,7 @@ export function isPrivateRoute(pathname: string): boolean {
   return (
     pathname === "/login" ||
     pathname.startsWith("/portal") ||
+    pathname.startsWith("/client") ||
     pathname.startsWith("/admin") ||
     pathname.startsWith("/app")
   );

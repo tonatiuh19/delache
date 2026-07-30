@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -307,6 +308,7 @@ function AppDashboard() {
 }
 
 export default function Index() {
+  const { t } = useTranslation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [sent, setSent] = useState(false);
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -354,10 +356,10 @@ export default function Index() {
           </nav>
           <div className="flex items-center gap-2 sm:gap-3">
             <Link
-              to="/login"
+              to="/client/login"
               className="hidden rounded-full border border-slate-200 bg-white px-4 py-2.5 text-[12px] font-semibold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-[#0b4ea2] sm:block"
             >
-              Iniciar sesión
+              {t("home.accessClient")}
             </Link>
             <button
               onClick={() => scrollToSection("contacto")}
@@ -390,11 +392,18 @@ export default function Index() {
               </button>
             ))}
             <Link
-              to="/login"
+              to="/client/login"
               onClick={() => setMobileOpen(false)}
               className="mt-2 block w-full rounded-xl border border-slate-200 py-3 text-center text-sm font-semibold text-slate-700"
             >
-              Iniciar sesión
+              {t("home.accessClient")}
+            </Link>
+            <Link
+              to="/portal/login"
+              onClick={() => setMobileOpen(false)}
+              className="mt-2 block w-full py-3 text-center text-sm font-medium text-slate-500"
+            >
+              {t("home.accessStaff")}
             </Link>
             <button
               onClick={() => {
@@ -891,9 +900,18 @@ export default function Index() {
               ))}
             </div>
           </div>
-          <div className="flex flex-col justify-between gap-3 pt-6 text-[10px] text-white/30 sm:flex-row">
+          <div className="flex flex-col justify-between gap-3 pt-6 text-[10px] text-white/30 sm:flex-row sm:items-center">
             <span>© 2024 DELACHE. Ingeniería de precisión.</span>
-            <span>Privacidad · Términos · Hecho para la certeza.</span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <Link
+                to="/portal/login"
+                className="transition hover:text-white/70"
+              >
+                {t("home.accessStaff")}
+              </Link>
+              <span className="text-white/20">·</span>
+              <span>Privacidad · Términos · Hecho para la certeza.</span>
+            </div>
           </div>
         </div>
       </footer>
