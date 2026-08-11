@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { addBusinessDays, computeDeadlineSeverity } from "./businessDays";
+import {
+  addBusinessDays,
+  computeDeadlineSeverity,
+  isMexicanPublicHoliday,
+} from "./businessDays";
 
 describe("businessDays", () => {
   it("skips weekends when adding business days", () => {
@@ -13,6 +17,38 @@ describe("businessDays", () => {
     const monday = new Date(Date.UTC(2026, 6, 27, 12, 0, 0)); // Jul 27
     const due = addBusinessDays(monday, 10);
     expect(due.toISOString().slice(0, 10)).toBe("2026-08-10");
+  });
+
+  it("skips Mexican public holidays", () => {
+    expect(
+      isMexicanPublicHoliday(new Date(Date.UTC(2026, 4, 1))),
+    ).toBe(true);
+    expect(
+      isMexicanPublicHoliday(new Date(Date.UTC(2026, 1, 2))),
+    ).toBe(true);
+    expect(
+      isMexicanPublicHoliday(new Date(Date.UTC(2024, 9, 1))),
+    ).toBe(true);
+    const thursday = new Date(Date.UTC(2026, 3, 30, 12, 0, 0));
+    const next = addBusinessDays(thursday, 1);
+    expect(next.toISOString().slice(0, 10)).toBe("2026-05-04");
+    expect(isMexicanPublicHoliday(new Date(Date.UTC(2026, 0, 1)))).toBe(true);
+    expect(isMexicanPublicHoliday(new Date(Date.UTC(2026, 8, 16)))).toBe(true);
+    expect(isMexicanPublicHoliday(new Date(Date.UTC(2026, 11, 25)))).toBe(
+      true,
+    );
+    expect(isMexicanPublicHoliday(new Date(Date.UTC(2026, 2, 16)))).toBe(
+      true,
+    );
+    expect(isMexicanPublicHoliday(new Date(Date.UTC(2026, 10, 16)))).toBe(
+      true,
+    );
+    expect(isMexicanPublicHoliday(new Date(Date.UTC(2018, 11, 1)))).toBe(
+      true,
+    );
+    expect(isMexicanPublicHoliday(new Date(Date.UTC(2025, 9, 1)))).toBe(
+      false,
+    );
   });
 
   it("computes deadline severity bands", () => {

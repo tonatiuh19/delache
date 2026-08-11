@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS `staff_users` (
   `avatar_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `preferred_language` varchar(5) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'es',
   `preferred_theme` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'system',
+  `show_form_helpers` tinyint(1) NOT NULL DEFAULT 1,
   `timezone` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'America/Mexico_City',
   `last_login_at` datetime DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -96,6 +97,7 @@ CREATE TABLE IF NOT EXISTS `law_firm_users` (
   `avatar_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `preferred_language` varchar(5) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'es',
   `preferred_theme` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'system',
+  `show_form_helpers` tinyint(1) NOT NULL DEFAULT 1,
   `timezone` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'America/Mexico_City',
   `last_login_at` datetime DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -238,12 +240,13 @@ CREATE TABLE IF NOT EXISTS `cases` (
   `property_country` char(2) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'MX',
   `property_lat` decimal(10,7) DEFAULT NULL,
   `property_lng` decimal(10,7) DEFAULT NULL,
+  `involves_fatality` tinyint(1) NOT NULL DEFAULT 0,
   `gps_validated_at` datetime DEFAULT NULL,
   `street_view_validated_at` datetime DEFAULT NULL,
   `power_line_verified_at` datetime DEFAULT NULL,
   `intake_received_at` datetime DEFAULT NULL,
   `court_acceptance_at` datetime DEFAULT NULL,
-  `inspection_deadline_at` datetime DEFAULT NULL COMMENT '10 business-day countdown after court acceptance',
+  `inspection_deadline_at` datetime DEFAULT NULL COMMENT '10 business-day countdown after protesta is filed',
   `completed_at` datetime DEFAULT NULL,
   `cancelled_at` datetime DEFAULT NULL,
   `cancel_reason` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
@@ -413,12 +416,22 @@ CREATE TABLE IF NOT EXISTS `document_versions` (
   `mime_type` varchar(120) COLLATE utf8mb4_unicode_ci NOT NULL,
   `file_size_bytes` bigint unsigned NOT NULL DEFAULT '0',
   `checksum_sha256` char(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `ocr_text` mediumtext COLLATE utf8mb4_unicode_ci,
+  `ocr_status` enum(
+    'pending',
+    'processing',
+    'completed',
+    'failed',
+    'skipped'
+  ) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
+  `ocr_processed_at` datetime DEFAULT NULL,
   `uploaded_by` int unsigned DEFAULT NULL,
   `change_summary` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_document_versions` (`document_id`,`version_number`),
   KEY `idx_document_versions_doc` (`document_id`),
+  KEY `idx_document_versions_ocr_status` (`ocr_status`),
   CONSTRAINT `fk_document_versions_document` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_document_versions_uploaded_by` FOREIGN KEY (`uploaded_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -840,6 +853,17 @@ CREATE TABLE IF NOT EXISTS `audit_logs` (
   KEY `idx_audit_logs_entity` (`entity_type`,`entity_id`),
   KEY `idx_audit_logs_created` (`created_at`),
   CONSTRAINT `fk_audit_logs_case` FOREIGN KEY (`case_id`) REFERENCES `cases` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `otp_request_rate_limits` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `rate_key` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `window_started_at` datetime NOT NULL,
+  `attempt_count` int unsigned NOT NULL DEFAULT 0,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_otp_request_rate_limits_key` (`rate_key`),
+  KEY `idx_otp_request_rate_limits_window` (`window_started_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `system_settings` (

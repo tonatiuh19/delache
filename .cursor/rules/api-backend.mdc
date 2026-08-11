@@ -1,0 +1,16 @@
+---
+description: API backend conventions for Vercel serverless api/index.ts
+globs: api/**/*.ts,shared/api.ts,swagger.yaml
+alwaysApply: false
+---
+
+# API / backend
+
+- All route handlers live in `api/index.ts` (serverless — do not split into separate route files for deploy architecture)
+- Extract **testable business rules** into `shared/*.ts` for Vitest. **Do not import runtime values** from `../shared` or `../lib` into `api/index.ts` (Vercel 500). Use `import type` only; inline the function/const bodies in `api/index.ts` and keep them in sync with `shared/` / `lib/`.
+- Only add endpoints when needed: secrets, DB, or server-only logic
+- TypeScript end-to-end; shared contracts in `shared/api.ts`
+- Any `api/index.ts` change → update `swagger.yaml`
+- Fix type errors immediately across api / shared / client
+- Logging in `lib/`: use project logger (not raw `console.log` for permanent debug)
+- Dev: single port **8080** for frontend + backend

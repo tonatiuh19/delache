@@ -7,6 +7,9 @@ import { motion } from "framer-motion";
 import { Plus, RefreshCw, Search } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
+import PortalListPanel from "@/components/portal/PortalListPanel";
+import ListadoFlagStrip from "@/components/portal/ListadoFlagStrip";
+import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import { DataGrid, type DataGridColumn } from "@/components/ui/data-grid";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { createCase, fetchCases } from "@/store/slices/casesSlice";
@@ -54,6 +57,7 @@ export default function CasesPage() {
       courtName: "",
       propertyCity: "",
       priority: "normal" as CasePriority,
+      involvesFatality: false,
     },
     validationSchema: createSchema,
     onSubmit: async (values, helpers) => {
@@ -63,6 +67,7 @@ export default function CasesPage() {
           courtName: values.courtName.trim() || undefined,
           propertyCity: values.propertyCity.trim() || undefined,
           priority: values.priority,
+          involvesFatality: values.involvesFatality,
         }),
       );
       if (createCase.fulfilled.match(result)) {
@@ -123,6 +128,45 @@ export default function CasesPage() {
           t(`cases.priority.${c.priority}`, { defaultValue: c.priority }),
       },
       {
+        key: "process_point",
+        label: t("cases.colPoint"),
+        shrink: true,
+        render: (c) =>
+          c.listado?.processPoint != null
+            ? t("process.pointLabel", { point: c.listado.processPoint })
+            : "—",
+      },
+      {
+        key: "primary_expert",
+        label: t("cases.colExpert"),
+        render: (c) => c.primaryExpertName || "—",
+      },
+      {
+        key: "law_firm",
+        label: t("cases.colFirm"),
+        render: (c) => c.lawFirmName || "—",
+      },
+      {
+        key: "clock",
+        label: t("cases.colClock"),
+        shrink: true,
+        render: (c) =>
+          c.listado?.clock10DueAt
+            ? new Date(c.listado.clock10DueAt).toLocaleDateString()
+            : "—",
+      },
+      {
+        key: "listado",
+        label: t("cases.colListado"),
+        wrap: true,
+        render: (c) =>
+          c.listado ? (
+            <ListadoFlagStrip listado={c.listado} compact />
+          ) : (
+            "—"
+          ),
+      },
+      {
         key: "court_name",
         label: t("cases.colCourt"),
         sortable: true,
@@ -171,6 +215,7 @@ export default function CasesPage() {
           onSubmit={formik.handleSubmit}
           className="mt-6 rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6"
         >
+          <SectionHelper>{t("help.cases.createSection")}</SectionHelper>
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="text-xs font-semibold text-muted-foreground sm:col-span-2">
               {t("cases.titleLabel")}
@@ -180,6 +225,7 @@ export default function CasesPage() {
                 onChange={formik.handleChange}
                 className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
               />
+              <FieldHelper>{t("help.cases.title")}</FieldHelper>
             </label>
             <label className="text-xs font-semibold text-muted-foreground">
               {t("cases.courtLabel")}
@@ -189,6 +235,7 @@ export default function CasesPage() {
                 onChange={formik.handleChange}
                 className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
               />
+              <FieldHelper>{t("help.cases.court")}</FieldHelper>
             </label>
             <label className="text-xs font-semibold text-muted-foreground">
               {t("cases.cityLabel")}
@@ -198,6 +245,7 @@ export default function CasesPage() {
                 onChange={formik.handleChange}
                 className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
               />
+              <FieldHelper>{t("help.cases.city")}</FieldHelper>
             </label>
             <label className="text-xs font-semibold text-muted-foreground">
               {t("cases.priorityLabel")}
@@ -213,7 +261,19 @@ export default function CasesPage() {
                   </option>
                 ))}
               </select>
+              <FieldHelper>{t("help.cases.priority")}</FieldHelper>
             </label>
+            <label className="inline-flex items-center gap-2 text-xs font-semibold text-foreground sm:col-span-2">
+              <input
+                type="checkbox"
+                name="involvesFatality"
+                checked={formik.values.involvesFatality}
+                onChange={formik.handleChange}
+                className="h-4 w-4 rounded border-input"
+              />
+              {t("cases.involvesFatality")}
+            </label>
+            <FieldHelper>{t("help.cases.fatality")}</FieldHelper>
           </div>
           {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}
           <button
@@ -227,55 +287,60 @@ export default function CasesPage() {
         </motion.form>
       ) : null}
 
-      <div className="mt-6 grid gap-3 sm:grid-cols-[1fr_auto_auto]">
-        <div className="relative">
-          <Search
-            size={16}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setPage(1);
-            }}
-            placeholder={t("cases.searchPlaceholder")}
-            className="h-11 w-full rounded-xl border border-input bg-card pl-10 pr-3 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
-          />
-        </div>
-        <select
-          value={status}
-          onChange={(e) => {
-            setStatus(e.target.value);
-            setPage(1);
-          }}
-          className="h-11 rounded-xl border border-input bg-card px-3 text-sm"
-        >
-          <option value="">{t("cases.filterAllStatuses")}</option>
-          {[...CASE_STATUS_FLOW, "on_hold", "cancelled"].map((s) => (
-            <option key={s} value={s}>
-              {t(`cases.status.${s}`, { defaultValue: s })}
-            </option>
-          ))}
-        </select>
-        <select
-          value={priority}
-          onChange={(e) => {
-            setPriority(e.target.value);
-            setPage(1);
-          }}
-          className="h-11 rounded-xl border border-input bg-card px-3 text-sm"
-        >
-          <option value="">{t("cases.filterAllPriorities")}</option>
-          {(["low", "normal", "high", "urgent"] as const).map((p) => (
-            <option key={p} value={p}>
-              {t(`cases.priority.${p}`)}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="mt-5 rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5">
+      <PortalListPanel
+        toolbar={
+          <div className="space-y-2">
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
+              <div className="relative">
+                <Search
+                  size={16}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                />
+                <input
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder={t("cases.searchPlaceholder")}
+                  className="h-11 w-full rounded-xl border border-input bg-background pl-10 pr-3 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
+                />
+              </div>
+              <select
+                value={status}
+                onChange={(e) => {
+                  setStatus(e.target.value);
+                  setPage(1);
+                }}
+                className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
+              >
+                <option value="">{t("cases.filterAllStatuses")}</option>
+                {[...CASE_STATUS_FLOW, "on_hold", "cancelled"].map((s) => (
+                  <option key={s} value={s}>
+                    {t(`cases.status.${s}`, { defaultValue: s })}
+                  </option>
+                ))}
+              </select>
+            <select
+              value={priority}
+              onChange={(e) => {
+                setPriority(e.target.value);
+                setPage(1);
+              }}
+              className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
+            >
+              <option value="">{t("cases.filterAllPriorities")}</option>
+              {(["low", "normal", "high", "urgent"] as const).map((p) => (
+                <option key={p} value={p}>
+                  {t(`cases.priority.${p}`)}
+                </option>
+              ))}
+            </select>
+            </div>
+            <FieldHelper>{t("help.cases.search")}</FieldHelper>
+          </div>
+        }
+      >
         <DataGrid<CaseSummary>
           data={items}
           columns={columns}
@@ -310,13 +375,27 @@ export default function CasesPage() {
               </div>
               <p className="mt-2 text-sm font-semibold">{c.title}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {[c.courtName, c.propertyCity].filter(Boolean).join(" · ") ||
-                  t("cases.noLocation")}
+                {[
+                  c.listado?.processPoint != null
+                    ? t("process.pointLabel", { point: c.listado.processPoint })
+                    : null,
+                  c.courtName,
+                  c.propertyCity,
+                  c.primaryExpertName,
+                  c.lawFirmName,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || t("cases.noLocation")}
               </p>
+              {c.listado ? (
+                <div className="mt-2">
+                  <ListadoFlagStrip listado={c.listado} compact />
+                </div>
+              ) : null}
             </Link>
           )}
         />
-      </div>
+      </PortalListPanel>
     </div>
   );
 }

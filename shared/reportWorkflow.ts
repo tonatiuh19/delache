@@ -22,8 +22,8 @@ const FORWARD: Partial<
   approved_internal: ["external_review", "changes_requested"],
   external_review: ["approved", "changes_requested", "rejected"],
   changes_requested: ["draft", "grammar_qa"],
-  approved: ["delivered"],
-  rejected: [],
+  approved: ["delivered", "changes_requested"],
+  rejected: ["changes_requested", "draft"],
   delivered: [],
 };
 

@@ -1,0 +1,26 @@
+---
+description: Redux-only data fetching — never axios/fetch in components
+globs: client/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Redux data fetching (mandatory)
+
+**ALL** network data fetching happens in `client/store/slices/` via `createAsyncThunk` + **axios**.
+
+Components **only**:
+- `useAppDispatch` / `useAppSelector` from `client/store/hooks.ts`
+- Dispatch actions and render state
+
+```tsx
+// ✅ CORRECT
+useEffect(() => { void dispatch(fetchData()); }, [dispatch]);
+const { data, loading } = useAppSelector((s) => s.mySlice);
+
+// ❌ NEVER — axios/fetch inside a component
+useEffect(() => { axios.get("/api/...").then(...); }, []);
+```
+
+- Shared/cross-component data → Redux, not local `useState`
+- Path aliases: `@/*` → `client/`, `@shared/*` → `shared/`
+- Forms: Formik + Yup; submit via dispatched thunks

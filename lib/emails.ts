@@ -6,6 +6,8 @@
 
 import type { AppLocale } from "../shared/i18n";
 import type { AuthActor } from "../shared/authActors";
+import type { NotificationType } from "../shared/api";
+import { toneForNotificationType } from "../shared/notificationRules";
 
 export const EMAIL_BRAND = {
   bg: "#eef2f8",
@@ -357,6 +359,34 @@ function otpCodeBlock(code: string): string {
 </table>`;
 }
 
+function highlightBanner(text: string, tone: "accent" | "warn" | "success" | "info" = "accent"): string {
+  const colors =
+    tone === "warn"
+      ? { bg: EMAIL_BRAND.warnBg, border: EMAIL_BRAND.warn, fg: EMAIL_BRAND.warn }
+      : tone === "success"
+        ? {
+            bg: EMAIL_BRAND.successBg,
+            border: EMAIL_BRAND.success,
+            fg: EMAIL_BRAND.success,
+          }
+        : tone === "info"
+          ? {
+              bg: EMAIL_BRAND.codeBg,
+              border: EMAIL_BRAND.primary,
+              fg: EMAIL_BRAND.primary,
+            }
+          : {
+              bg: "#eef5ff",
+              border: EMAIL_BRAND.accent,
+              fg: EMAIL_BRAND.primary,
+            };
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 18px;">
+  <tr>
+    <td style="padding:14px 16px;background:${colors.bg};border-radius:12px;border-left:4px solid ${colors.border};font-size:13px;font-weight:700;color:${colors.fg};line-height:1.5;">${escapeHtml(text)}</td>
+  </tr>
+</table>`;
+}
+
 function stepsList(steps: string[]): string {
   const rows = steps
     .map(
@@ -497,17 +527,31 @@ export function buildInviteStaffEmail(opts: {
   firstName: string;
   roleLabel: string;
   appUrl: string;
+  resend?: boolean;
 }): EmailPayload {
   const s = emailStrings(opts.locale);
   const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/portal/login`;
+  const banner =
+    opts.locale === "es"
+      ? opts.resend
+        ? "Reenviamos tu invitación — el acceso sigue activo."
+        : "Sin contraseña · Código de un solo uso · Portal seguro"
+      : opts.resend
+        ? "We resent your invitation — access is still active."
+        : "Passwordless · One-time code · Secure portal";
   const bodyHtml = `
-    <p style="margin:0 0 12px;font-size:17px;">${escapeHtml(interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName }))}</p>
+    ${highlightBanner(banner, "accent")}
+    <p style="margin:0 0 12px;font-size:17px;font-weight:600;">${escapeHtml(interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName }))}</p>
     <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.inviteStaff.intro)}</p>
     ${metaCard([{ label: s.inviteStaff.roleLabel, value: opts.roleLabel }])}
     ${stepsList([...s.inviteStaff.steps])}`;
 
   return {
-    subject: s.subjects.inviteStaff,
+    subject: opts.resend
+      ? opts.locale === "es"
+        ? "Recordatorio: tu invitación DELACHE"
+        : "Reminder: your DELACHE invitation"
+      : s.subjects.inviteStaff,
     html: emailShell({
       locale: opts.locale,
       preheader: s.inviteStaff.preheader,
@@ -525,20 +569,34 @@ export function buildInviteClientEmail(opts: {
   firstName: string;
   firmName?: string | null;
   appUrl: string;
+  resend?: boolean;
 }): EmailPayload {
   const s = emailStrings(opts.locale);
   const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/client/login`;
+  const banner =
+    opts.locale === "es"
+      ? opts.resend
+        ? "Reenviamos tu acceso al portal de despachos."
+        : "Seguimiento de expedientes · Notas compartidas · Dictámenes"
+      : opts.resend
+        ? "We resent your law firm portal access."
+        : "Case tracking · Shared notes · Technical reports";
   const meta = opts.firmName
     ? metaCard([{ label: s.inviteClient.firmLabel, value: opts.firmName }])
     : "";
   const bodyHtml = `
-    <p style="margin:0 0 12px;font-size:17px;">${escapeHtml(interpolateEmail(s.inviteClient.greeting, { name: opts.firstName }))}</p>
+    ${highlightBanner(banner, "accent")}
+    <p style="margin:0 0 12px;font-size:17px;font-weight:600;">${escapeHtml(interpolateEmail(s.inviteClient.greeting, { name: opts.firstName }))}</p>
     <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.inviteClient.intro)}</p>
     ${meta}
     ${stepsList([...s.inviteClient.steps])}`;
 
   return {
-    subject: s.subjects.inviteClient,
+    subject: opts.resend
+      ? opts.locale === "es"
+        ? "Recordatorio: acceso al portal DELACHE"
+        : "Reminder: your DELACHE portal access"
+      : s.subjects.inviteClient,
     html: emailShell({
       locale: opts.locale,
       preheader: s.inviteClient.preheader,
@@ -695,5 +753,64 @@ export function buildNewCaseIntakeEmail(opts: {
       appUrl: opts.appUrl,
     }),
     text: `${interpolateEmail(s.newCaseIntake.greeting, { name: opts.firstName })}\n\n${s.newCaseIntake.intro}\n\n${opts.caseNumber} — ${opts.caseTitle}\n\n${opts.caseUrl}`,
+  };
+}
+
+/** Generic dual-channel ops email for in-app notification types. */
+export function buildOpsNotificationEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  notificationType: NotificationType;
+  title: string;
+  body: string;
+  caseNumber?: string | null;
+  ctaUrl?: string | null;
+  appUrl: string;
+}): EmailPayload {
+  const tone = toneForNotificationType(opts.notificationType);
+  const greeting =
+    opts.locale === "es"
+      ? `Hola ${opts.firstName},`
+      : `Hi ${opts.firstName},`;
+  const ctaLabel =
+    opts.locale === "es" ? "Abrir en DELACHE" : "Open in DELACHE";
+  const preheader = opts.body.slice(0, 120);
+  const typeLabel = opts.notificationType.replace(/_/g, " ");
+  const metaRows = [
+    {
+      label: opts.locale === "es" ? "Alerta" : "Alert",
+      value: typeLabel,
+    },
+  ];
+  if (opts.caseNumber) {
+    metaRows.push({
+      label: opts.locale === "es" ? "Expediente" : "Case",
+      value: opts.caseNumber,
+    });
+  }
+  const bannerText =
+    opts.locale === "es"
+      ? "Tienes una actualización en DELACHE"
+      : "You have an update in DELACHE";
+  const bodyHtml = `
+    ${highlightBanner(bannerText, tone === "info" ? "info" : tone)}
+    <p style="margin:0 0 12px;font-size:17px;font-weight:600;">${escapeHtml(greeting)}</p>
+    <p style="margin:0 0 8px;font-size:16px;font-weight:700;color:${EMAIL_BRAND.text};">${escapeHtml(opts.title)}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(opts.body)}</p>
+    ${metaCard(metaRows)}`;
+
+  return {
+    subject: opts.title,
+    html: emailShell({
+      locale: opts.locale,
+      preheader,
+      title: opts.title,
+      bodyHtml,
+      cta: opts.ctaUrl
+        ? { label: ctaLabel, url: opts.ctaUrl }
+        : { label: ctaLabel, url: opts.appUrl },
+      appUrl: opts.appUrl,
+    }),
+    text: `${greeting}\n\n${opts.title}\n\n${opts.body}\n\n${opts.ctaUrl || opts.appUrl}`,
   };
 }

@@ -1,0 +1,11 @@
+---
+description: Logging conventions for client UI and lib backend code
+globs: "{client,lib}/**/*.{ts,tsx}"
+alwaysApply: false
+---
+
+# Logging
+
+- **UI components**: use logger helpers from `client/utils/logger.ts` (levels/formatting) — not ad-hoc `console.log`
+- **`lib/`**: use the project logger (e.g. `lib/logger.ts`) — not permanent raw `console.log` / `console.error`
+- Do not leave debug noise in production paths

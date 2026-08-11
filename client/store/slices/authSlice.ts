@@ -2,6 +2,8 @@ import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import type {
   AuthUser,
   RequestOtpResponse,
+  UpdatePreferencesRequest,
+  UpdatePreferencesResponse,
   VerifyOtpResponse,
 } from "@shared/api";
 import type { AuthActor } from "@shared/authActors";
@@ -15,6 +17,7 @@ interface AuthState {
   loading: boolean;
   requestingOtp: boolean;
   verifyingOtp: boolean;
+  updatingPrefs: boolean;
   error: string | null;
   otpSentTo: string | null;
 }
@@ -42,6 +45,7 @@ const initialState: AuthState = {
   loading: Boolean(initialToken),
   requestingOtp: false,
   verifyingOtp: false,
+  updatingPrefs: false,
   error: null,
   otpSentTo: null,
 };
@@ -59,9 +63,9 @@ export const requestOtp = createAsyncThunk(
       );
       return { email, message: data.message };
     } catch (err: unknown) {
-      const message =
-        (err as { response?: { data?: { error?: string } } })?.response?.data
-          ?.error || "request_failed";
+      const data = (err as { response?: { data?: { error?: string; code?: string } } })
+        ?.response?.data;
+      const message = data?.code || data?.error || "request_failed";
       return rejectWithValue(message);
     }
   },
@@ -125,6 +129,24 @@ export const logout = createAsyncThunk("auth/logout", async () => {
   }
 });
 
+export const updatePreferences = createAsyncThunk(
+  "auth/updatePreferences",
+  async (payload: UpdatePreferencesRequest, { rejectWithValue }) => {
+    const actor = inferActor();
+    try {
+      const { data } = await api.patch<UpdatePreferencesResponse>(
+        `${authPrefix(actor)}/preferences`,
+        payload,
+      );
+      return data.user;
+    } catch (err: unknown) {
+      const message =
+        (err as { response?: { data?: { error?: string } } })?.response?.data
+          ?.error || "preferences_failed";
+      return rejectWithValue(message);
+    }
+  },
+);
 const authSlice = createSlice({
   name: "auth",
   initialState,
@@ -182,6 +204,19 @@ const authSlice = createSlice({
         state.otpSentTo = null;
         state.error = null;
         state.loading = false;
+        state.updatingPrefs = false;
+      })
+      .addCase(updatePreferences.pending, (state) => {
+        state.updatingPrefs = true;
+        state.error = null;
+      })
+      .addCase(updatePreferences.fulfilled, (state, action) => {
+        state.updatingPrefs = false;
+        state.user = action.payload;
+      })
+      .addCase(updatePreferences.rejected, (state, action) => {
+        state.updatingPrefs = false;
+        state.error = (action.payload as string) || "preferences_failed";
       });
   },
 });

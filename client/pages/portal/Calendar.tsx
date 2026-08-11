@@ -14,6 +14,7 @@ import * as Yup from "yup";
 import MetaHelmet from "@/components/MetaHelmet";
 import MonthCalendar from "@/components/calendar/MonthCalendar";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
+import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import {
   CalendarPageSkeleton,
 } from "@/components/portal/PortalSkeletons";
@@ -310,52 +311,68 @@ export default function CalendarPage() {
                     {t("common.cancel")}
                   </button>
                 </div>
-                <input
-                  name="title"
-                  value={form.values.title}
-                  onChange={form.handleChange}
-                  placeholder={t("calendar.titlePlaceholder")}
-                  className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-                />
-                <select
-                  name="eventType"
-                  value={form.values.eventType}
-                  onChange={form.handleChange}
-                  className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-                >
-                  {CALENDAR_EVENT_TYPES.map((type) => (
-                    <option key={type} value={type}>
-                      {t(`calendar.type.${type}`)}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="datetime-local"
-                  name="startsAt"
-                  value={form.values.startsAt}
-                  onChange={form.handleChange}
-                  className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-                />
-                <input
-                  name="location"
-                  value={form.values.location}
-                  onChange={form.handleChange}
-                  placeholder={t("calendar.locationPlaceholder")}
-                  className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-                />
-                <select
-                  name="caseId"
-                  value={form.values.caseId}
-                  onChange={form.handleChange}
-                  className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-                >
-                  <option value="">{t("calendar.noCase")}</option>
-                  {cases.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.caseNumber} — {c.title}
-                    </option>
-                  ))}
-                </select>
+                <SectionHelper>{t("help.calendar.section")}</SectionHelper>
+                <div>
+                  <input
+                    name="title"
+                    value={form.values.title}
+                    onChange={form.handleChange}
+                    placeholder={t("calendar.titlePlaceholder")}
+                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                  />
+                  <FieldHelper>{t("help.calendar.title")}</FieldHelper>
+                </div>
+                <div>
+                  <select
+                    name="eventType"
+                    value={form.values.eventType}
+                    onChange={form.handleChange}
+                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                  >
+                    {CALENDAR_EVENT_TYPES.map((type) => (
+                      <option key={type} value={type}>
+                        {t(`calendar.type.${type}`)}
+                      </option>
+                    ))}
+                  </select>
+                  <FieldHelper>{t("help.calendar.type")}</FieldHelper>
+                </div>
+                <div>
+                  <input
+                    type="datetime-local"
+                    name="startsAt"
+                    value={form.values.startsAt}
+                    onChange={form.handleChange}
+                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                  />
+                  <FieldHelper>{t("help.calendar.startsAt")}</FieldHelper>
+                </div>
+                <div>
+                  <input
+                    name="location"
+                    value={form.values.location}
+                    onChange={form.handleChange}
+                    placeholder={t("calendar.locationPlaceholder")}
+                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                  />
+                  <FieldHelper>{t("help.calendar.location")}</FieldHelper>
+                </div>
+                <div>
+                  <select
+                    name="caseId"
+                    value={form.values.caseId}
+                    onChange={form.handleChange}
+                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="">{t("calendar.noCase")}</option>
+                    {cases.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.caseNumber} — {c.title}
+                      </option>
+                    ))}
+                  </select>
+                  <FieldHelper>{t("help.calendar.case")}</FieldHelper>
+                </div>
                 <button
                   type="submit"
                   className="h-10 w-full rounded-xl bg-primary text-xs font-semibold text-primary-foreground"

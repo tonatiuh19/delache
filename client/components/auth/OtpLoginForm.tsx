@@ -22,6 +22,7 @@ import {
 } from "@/store/slices/authSlice";
 import { homePathForActor, setSessionToken } from "@/lib/api";
 import type { AuthActor } from "@shared/authActors";
+import { FieldHelper } from "@/components/portal/FormHelpers";
 
 const emailSchema = Yup.object({
   email: Yup.string().email().required(),
@@ -130,11 +131,24 @@ export default function OtpLoginForm({
   };
 
   const errorMessage =
-    error === "request_failed"
-      ? t("auth.requestFailed")
-      : error === "verify_failed" || error
-        ? t("auth.verifyFailed")
-        : null;
+    error === "account_not_found"
+      ? t("auth.accountNotFound")
+      : error === "account_inactive"
+        ? t("auth.accountInactive")
+        : error === "login_not_allowed"
+          ? t("auth.loginNotAllowed")
+          : error === "rate_limited"
+            ? t("auth.rateLimited")
+            : error === "request_failed" ||
+                error === "Could not send verification email. Please try again."
+              ? t("auth.requestFailed")
+              : error === "verify_failed" || error === "Invalid or expired code"
+                ? t("auth.verifyFailed")
+                : error === "Account is not active"
+                  ? t("auth.accountInactive")
+                  : error
+                    ? t("auth.verifyFailed")
+                    : null;
 
   const Icon = icon === "mail" ? Mail : LockKeyhole;
 
@@ -176,6 +190,7 @@ export default function OtpLoginForm({
                   className="h-14 w-full rounded-xl border border-input bg-card pl-11 pr-4 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/50 focus:border-accent focus:ring-4 focus:ring-ring/20"
                 />
               </div>
+              <FieldHelper>{t("help.auth.email")}</FieldHelper>
             </label>
             {emailForm.touched.email && emailForm.errors.email ? (
               <p className="mt-2 text-xs text-destructive">
@@ -264,6 +279,7 @@ export default function OtpLoginForm({
                 placeholder="000000"
                 className="mt-2 h-16 w-full rounded-xl border border-input bg-card text-center text-2xl font-semibold tracking-[.5em] text-foreground outline-none transition placeholder:text-muted-foreground/30 focus:border-accent focus:ring-4 focus:ring-ring/20"
               />
+              <FieldHelper>{t("help.auth.code")}</FieldHelper>
             </label>
             {otpForm.touched.code && otpForm.errors.code ? (
               <p className="mt-2 text-xs text-destructive">

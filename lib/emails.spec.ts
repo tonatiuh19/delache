@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildInviteClientEmail,
   buildInviteStaffEmail,
+  buildOpsNotificationEmail,
   buildOtpEmail,
   EMAIL_BRAND,
   escapeHtml,
@@ -57,14 +58,33 @@ describe("email templates", () => {
     });
     expect(staff.html).toContain("/portal/login");
     expect(staff.html).toContain("expert");
+    expect(staff.html).toContain("Sin contraseña");
 
     const client = buildInviteClientEmail({
       locale: "en",
       firstName: "Sofia",
       firmName: "García & Co",
       appUrl: "https://app.delache.mx",
+      resend: true,
     });
     expect(client.html).toContain("/client/login");
     expect(client.html).toContain("García &amp; Co");
+    expect(client.subject.toLowerCase()).toContain("reminder");
+  });
+
+  it("builds ops notification emails with tone banner", () => {
+    const ops = buildOpsNotificationEmail({
+      locale: "en",
+      firstName: "Ana",
+      notificationType: "missing_documents",
+      title: "Missing documents · C-1",
+      body: "Missing: power_of_attorney",
+      caseNumber: "C-1",
+      ctaUrl: "https://app.delache.mx/portal/cases/x",
+      appUrl: "https://app.delache.mx",
+    });
+    expect(ops.html).toContain("Missing documents");
+    expect(ops.html).toContain(EMAIL_BRAND.warnBg);
+    expect(ops.text).toContain("power_of_attorney");
   });
 });

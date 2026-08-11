@@ -40,13 +40,35 @@ export function PortalShellSkeleton({
         </aside>
 
         <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-          <PageHeaderSkeleton />
-          <div className="mt-6">
-            <CardsGridSkeleton />
+          <ContentPageSkeleton variant="dashboard" />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+/** Law-firm portal shell while auth resolves. */
+export function ClientShellSkeleton() {
+  return (
+    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-secondary/40 via-background to-background">
+      <header className="sticky top-0 z-20 border-b border-border/80 bg-background/90 backdrop-blur">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
+          <div className="space-y-2">
+            <Skeleton className="h-2.5 w-20" />
+            <Skeleton className="h-3 w-28" />
           </div>
-          <div className="mt-6">
-            <ListCardSkeleton rows={5} />
-          </div>
+          <Skeleton className="h-8 w-24 rounded-full" />
+        </div>
+      </header>
+      <div className="mx-auto grid max-w-5xl gap-6 px-4 py-6 md:grid-cols-[200px_1fr]">
+        <aside className="hidden space-y-2 md:block">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full rounded-xl" />
+          ))}
+          <Skeleton className="mt-6 h-3 w-16" />
+        </aside>
+        <main>
+          <ContentPageSkeleton variant="list" />
         </main>
       </div>
     </div>
@@ -182,6 +204,92 @@ export function FormCardSkeleton({ fields = 4 }: { fields?: number }) {
   );
 }
 
+export type ContentPageSkeletonVariant =
+  | "list"
+  | "dashboard"
+  | "form"
+  | "detail"
+  | "split"
+  | "inbox";
+
+/**
+ * One reusable content-area skeleton for portal + client pages.
+ * Compose header + layout blocks to match the page shape.
+ */
+export function ContentPageSkeleton({
+  variant = "list",
+  withHeader = true,
+  withActions = false,
+  className,
+}: {
+  variant?: ContentPageSkeletonVariant;
+  withHeader?: boolean;
+  withActions?: boolean;
+  className?: string;
+}) {
+  return (
+    <div className={cn("mx-auto w-full max-w-6xl space-y-6", className)}>
+      {withHeader ? <PageHeaderSkeleton withActions={withActions} /> : null}
+
+      {variant === "dashboard" ? (
+        <>
+          <CardsGridSkeleton />
+          <ListCardSkeleton rows={5} />
+        </>
+      ) : null}
+
+      {variant === "list" ? <ListCardSkeleton rows={6} /> : null}
+
+      {variant === "inbox" ? (
+        <ListCardSkeleton rows={8} className="border-0 shadow-none" />
+      ) : null}
+
+      {variant === "form" ? (
+        <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+          <FormCardSkeleton fields={5} />
+          <ListCardSkeleton rows={4} />
+        </div>
+      ) : null}
+
+      {variant === "detail" ? (
+        <>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <Skeleton className="h-6 w-24 rounded-md" />
+                <Skeleton className="h-6 w-20 rounded-full" />
+              </div>
+              <Skeleton className="h-8 w-72 max-w-full" />
+              <Skeleton className="h-3 w-48" />
+            </div>
+            <Skeleton className="h-10 w-36 rounded-xl" />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <div className="space-y-4 lg:col-span-2">
+              <FormCardSkeleton fields={3} />
+              <ListCardSkeleton rows={4} />
+            </div>
+            <div className="space-y-4">
+              <FormCardSkeleton fields={2} />
+              <ListCardSkeleton rows={3} />
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {variant === "split" ? (
+        <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+          <FormCardSkeleton fields={4} />
+          <div className="space-y-4">
+            <FormCardSkeleton fields={2} />
+            <ListCardSkeleton rows={3} />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function CalendarPageSkeleton() {
   return (
     <div className="space-y-5">
@@ -234,59 +342,9 @@ export function CalendarPageSkeleton() {
 }
 
 export function CaseDetailSkeleton() {
-  return (
-    <div className="mx-auto max-w-6xl space-y-6">
-      <Skeleton className="h-3 w-28" />
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-3">
-          <div className="flex gap-2">
-            <Skeleton className="h-6 w-24 rounded-md" />
-            <Skeleton className="h-6 w-20 rounded-full" />
-          </div>
-          <Skeleton className="h-8 w-72 max-w-full" />
-          <Skeleton className="h-3 w-48" />
-        </div>
-        <Skeleton className="h-10 w-36 rounded-xl" />
-      </div>
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          <FormCardSkeleton fields={3} />
-          <ListCardSkeleton rows={4} />
-        </div>
-        <div className="space-y-4">
-          <FormCardSkeleton fields={2} />
-          <ListCardSkeleton rows={3} />
-        </div>
-      </div>
-    </div>
-  );
+  return <ContentPageSkeleton variant="detail" withHeader={false} />;
 }
 
 export function DashboardSkeleton() {
-  return (
-    <div className="mx-auto max-w-6xl space-y-6">
-      <PageHeaderSkeleton />
-      <CardsGridSkeleton />
-      <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-4 w-32" />
-          <Skeleton className="h-3 w-16" />
-        </div>
-        <div className="mt-4 space-y-3">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between border-t border-border pt-3 first:border-t-0 first:pt-0"
-            >
-              <div className="space-y-2">
-                <Skeleton className="h-4 w-48" />
-                <Skeleton className="h-3 w-28" />
-              </div>
-              <Skeleton className="h-3 w-14" />
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
+  return <ContentPageSkeleton variant="dashboard" />;
 }

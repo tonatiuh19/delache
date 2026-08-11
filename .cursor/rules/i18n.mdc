@@ -1,0 +1,14 @@
+---
+description: i18n — EN+ES translation keys required for all user-visible UI strings
+globs: client/**/*.{tsx,ts,json}
+alwaysApply: false
+---
+
+# Internationalization (i18n)
+
+- Every new user-visible string needs keys in **both**:
+  - `client/locales/en/translation.json`
+  - `client/locales/es/translation.json`
+- Use `useTranslation()` + `t('key')` — **never** hardcode UI copy in components
+- Prefer nested keys by feature (`team.*`, `cases.*`, `calendar.*`)
+- When renaming/removing UI text, clean up both locale files

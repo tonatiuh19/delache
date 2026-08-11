@@ -9,11 +9,12 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import mysql, {
   type Pool,
+  type PoolConnection,
   type ResultSetHeader,
   type RowDataPacket,
 } from "mysql2/promise";
 import { Resend } from "resend";
-import { put } from "@vercel/blob";
+import { put, del, get, issueSignedToken, presignUrl } from "@vercel/blob";
 import type {
   AssignmentRole,
   AuthActor,
@@ -21,9 +22,12 @@ import type {
   AuthUser,
   CalendarEventItem,
   CaseAssignmentItem,
+  CaseAuditLogItem,
   CaseDeadlineItem,
   CaseDetail,
   CaseDetailResponse,
+  BulkUploadDocumentsRequest,
+  BulkUploadDocumentsResponse,
   CaseDocumentItem,
   CaseNoteItem,
   CaseNumberSettings,
@@ -33,11 +37,15 @@ import type {
   CaseStatus,
   CaseStatusHistoryItem,
   CaseSummary,
+  ClientReviewReportRequest,
+  CompleteReviewRequest,
   CreateAssignmentRequest,
   CreateCalendarEventRequest,
   CreateCaseDocumentRequest,
   CreateCaseNoteRequest,
   CreateCaseRequest,
+  CreateEvidenceRequest,
+  CreateEvidenceResponse,
   CreateInspectionRequest,
   CreateInvoiceRequest,
   CreateLawFirmRequest,
@@ -49,11 +57,22 @@ import type {
   CreateTechnicalReportRequest,
   DashboardStatsResponse,
   DeadlineSeverity,
+  DeleteEvidenceResponse,
   DemoResponse,
   AppVersionResponse,
   DocumentCategory,
+  DocumentCompletenessInfo,
+  DocumentsIndexItem,
+  DocumentsIndexResponse,
+  OcrStatus,
+  RunDocumentOcrResponse,
+  SaveDocumentOcrRequest,
+  EvidenceItem,
   ExpenseType,
+  GlobalSearchHit,
+  GlobalSearchResponse,
   InspectionItem,
+  InspectionStatus,
   InviteTeamMemberRequest,
   InvoiceSummary,
   InvoicesListResponse,
@@ -63,69 +82,4381 @@ import type {
   MeasurementItem,
   NotificationItem,
   NotificationType,
+  PaginationInfo,
   QuestionnaireItem,
+  QuestionnaireStatus,
+  ReportsKpiResponse,
   RequestOtpResponse,
+  ReviewEntityType,
+  ReviewRequestItem,
+  ReviewStage,
   TeamListResponse,
+  TeamMemberAuditItem,
+  TeamMemberDetailResponse,
   TeamMemberItem,
+  TeamMemberSessionItem,
   TechnicalReportItem,
   TechnicalReportStatus,
   UpdateCaseStatusRequest,
+  UpdateCaseFlagsRequest,
+  UpdateCaseLocationRequest,
+  UpdatePreferencesResponse,
+  UpdateQuestionnaireStatusRequest,
+  UpdateTeamMemberRequest,
   UpdateTechnicalReportStatusRequest,
   UploadBlobResponse,
+  GeocodeRequest,
+  GeocodeResponse,
   UserRole,
   UserStatus,
   VerifyOtpResponse,
 } from "../shared/api";
-import {
-  addBusinessDays,
-  computeDeadlineSeverity,
-} from "../shared/businessDays";
-import { canManageAdmin, canManageFinance } from "../shared/rbac";
-import {
-  canTransitionReport,
-  getAllowedReportStatuses,
-} from "../shared/reportWorkflow";
-import {
-  DEFAULT_LOCALE,
-  localeFromAcceptLanguage,
-  normalizeLocale,
-  type AppLocale,
-} from "../shared/i18n";
-import {
-  generateOtpCode,
-  generatePublicUuid,
-  isValidEmail,
-  normalizeLookupEmail,
-  otpExpiresAt,
-  sessionExpiresAt,
-  sha256,
-  toMysqlDateTimeUtc,
-} from "../shared/authUtils";
-import {
-  canTransition,
-  getAllowedNextStatuses,
-} from "../shared/caseWorkflow";
-import {
-  isValidCaseNumberFormat,
-  renderCaseNumber,
-} from "../shared/caseNumber";
-import {
-  buildPagination,
-  parsePageLimit,
-  parseSortDir,
-  pickSortColumn,
-} from "../shared/listQuery";
-import { apiLogger } from "../lib/logger";
-import {
-  buildAssignmentEmail,
-  buildCaseStatusEmail,
-  buildInviteClientEmail,
-  buildInviteStaffEmail,
-  buildNewCaseIntakeEmail,
-  buildOtpEmail,
-  buildReportDeliveredEmail,
-  type EmailPayload,
-} from "../lib/emails";
+import type { AppLocale } from "../shared/i18n";
+import type { ReviewOutcome } from "../shared/reviewRequestRules";
+
+// ============================================================================
+// INLINED RUNTIME HELPERS (Vercel /api cannot import ../shared or ../lib)
+// Source of truth for tests remains shared/ and lib/. Keep in sync.
+// ============================================================================
+
+// ---- inlined from lib/logger.ts ----
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+const PREFIX = "[DELACHE:api]";
+
+function formatArgs(level: LogLevel, args: unknown[]): unknown[] {
+  const stamp = new Date().toISOString();
+  return [`${PREFIX} ${stamp} ${level.toUpperCase()}:`, ...args];
+}
+
+/** Server-side logger (api / Node). Do not import client/utils/logger here. */
+const apiLogger = {
+  debug: (...args: unknown[]) => {
+    if (process.env.NODE_ENV !== "production") {
+      console.debug(...formatArgs("debug", args));
+    }
+  },
+  info: (...args: unknown[]) => {
+    console.info(...formatArgs("info", args));
+  },
+  warn: (...args: unknown[]) => {
+    console.warn(...formatArgs("warn", args));
+  },
+  error: (...args: unknown[]) => {
+    console.error(...formatArgs("error", args));
+  },
+};
+
+// ---- inlined from shared/businessDays.ts ----
+function nthWeekdayOfMonth(
+  year: number,
+  monthIndex: number,
+  weekday: number,
+  n: number,
+): Date {
+  const first = new Date(Date.UTC(year, monthIndex, 1));
+  const firstDow = first.getUTCDay();
+  const day = 1 + ((weekday - firstDow + 7) % 7) + (n - 1) * 7;
+  return new Date(Date.UTC(year, monthIndex, day));
+}
+
+function isMexicanInaugurationYear(year: number): boolean {
+  return (year - 2018) % 6 === 0;
+}
+
+function isMexicanPublicHoliday(date: Date): boolean {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+  if (month === 0 && day === 1) return true;
+  if (month === 4 && day === 1) return true;
+  if (month === 8 && day === 16) return true;
+  if (month === 11 && day === 25) return true;
+  const constitution = nthWeekdayOfMonth(year, 1, 1, 1);
+  if (
+    month === constitution.getUTCMonth() &&
+    day === constitution.getUTCDate()
+  ) {
+    return true;
+  }
+  const juarez = nthWeekdayOfMonth(year, 2, 1, 3);
+  if (month === juarez.getUTCMonth() && day === juarez.getUTCDate()) {
+    return true;
+  }
+  const revolution = nthWeekdayOfMonth(year, 10, 1, 3);
+  if (month === revolution.getUTCMonth() && day === revolution.getUTCDate()) {
+    return true;
+  }
+  if (isMexicanInaugurationYear(year)) {
+    if (year >= 2024 && month === 9 && day === 1) return true;
+    if (year < 2024 && month === 11 && day === 1) return true;
+  }
+  return false;
+}
+
+function isMexicanBusinessDay(date: Date): boolean {
+  const dow = date.getUTCDay();
+  if (dow === 0 || dow === 6) return false;
+  return !isMexicanPublicHoliday(date);
+}
+
+/** Add N weekdays (Mon–Fri), skipping Mexican public holidays. Uses UTC date parts. */
+function addBusinessDays(from: Date, days: number): Date {
+  if (!Number.isFinite(days) || days < 0) {
+    throw new Error("days must be a non-negative number");
+  }
+  const result = new Date(from.getTime());
+  let added = 0;
+  while (added < days) {
+    result.setUTCDate(result.getUTCDate() + 1);
+    if (isMexicanBusinessDay(result)) added += 1;
+  }
+  return result;
+}
+
+/** Traffic-light severity vs due date (calendar days remaining). */
+function computeDeadlineSeverity(
+  dueAt: Date,
+  now: Date = new Date(),
+): DeadlineSeverity {
+  const ms = dueAt.getTime() - now.getTime();
+  const days = ms / 86_400_000;
+  if (days < 0) return "overdue";
+  if (days <= 2) return "critical";
+  if (days <= 5) return "warning";
+  return "safe";
+}
+
+// ---- inlined from shared/rbac.ts ----
+const STAFF_ROLES: readonly UserRole[] = [
+  "admin",
+  "case_coordinator",
+  "expert",
+  "legal",
+  "logistics",
+  "accountant",
+] as const;
+
+const ALL_LOGIN_ROLES: readonly UserRole[] = [...STAFF_ROLES] as const;
+
+function isStaffRole(role: string | null | undefined): boolean {
+  return STAFF_ROLES.includes(role as UserRole);
+}
+
+function isLawFirmRole(role: string | null | undefined): boolean {
+  // Legacy helper — law firm users no longer share staff role enum
+  return role === "law_firm_user";
+}
+
+function isAdminRole(role: string | null | undefined): boolean {
+  return role === "admin";
+}
+
+/** Roles that can manage invoices/payments. */
+function canManageFinance(role: string | null | undefined): boolean {
+  return role === "admin" || role === "accountant";
+}
+
+/** Roles that can manage team + platform settings. */
+function canManageAdmin(role: string | null | undefined): boolean {
+  return role === "admin";
+}
+
+// ---- inlined from shared/i18n.ts ----
+/** Supported app locales — Spanish (Mexico) default, English US */
+
+const DEFAULT_LOCALE: AppLocale = "es";
+const SUPPORTED_LOCALES: AppLocale[] = ["es", "en"];
+
+const LOCALE_STORAGE_KEY = "delache_locale";
+
+/** Normalize browser / DB / header values to es | en */
+function normalizeLocale(input?: string | null): AppLocale {
+  if (!input) return DEFAULT_LOCALE;
+  const tag = input.trim().toLowerCase();
+  if (tag.startsWith("en")) return "en";
+  if (tag.startsWith("es")) return "es";
+  return DEFAULT_LOCALE;
+}
+
+/** Parse Accept-Language header (first supported match) */
+function localeFromAcceptLanguage(header?: string | null): AppLocale | null {
+  if (!header) return null;
+  const parts = header.split(",").map((p) => p.split(";")[0]?.trim());
+  for (const part of parts) {
+    if (!part) continue;
+    const normalized = normalizeLocale(part);
+    if (SUPPORTED_LOCALES.includes(normalized)) return normalized;
+  }
+  return null;
+}
+
+/** Browser navigator.language with es default */
+function detectBrowserLocale(): AppLocale {
+  if (typeof navigator === "undefined") return DEFAULT_LOCALE;
+  return normalizeLocale(navigator.language);
+}
+
+function getStoredLocale(): AppLocale | null {
+  if (typeof localStorage === "undefined") return null;
+  const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+  return stored ? normalizeLocale(stored) : null;
+}
+
+function setStoredLocale(locale: AppLocale): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+}
+
+function getLocaleStorageKey(): string {
+  return LOCALE_STORAGE_KEY;
+}
+
+function resolveLocale(
+  ...candidates: (string | null | undefined)[]
+): AppLocale {
+  for (const c of candidates) {
+    if (c) return normalizeLocale(c);
+  }
+  return DEFAULT_LOCALE;
+}
+
+const LOCALE_LABELS: Record<AppLocale, string> = {
+  es: "Español",
+  en: "English",
+};
+
+const LOCALE_HTML_LANG: Record<AppLocale, string> = {
+  es: "es-MX",
+  en: "en",
+};
+
+// ---- inlined from shared/authUtils.ts ----
+/** Normalize email for DB lookups (trim + lowercase) */
+function normalizeLookupEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function isValidEmail(email: string): boolean {
+  return /.+@.+\..+/.test(email);
+}
+
+function sha256(input: string): string {
+  return crypto.createHash("sha256").update(input).digest("hex");
+}
+
+/** 6-digit numeric OTP */
+function generateOtpCode(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+function generatePublicUuid(): string {
+  // UUID v4-ish without pulling uuid dep
+  const bytes = crypto.randomBytes(16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function otpExpiresAt(ttlMinutes: number): Date {
+  return new Date(Date.now() + ttlMinutes * 60 * 1000);
+}
+
+function sessionExpiresAt(ttlDays: number): Date {
+  return new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000);
+}
+
+/** MySQL DATETIME in UTC (TiDB/Cloud sessions use UTC NOW()). */
+function toMysqlDateTimeUtc(date: Date): string {
+  return date.toISOString().slice(0, 19).replace("T", " ");
+}
+
+// ---- inlined from shared/caseNumber.ts ----
+/**
+ * Case number format helpers.
+ * Template tokens: {YYYY}, {YY}, {MM}, {SEQ:n} where n is zero-pad width.
+ * Example: DEL-{YYYY}-{SEQ:4} → DEL-2026-0001
+ */
+
+const TOKEN_RE = /\{(YYYY|YY|MM|SEQ(?::(\d+))?)\}/g;
+
+function isValidCaseNumberFormat(format: string): boolean {
+  const trimmed = format.trim();
+  if (!trimmed || trimmed.length > 64) return false;
+  if (!trimmed.includes("{SEQ")) return false;
+  // Allow letters, numbers, dash, underscore, and tokens only
+  const stripped = trimmed.replace(TOKEN_RE, "");
+  return /^[A-Za-z0-9\-_]*$/.test(stripped);
+}
+
+function renderCaseNumber(
+  format: string,
+  seq: number,
+  now = new Date(),
+): string {
+  const year = now.getUTCFullYear();
+  return format.replace(TOKEN_RE, (_match, token: string, width?: string) => {
+    if (token === "YYYY") return String(year);
+    if (token === "YY") return String(year).slice(-2);
+    if (token === "MM") return String(now.getUTCMonth() + 1).padStart(2, "0");
+    if (token.startsWith("SEQ")) {
+      const pad = Math.min(Math.max(Number(width || 4), 1), 12);
+      return String(seq).padStart(pad, "0");
+    }
+    return _match;
+  });
+}
+
+// ---- inlined from shared/listQuery.ts ----
+function parsePageLimit(
+  query: Record<string, unknown>,
+  defaults: { page?: number; limit?: number; maxLimit?: number } = {},
+): { page: number; limit: number; offset: number } {
+  const maxLimit = defaults.maxLimit ?? 100;
+  const page = Math.max(1, Number(query.page) || defaults.page || 1);
+  const limit = Math.min(
+    maxLimit,
+    Math.max(1, Number(query.limit) || defaults.limit || 20),
+  );
+  return { page, limit, offset: (page - 1) * limit };
+}
+
+function parseSortDir(value: unknown): "ASC" | "DESC" {
+  return String(value || "").toUpperCase() === "ASC" ? "ASC" : "DESC";
+}
+
+function pickSortColumn(
+  value: unknown,
+  allowed: Record<string, string>,
+  fallback: string,
+): string {
+  const key = String(value || "");
+  return allowed[key] || allowed[fallback] || fallback;
+}
+
+function buildPagination(
+  page: number,
+  limit: number,
+  total: number,
+): PaginationInfo {
+  return {
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / Math.max(1, limit))),
+  };
+}
+
+// ---- inlined from shared/otpRateLimitRules.ts ----
+/**
+ * OTP request rate-limit rules (pure). API supplies storage + clock.
+ */
+
+const OTP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const OTP_RATE_LIMIT_MAX_ATTEMPTS = 5;
+/** Separate IP spray limit (tighter window still uses same helper). */
+const OTP_IP_RATE_LIMIT_MAX_ATTEMPTS = 20;
+
+type OtpRateLimitBucket = {
+  count: number;
+  windowStartedAt: number;
+};
+
+type OtpRateLimitResult =
+  | { ok: true; remaining: number; resetAt: number }
+  | {
+      ok: false;
+      code: "rate_limited";
+      error: string;
+      retryAfterSec: number;
+      resetAt: number;
+    };
+
+type OtpRateLimitScope = "email" | "ip";
+
+function buildOtpRateLimitKey(opts: {
+  scope: OtpRateLimitScope;
+  portal: "staff" | "client";
+  value: string;
+}): string {
+  const normalized = opts.value.trim().toLowerCase();
+  return `${opts.scope}:${opts.portal}:${normalized}`;
+}
+
+function resolveOtpRateLimit(
+  bucket: OtpRateLimitBucket | null | undefined,
+  nowMs: number,
+  opts?: { windowMs?: number; maxAttempts?: number },
+): OtpRateLimitResult & { nextBucket: OtpRateLimitBucket } {
+  const windowMs = opts?.windowMs ?? OTP_RATE_LIMIT_WINDOW_MS;
+  const maxAttempts = opts?.maxAttempts ?? OTP_RATE_LIMIT_MAX_ATTEMPTS;
+
+  const fresh =
+    !bucket || nowMs - bucket.windowStartedAt >= windowMs
+      ? { count: 0, windowStartedAt: nowMs }
+      : bucket;
+
+  const resetAt = fresh.windowStartedAt + windowMs;
+  if (fresh.count >= maxAttempts) {
+    const retryAfterSec = Math.max(1, Math.ceil((resetAt - nowMs) / 1000));
+    return {
+      ok: false,
+      code: "rate_limited",
+      error: "Too many verification requests. Please try again later.",
+      retryAfterSec,
+      resetAt,
+      nextBucket: fresh,
+    };
+  }
+
+  const nextBucket = {
+    count: fresh.count + 1,
+    windowStartedAt: fresh.windowStartedAt,
+  };
+  return {
+    ok: true,
+    remaining: Math.max(0, maxAttempts - nextBucket.count),
+    resetAt,
+    nextBucket,
+  };
+}
+
+/** Peek without incrementing — used to reject before charging email quota. */
+function peekOtpRateLimit(
+  bucket: OtpRateLimitBucket | null | undefined,
+  nowMs: number,
+  opts?: { windowMs?: number; maxAttempts?: number },
+): OtpRateLimitResult {
+  const windowMs = opts?.windowMs ?? OTP_RATE_LIMIT_WINDOW_MS;
+  const maxAttempts = opts?.maxAttempts ?? OTP_RATE_LIMIT_MAX_ATTEMPTS;
+  const fresh =
+    !bucket || nowMs - bucket.windowStartedAt >= windowMs
+      ? { count: 0, windowStartedAt: nowMs }
+      : bucket;
+  const resetAt = fresh.windowStartedAt + windowMs;
+  if (fresh.count >= maxAttempts) {
+    return {
+      ok: false,
+      code: "rate_limited",
+      error: "Too many verification requests. Please try again later.",
+      retryAfterSec: Math.max(1, Math.ceil((resetAt - nowMs) / 1000)),
+      resetAt,
+    };
+  }
+  return {
+    ok: true,
+    remaining: Math.max(0, maxAttempts - fresh.count),
+    resetAt,
+  };
+}
+
+// ---- inlined from shared/formHelperRules.ts ----
+/**
+ * User preference: show inline form field helpers (ON by default).
+ */
+
+function isShowFormHelpersEnabled(
+  value: boolean | number | string | null | undefined,
+): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (v === "" || v === "0" || v === "false" || v === "off" || v === "no") {
+      return false;
+    }
+    return true;
+  }
+  return true;
+}
+
+type UpdatePreferencesResult =
+  { ok: true; showFormHelpers: boolean } | { ok: false; error: string };
+
+/**
+ * Validate PATCH body for self-serve preferences.
+ * Currently only `showFormHelpers` (required boolean).
+ */
+function parseUpdatePreferences(body: unknown): UpdatePreferencesResult {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, error: "Invalid body" };
+  }
+  if (!("showFormHelpers" in body)) {
+    return { ok: false, error: "showFormHelpers is required" };
+  }
+  const raw = (body as { showFormHelpers: unknown }).showFormHelpers;
+  if (typeof raw !== "boolean") {
+    return { ok: false, error: "showFormHelpers must be a boolean" };
+  }
+  return { ok: true, showFormHelpers: raw };
+}
+
+// ---- inlined from shared/teamMemberRules.ts ----
+/**
+ * Team member invite/update/remove business rules.
+ * Keep API handlers thin — all validation and edge cases live here and are unit-tested.
+ */
+
+const STAFF_EDIT_ROLES: readonly UserRole[] = [
+  "admin",
+  "case_coordinator",
+  "expert",
+  "legal",
+  "logistics",
+  "accountant",
+] as const;
+
+const INVITE_ROLES: readonly (UserRole | "law_firm_user")[] = [
+  ...STAFF_EDIT_ROLES,
+  "law_firm_user",
+] as const;
+
+/** Statuses admins may set via PATCH (suspend removed from product UI). */
+const MUTABLE_MEMBER_STATUSES: readonly UserStatus[] = [
+  "active",
+  "inactive",
+  "invited",
+] as const;
+
+type TeamMemberSnapshot = {
+  id: number;
+  firstName: string;
+  lastName: string;
+  role: UserRole;
+  status: UserStatus;
+  phone?: string | null;
+};
+
+type TeamMemberUpdatePatch = {
+  firstName?: string;
+  lastName?: string;
+  role?: UserRole;
+  status?: UserStatus;
+  phone?: string | null;
+};
+
+type TeamMemberUpdateOk = {
+  ok: true;
+  next: {
+    firstName: string;
+    lastName: string;
+    role: UserRole;
+    status: UserStatus;
+    phone?: string | null;
+    phoneChanged: boolean;
+  };
+  revokeSessions: boolean;
+  statusChanged: boolean;
+};
+
+type TeamMemberUpdateErr = {
+  ok: false;
+  error: string;
+  code:
+    "self_status_change" | "invalid_name" | "invalid_role" | "invalid_status";
+};
+
+type TeamMemberUpdateResult = TeamMemberUpdateOk | TeamMemberUpdateErr;
+
+function isStaffEditRole(role: string): role is UserRole {
+  return (STAFF_EDIT_ROLES as readonly string[]).includes(role);
+}
+
+function isInviteRole(role: string): role is UserRole | "law_firm_user" {
+  return (INVITE_ROLES as readonly string[]).includes(role);
+}
+
+function isMutableMemberStatus(status: string): status is UserStatus {
+  return (MUTABLE_MEMBER_STATUSES as readonly string[]).includes(status);
+}
+
+/** Login OTP is allowed only for active or invited accounts. */
+function canRequestLoginOtp(status: UserStatus): boolean {
+  return status === "active" || status === "invited";
+}
+
+/** Deactivate / inactive (and legacy suspended) must kill open sessions. */
+function shouldRevokeSessionsOnStatus(status: UserStatus): boolean {
+  return status === "inactive" || status === "suspended";
+}
+
+function canChangeOwnAccountStatus(
+  actorId: number,
+  memberId: number,
+  currentStatus: UserStatus,
+  nextStatus: UserStatus,
+): boolean {
+  if (actorId !== memberId) return true;
+  return currentStatus === nextStatus;
+}
+
+function canRemoveMember(actorId: number, memberId: number): boolean {
+  return actorId !== memberId;
+}
+
+/**
+ * Resolve a PATCH payload against the current member.
+ * Enforces self-status lock, name/role/status validity, and session revoke flag.
+ */
+function resolveTeamMemberUpdate(
+  actorId: number,
+  current: TeamMemberSnapshot,
+  patch: TeamMemberUpdatePatch,
+): TeamMemberUpdateResult {
+  const nextFirst =
+    patch.firstName !== undefined
+      ? String(patch.firstName).trim()
+      : current.firstName;
+  const nextLast =
+    patch.lastName !== undefined
+      ? String(patch.lastName).trim()
+      : current.lastName;
+  const nextRole = patch.role !== undefined ? patch.role : current.role;
+  const nextStatus = patch.status !== undefined ? patch.status : current.status;
+
+  if (
+    !canChangeOwnAccountStatus(actorId, current.id, current.status, nextStatus)
+  ) {
+    return {
+      ok: false,
+      error: "Cannot change your own account status",
+      code: "self_status_change",
+    };
+  }
+
+  if (!nextFirst || !nextLast) {
+    return {
+      ok: false,
+      error: "firstName and lastName required",
+      code: "invalid_name",
+    };
+  }
+
+  if (!isStaffEditRole(nextRole)) {
+    return { ok: false, error: "Invalid role", code: "invalid_role" };
+  }
+
+  if (!isMutableMemberStatus(nextStatus)) {
+    return { ok: false, error: "Invalid status", code: "invalid_status" };
+  }
+
+  const phoneChanged = patch.phone !== undefined;
+  const nextPhone = phoneChanged
+    ? patch.phone?.trim() || null
+    : (current.phone ?? null);
+
+  return {
+    ok: true,
+    next: {
+      firstName: nextFirst,
+      lastName: nextLast,
+      role: nextRole,
+      status: nextStatus,
+      phone: nextPhone,
+      phoneChanged,
+    },
+    revokeSessions: shouldRevokeSessionsOnStatus(nextStatus),
+    statusChanged: nextStatus !== current.status,
+  };
+}
+
+type InviteValidationOk = {
+  ok: true;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: UserRole | "law_firm_user";
+  lawFirmId: number | null;
+};
+
+type InviteValidationErr = {
+  ok: false;
+  error: string;
+  code: "invalid_payload" | "law_firm_required";
+};
+
+function validateTeamInvite(input: {
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: string;
+  lawFirmId?: number | null;
+}): InviteValidationOk | InviteValidationErr {
+  const email = String(input.email || "")
+    .trim()
+    .toLowerCase();
+  const firstName = String(input.firstName || "").trim();
+  const lastName = String(input.lastName || "").trim();
+  const role = String(input.role || "").trim();
+
+  if (!email || !firstName || !lastName || !isInviteRole(role)) {
+    return {
+      ok: false,
+      error: "email, firstName, lastName and role required",
+      code: "invalid_payload",
+    };
+  }
+
+  if (role === "law_firm_user") {
+    const lawFirmId = Number(input.lawFirmId);
+    if (!Number.isFinite(lawFirmId) || lawFirmId <= 0) {
+      return {
+        ok: false,
+        error: "lawFirmId required for law firm users",
+        code: "law_firm_required",
+      };
+    }
+    return {
+      ok: true,
+      email,
+      firstName,
+      lastName,
+      role: "law_firm_user",
+      lawFirmId,
+    };
+  }
+
+  return {
+    ok: true,
+    email,
+    firstName,
+    lastName,
+    role: role as UserRole,
+    lawFirmId: null,
+  };
+}
+
+// ---- inlined from shared/otpRequestRules.ts ----
+/**
+ * Auth OTP request eligibility — decide whether to send a code or return an error.
+ */
+
+type OtpRequestDenyCode =
+  "account_not_found" | "account_inactive" | "login_not_allowed";
+
+type OtpRequestEligibility =
+  { ok: true } | { ok: false; code: OtpRequestDenyCode; error: string };
+
+const MESSAGES: Record<OtpRequestDenyCode, string> = {
+  account_not_found: "No account found for this email",
+  account_inactive: "This account is not active",
+  login_not_allowed: "Login is not allowed for this account",
+};
+
+function resolveOtpRequestEligibility(opts: {
+  found: boolean;
+  deleted?: boolean | null;
+  status?: string | null;
+  /** When set (staff), role must be allowed to log in. */
+  roleAllowed?: boolean;
+}): OtpRequestEligibility {
+  if (!opts.found || opts.deleted) {
+    return {
+      ok: false,
+      code: "account_not_found",
+      error: MESSAGES.account_not_found,
+    };
+  }
+  if (!canRequestLoginOtp((opts.status || "") as UserStatus)) {
+    return {
+      ok: false,
+      code: "account_inactive",
+      error: MESSAGES.account_inactive,
+    };
+  }
+  if (opts.roleAllowed === false) {
+    return {
+      ok: false,
+      code: "login_not_allowed",
+      error: MESSAGES.login_not_allowed,
+    };
+  }
+  return { ok: true };
+}
+
+// ---- inlined from shared/reportWorkflow.ts ----
+const REPORT_STATUS_FORWARD: Partial<
+  Record<TechnicalReportStatus, TechnicalReportStatus[]>
+> = {
+  draft: ["grammar_qa", "rejected"],
+  grammar_qa: ["technical_director", "changes_requested", "rejected"],
+  technical_director: ["approved_internal", "changes_requested", "rejected"],
+  approved_internal: ["external_review", "changes_requested"],
+  external_review: ["approved", "changes_requested", "rejected"],
+  changes_requested: ["draft", "grammar_qa"],
+  approved: ["delivered", "changes_requested"],
+  rejected: ["changes_requested", "draft"],
+  delivered: [],
+};
+
+function getAllowedReportStatuses(
+  from: TechnicalReportStatus,
+): TechnicalReportStatus[] {
+  return REPORT_STATUS_FORWARD[from] || [];
+}
+
+function canTransitionReport(
+  from: TechnicalReportStatus,
+  to: TechnicalReportStatus,
+): { ok: true } | { ok: false; reason: string } {
+  if (from === to) return { ok: false, reason: "Already in that status" };
+  const allowed = getAllowedReportStatuses(from);
+  if (!allowed.includes(to)) {
+    return {
+      ok: false,
+      reason: `Cannot move technical report from ${from} to ${to}`,
+    };
+  }
+  return { ok: true };
+}
+
+// ---- inlined from shared/questionnaireWorkflow.ts ----
+/**
+ * Questionnaire status transitions (Product.md Phases 3–4).
+ */
+
+const QUESTIONNAIRE_STATUS_FORWARD: Partial<
+  Record<QuestionnaireStatus, QuestionnaireStatus[]>
+> = {
+  draft: ["submitted", "rejected"],
+  submitted: ["legal_review", "changes_requested", "rejected"],
+  legal_review: ["approved", "changes_requested", "rejected"],
+  changes_requested: ["draft", "submitted"],
+  approved: ["changes_requested"],
+  rejected: ["changes_requested", "draft"],
+};
+
+function getAllowedQuestionnaireStatuses(
+  from: QuestionnaireStatus,
+): QuestionnaireStatus[] {
+  return QUESTIONNAIRE_STATUS_FORWARD[from] || [];
+}
+
+function canTransitionQuestionnaire(
+  from: QuestionnaireStatus,
+  to: QuestionnaireStatus,
+): { ok: true } | { ok: false; reason: string } {
+  if (from === to) return { ok: false, reason: "Already in that status" };
+  const allowed = getAllowedQuestionnaireStatuses(from);
+  if (!allowed.includes(to)) {
+    return {
+      ok: false,
+      reason: `Cannot move questionnaire from ${from} to ${to}`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Entering legal_review should open an internal_legal review request. */
+function shouldOpenInternalLegalReview(to: QuestionnaireStatus): boolean {
+  return to === "legal_review";
+}
+
+// ---- inlined from shared/reviewRequestRules.ts ----
+/**
+ * Review request lifecycle (Product.md Phases 4, 9, 10).
+ */
+
+const REVIEW_ENTITY_TYPES = [
+  "questionnaire",
+  "technical_report",
+  "document",
+  "inspection",
+] as const;
+
+const REVIEW_STAGES = [
+  "grammar_qa",
+  "technical_director",
+  "internal_legal",
+  "external_law_firm",
+] as const;
+
+const REVIEW_STATUSES = [
+  "pending",
+  "approved",
+  "changes_requested",
+  "rejected",
+] as const;
+
+const REVIEW_OUTCOMES = ["approved", "changes_requested", "rejected"] as const;
+
+/** Map technical report status → review stage when entering a review gate. */
+function reviewStageForReportStatus(status: string): ReviewStage | null {
+  if (status === "grammar_qa") return "grammar_qa";
+  if (status === "technical_director") return "technical_director";
+  if (status === "external_review") return "external_law_firm";
+  return null;
+}
+
+function isReviewEntityType(v: unknown): v is ReviewEntityType {
+  return (
+    typeof v === "string" &&
+    (REVIEW_ENTITY_TYPES as readonly string[]).includes(v)
+  );
+}
+
+function isReviewStage(v: unknown): v is ReviewStage {
+  return (
+    typeof v === "string" && (REVIEW_STAGES as readonly string[]).includes(v)
+  );
+}
+
+function isReviewOutcome(v: unknown): v is ReviewOutcome {
+  return (
+    typeof v === "string" && (REVIEW_OUTCOMES as readonly string[]).includes(v)
+  );
+}
+
+/** Default SLA in business days by stage (Product.md). */
+function defaultReviewSlaBusinessDays(stage: ReviewStage): number {
+  if (stage === "external_law_firm") return 3;
+  if (stage === "internal_legal") return 2;
+  return 2;
+}
+
+type CompleteReviewResult =
+  | { ok: true; nextStatus: ReviewOutcome; completed: true }
+  | { ok: false; error: string; code: "not_pending" | "invalid_outcome" };
+
+function resolveReviewCompletion(
+  currentStatus: string,
+  outcome: unknown,
+): CompleteReviewResult {
+  if (currentStatus !== "pending") {
+    return {
+      ok: false,
+      error: "Only pending reviews can be completed",
+      code: "not_pending",
+    };
+  }
+  if (!isReviewOutcome(outcome)) {
+    return {
+      ok: false,
+      error: "outcome must be approved, changes_requested, or rejected",
+      code: "invalid_outcome",
+    };
+  }
+  return { ok: true, nextStatus: outcome, completed: true };
+}
+
+/** Map review outcome → questionnaire status. */
+function questionnaireStatusFromReview(
+  outcome: ReviewOutcome,
+): "approved" | "changes_requested" | "rejected" {
+  return outcome;
+}
+
+/** Map review outcome → technical report status from a given stage. */
+function reportStatusFromReview(
+  stage: ReviewStage,
+  outcome: ReviewOutcome,
+): string | null {
+  if (outcome === "changes_requested") return "changes_requested";
+  if (outcome === "rejected") return "rejected";
+  if (outcome === "approved") {
+    if (stage === "grammar_qa") return "technical_director";
+    if (stage === "technical_director") return "approved_internal";
+    if (stage === "external_law_firm") return "approved";
+  }
+  return null;
+}
+
+// ---- inlined from shared/documentCompleteness.ts ----
+/**
+ * Document completeness vs Product.md Phases 1 and 5.
+ */
+
+const INTAKE_REQUIRED_CATEGORIES = [
+  "lawsuit",
+  "medical_record",
+  "cfe_report",
+  "preliminary_photo",
+] as const;
+
+const ADDITIONAL_DOCS_CATEGORIES = [
+  "defendant_response",
+  "death_certificate",
+  "sketch",
+  "plaintiff_questionnaire",
+] as const;
+
+const COURT_FILING_CATEGORIES = [
+  "protesta",
+  "court_filing",
+  "ratification",
+] as const;
+
+type CourtFilingCategory = (typeof COURT_FILING_CATEGORIES)[number];
+
+type DocumentCompletenessStatus = {
+  phase: "intake" | "additional_docs" | "court_filing";
+  required: string[];
+  present: string[];
+  missing: string[];
+  complete: boolean;
+};
+
+function uniquePresent(
+  categories: readonly string[],
+  required: readonly string[],
+): string[] {
+  const set = new Set(categories);
+  return required.filter((c) => set.has(c));
+}
+
+function getIntakeCompleteness(
+  documentCategories: readonly string[],
+): DocumentCompletenessStatus {
+  const required = [...INTAKE_REQUIRED_CATEGORIES];
+  const present = uniquePresent(documentCategories, required);
+  const missing = required.filter((c) => !present.includes(c));
+  return {
+    phase: "intake",
+    required,
+    present,
+    missing,
+    complete: missing.length === 0,
+  };
+}
+
+type AdditionalDocsOptions = {
+  involvesFatality?: boolean;
+};
+
+const INACTIVE_DOCUMENT_STATUSES = ["rejected", "archived"] as const;
+
+const ADDITIONAL_DOCS_ALWAYS_REQUIRED = [
+  "defendant_response",
+  "sketch",
+  "plaintiff_questionnaire",
+] as const;
+
+function additionalDocsRequiredCount(involvesFatality: boolean): number {
+  return ADDITIONAL_DOCS_ALWAYS_REQUIRED.length + (involvesFatality ? 1 : 0);
+}
+
+function isActiveDocumentStatus(status: string | null | undefined): boolean {
+  if (!status) return true;
+  return !(INACTIVE_DOCUMENT_STATUSES as readonly string[]).includes(status);
+}
+
+function getAdditionalDocsCompleteness(
+  documentCategories: readonly string[],
+  opts: AdditionalDocsOptions = {},
+): DocumentCompletenessStatus {
+  const required = ADDITIONAL_DOCS_CATEGORIES.filter((c) => {
+    if (c === "death_certificate") return opts.involvesFatality === true;
+    return true;
+  });
+  const present = uniquePresent(documentCategories, required);
+  const missing = required.filter((c) => !present.includes(c));
+  return {
+    phase: "additional_docs",
+    required,
+    present,
+    missing,
+    complete: missing.length === 0,
+  };
+}
+
+function getCourtFilingCompleteness(
+  documentCategories: readonly string[],
+): DocumentCompletenessStatus {
+  const required = [...COURT_FILING_CATEGORIES];
+  const present = uniquePresent(documentCategories, required);
+  const missing = required.filter((c) => !present.includes(c));
+  return {
+    phase: "court_filing",
+    required,
+    present,
+    missing,
+    complete: missing.length === 0,
+  };
+}
+
+/** True when case is in a phase that cares about missing docs and any are missing. */
+function shouldEmitMissingDocumentsAlert(
+  caseStatus: string,
+  completeness: DocumentCompletenessStatus,
+): boolean {
+  if (completeness.complete) return false;
+  if (completeness.phase === "intake") {
+    return caseStatus === "intake" || caseStatus === "assignment";
+  }
+  if (completeness.phase === "court_filing") {
+    return caseStatus === "court_delivery";
+  }
+  return caseStatus === "additional_docs";
+}
+
+/** Throttle repeated missing-doc notifications (e.g. every upload). */
+const MISSING_DOCS_NOTIFY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+function shouldThrottleMissingDocumentsAlert(
+  lastNotifiedAtMs: number | null | undefined,
+  nowMs: number,
+  cooldownMs: number = MISSING_DOCS_NOTIFY_COOLDOWN_MS,
+): boolean {
+  if (lastNotifiedAtMs == null) return false;
+  return nowMs - lastNotifiedAtMs < cooldownMs;
+}
+
+/** Active completeness checklist for a case status (dashboard KPI + alerts). */
+function activeCompletenessForCaseStatus(
+  caseStatus: string,
+  documentCategories: readonly string[],
+  opts: AdditionalDocsOptions = {},
+): DocumentCompletenessStatus {
+  if (caseStatus === "court_delivery") {
+    return getCourtFilingCompleteness(documentCategories);
+  }
+  if (caseStatus === "additional_docs") {
+    return getAdditionalDocsCompleteness(documentCategories, opts);
+  }
+  return getIntakeCompleteness(documentCategories);
+}
+
+/** Case statuses where missing-docs KPI / alerts apply. */
+const MISSING_DOCS_KPI_STATUSES = [
+  "intake",
+  "assignment",
+  "additional_docs",
+  "court_delivery",
+] as const;
+
+function caseStatusCountsTowardMissingDocsKpi(caseStatus: string): boolean {
+  return (MISSING_DOCS_KPI_STATUSES as readonly string[]).includes(caseStatus);
+}
+
+function shouldNotifyLawFirmOfMissingDocs(completeness: {
+  phase: string;
+}): boolean {
+  return completeness.phase === "intake" || completeness.phase === "additional_docs";
+}
+
+function shouldWriteLawFirmMissingDocsNote(completeness: {
+  phase: string;
+}): boolean {
+  return completeness.phase === "additional_docs";
+}
+
+// ---- inlined from shared/documentCategoryRules.ts ----
+const DOCUMENT_CATEGORIES: readonly DocumentCategory[] = [
+  "lawsuit",
+  "medical_record",
+  "cfe_report",
+  "preliminary_photo",
+  "defendant_response",
+  "death_certificate",
+  "sketch",
+  "plaintiff_questionnaire",
+  "questionnaire",
+  "technical_report",
+  "court_filing",
+  "protesta",
+  "ratification",
+  "invoice",
+  "receipt",
+  "logistics",
+  "other",
+];
+
+const CLIENT_DOCUMENT_CATEGORIES: readonly DocumentCategory[] = [
+  "lawsuit",
+  "medical_record",
+  "cfe_report",
+  "preliminary_photo",
+  "defendant_response",
+  "death_certificate",
+  "sketch",
+  "plaintiff_questionnaire",
+];
+
+function isDocumentCategory(value: unknown): value is DocumentCategory {
+  return (
+    typeof value === "string" &&
+    (DOCUMENT_CATEGORIES as readonly string[]).includes(value)
+  );
+}
+
+function parseDocumentCategory(
+  raw: unknown,
+  fallback: DocumentCategory = "other",
+): DocumentCategory {
+  return isDocumentCategory(raw) ? raw : fallback;
+}
+
+function parseDocumentCategoryStrict(
+  raw: unknown,
+): { ok: true; value: DocumentCategory } | { ok: false; error: string } {
+  if (!isDocumentCategory(raw)) {
+    return { ok: false, error: "Invalid document category" };
+  }
+  return { ok: true, value: raw };
+}
+
+function canClientSetDocumentCategory(category: DocumentCategory): boolean {
+  return (CLIENT_DOCUMENT_CATEGORIES as readonly string[]).includes(category);
+}
+
+function canClientRecategorizeDocument(currentCategory: unknown): boolean {
+  if (!isDocumentCategory(currentCategory)) return false;
+  return (
+    canClientSetDocumentCategory(currentCategory) ||
+    currentCategory === "other"
+  );
+}
+
+function parseRequiredDocumentCategory(
+  raw: unknown,
+): { ok: true; value: DocumentCategory } | { ok: false; error: string } {
+  if (raw == null || (typeof raw === "string" && raw.trim() === "")) {
+    return { ok: false, error: "category is required" };
+  }
+  return parseDocumentCategoryStrict(raw);
+}
+
+function parseUpdateDocumentCategory(
+  body: unknown,
+  opts: { clientPortal?: boolean; currentCategory?: unknown } = {},
+):
+  | { ok: true; value: { category: DocumentCategory } }
+  | { ok: false; error: string } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, error: "Invalid body" };
+  }
+  const parsed = parseDocumentCategoryStrict(
+    (body as { category?: unknown }).category,
+  );
+  if (parsed.ok === false) return parsed;
+  if (opts.clientPortal && !canClientSetDocumentCategory(parsed.value)) {
+    return {
+      ok: false,
+      error: "Law firm users can only set intake and additional-doc categories",
+    };
+  }
+  if (
+    opts.clientPortal &&
+    opts.currentCategory !== undefined &&
+    !canClientRecategorizeDocument(opts.currentCategory)
+  ) {
+    return {
+      ok: false,
+      error: "Law firm users cannot recategorize staff documents",
+    };
+  }
+  return { ok: true, value: { category: parsed.value } };
+}
+
+function parseClientUploadCategory(
+  raw: unknown,
+): { ok: true; value: DocumentCategory } | { ok: false; error: string } {
+  const required = parseRequiredDocumentCategory(raw);
+  if (required.ok === false) return required;
+  if (!canClientSetDocumentCategory(required.value)) {
+    return {
+      ok: false,
+      error: "Law firm users can only upload intake and additional-doc categories",
+    };
+  }
+  return required;
+}
+
+// ---- inlined from shared/documentDmsRules.ts ----
+/**
+ * DMS rules: bulk upload, preview MIME types, OCR eligibility.
+ */
+
+const DMS_MAX_FILE_BYTES = 15 * 1024 * 1024;
+const DMS_MAX_BULK_FILES = 20;
+/** Cap total decoded bulk payload so JSON body stays within parser limits. */
+const DMS_MAX_BULK_TOTAL_BYTES = 20 * 1024 * 1024;
+/** express.json limit for base64 uploads (single 15MB file ≈ 20MB encoded). */
+const DMS_JSON_BODY_LIMIT = "25mb";
+/** Default JSON body limit for non-upload routes. */
+const JSON_BODY_LIMIT_DEFAULT = "1mb";
+
+function estimateBase64DecodedBytes(dataBase64: string): number {
+  const cleaned = dataBase64.replace(/\s/g, "");
+  if (!cleaned) return 0;
+  const padding = cleaned.endsWith("==") ? 2 : cleaned.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((cleaned.length * 3) / 4) - padding);
+}
+
+const DMS_ALLOWED_MIME_PREFIXES = [
+  "application/pdf",
+  "image/",
+  "text/",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument",
+] as const;
+
+type BulkDocumentInput = {
+  title?: unknown;
+  fileName?: unknown;
+  contentType?: unknown;
+  data?: unknown;
+  category?: unknown;
+};
+
+type BulkValidateOk = {
+  ok: true;
+  files: Array<{
+    title: string;
+    fileName: string;
+    contentType: string;
+    dataBase64: string;
+    category: string;
+  }>;
+};
+
+type BulkValidateErr = {
+  ok: false;
+  error: string;
+  code: "empty" | "too_many" | "invalid_file" | "too_large";
+};
+
+function isOcrableMime(mime: string | null | undefined): boolean {
+  if (!mime) return false;
+  const m = mime.toLowerCase();
+  return m === "application/pdf" || m.startsWith("image/");
+}
+
+function isPreviewableMime(mime: string | null | undefined): boolean {
+  if (!mime) return false;
+  const m = mime.toLowerCase();
+  return (
+    m === "application/pdf" || m.startsWith("image/") || m.startsWith("text/")
+  );
+}
+
+function isAllowedDmsMime(mime: string | null | undefined): boolean {
+  if (!mime) return true; // allow unknown; server still size-checks
+  const m = mime.toLowerCase();
+  return DMS_ALLOWED_MIME_PREFIXES.some(
+    (p) => m === p || m.startsWith(p.endsWith("/") ? p : `${p}`),
+  );
+}
+
+function initialOcrStatusForMime(mime: string | null | undefined): OcrStatus {
+  return isOcrableMime(mime) ? "pending" : "skipped";
+}
+
+function validateBulkDocuments(
+  files: unknown,
+): BulkValidateOk | BulkValidateErr {
+  if (!Array.isArray(files) || files.length === 0) {
+    return { ok: false, error: "files array is required", code: "empty" };
+  }
+  if (files.length > DMS_MAX_BULK_FILES) {
+    return {
+      ok: false,
+      error: `Maximum ${DMS_MAX_BULK_FILES} files per upload`,
+      code: "too_many",
+    };
+  }
+
+  const normalized: BulkValidateOk["files"] = [];
+  let totalBytes = 0;
+  for (let i = 0; i < files.length; i += 1) {
+    const raw = files[i] as BulkDocumentInput;
+    const fileName = String(raw?.fileName || "").trim();
+    const dataBase64 = String(raw?.data || "").trim();
+    const contentType =
+      String(raw?.contentType || "application/octet-stream").trim() ||
+      "application/octet-stream";
+    const title =
+      String(raw?.title || "").trim() ||
+      fileName.replace(/\.[^.]+$/, "") ||
+      `Document ${i + 1}`;
+    if (!fileName || !dataBase64) {
+      return {
+        ok: false,
+        error: `File ${i + 1}: fileName and data are required`,
+        code: "invalid_file",
+      };
+    }
+    const categoryRaw =
+      raw?.category != null && String(raw.category).trim()
+        ? String(raw.category).trim()
+        : "";
+    if (!categoryRaw) {
+      return {
+        ok: false,
+        error: `File ${i + 1}: category is required`,
+        code: "invalid_file",
+      };
+    }
+    if (!isAllowedDmsMime(contentType)) {
+      return {
+        ok: false,
+        error: `File ${i + 1}: unsupported type ${contentType}`,
+        code: "invalid_file",
+      };
+    }
+    const estimated = estimateBase64DecodedBytes(dataBase64);
+    if (estimated <= 0 || estimated > DMS_MAX_FILE_BYTES) {
+      return {
+        ok: false,
+        error: `File ${i + 1}: invalid file size`,
+        code: "too_large",
+      };
+    }
+    totalBytes += estimated;
+    if (totalBytes > DMS_MAX_BULK_TOTAL_BYTES) {
+      return {
+        ok: false,
+        error: `Total bulk upload exceeds ${Math.floor(DMS_MAX_BULK_TOTAL_BYTES / (1024 * 1024))}MB`,
+        code: "too_large",
+      };
+    }
+    normalized.push({
+      title,
+      fileName,
+      contentType,
+      dataBase64,
+      category: categoryRaw,
+    });
+  }
+  return { ok: true, files: normalized };
+}
+
+function truncateOcrText(text: string, maxChars = 200_000): string {
+  const trimmed = text.replace(/\u0000/g, "").trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return trimmed.slice(0, maxChars);
+}
+
+// ---- inlined from shared/inspectionStatusRules.ts ----
+/**
+ * Inspection status transition graph.
+ */
+
+const INSPECTION_STATUSES = [
+  "scheduled",
+  "in_progress",
+  "completed",
+  "cancelled",
+] as const;
+
+type InspectionStatusValue = (typeof INSPECTION_STATUSES)[number];
+
+const ALLOWED: Record<InspectionStatusValue, readonly InspectionStatusValue[]> =
+  {
+    scheduled: ["in_progress", "completed", "cancelled"],
+    in_progress: ["completed", "cancelled"],
+    completed: [],
+    cancelled: [],
+  };
+
+function isInspectionStatus(v: unknown): v is InspectionStatusValue {
+  return (
+    typeof v === "string" &&
+    (INSPECTION_STATUSES as readonly string[]).includes(v)
+  );
+}
+
+type InspectionTransitionResult = { ok: true } | { ok: false; error: string };
+
+function canTransitionInspection(
+  from: string,
+  to: unknown,
+): InspectionTransitionResult {
+  if (!isInspectionStatus(from)) {
+    return { ok: false, error: "Invalid current inspection status" };
+  }
+  if (!isInspectionStatus(to)) {
+    return {
+      ok: false,
+      error: "status must be scheduled, in_progress, completed, or cancelled",
+    };
+  }
+  if (from === to) return { ok: true };
+  if (!ALLOWED[from].includes(to)) {
+    return {
+      ok: false,
+      error: `Cannot move inspection from ${from} to ${to}`,
+    };
+  }
+  return { ok: true };
+}
+
+// ---- inlined from shared/blobAccessRules.ts ----
+/**
+ * Blob storage helpers — private uploads, signed client URLs, cleanup.
+ */
+
+const BLOB_SIGNED_URL_TTL_MS = 15 * 60 * 1000;
+
+/** Extract pathname from a Vercel Blob URL when possible. */
+function blobPathnameFromUrl(storageKey: string): string | null {
+  const raw = String(storageKey || "").trim();
+  if (!raw) return null;
+  try {
+    if (!/^https?:\/\//i.test(raw)) {
+      return raw.replace(/^\//, "");
+    }
+    const u = new URL(raw);
+    const path = u.pathname.replace(/^\//, "");
+    return path || null;
+  } catch {
+    return null;
+  }
+}
+
+function isPrivateBlobUrl(storageKey: string): boolean {
+  return /\.private\.blob\./i.test(storageKey);
+}
+
+/** Allow server-side fetch only for Vercel Blob hosts (blocks SSRF via arbitrary URLs). */
+function isAllowedBlobFetchUrl(storageKey: string): boolean {
+  const raw = String(storageKey || "").trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) return false;
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    return (
+      host.endsWith(".blob.vercel-storage.com") ||
+      host === "blob.vercel-storage.com"
+    );
+  } catch {
+    return false;
+  }
+}
+
+// ---- inlined from shared/locationRules.ts ----
+/**
+ * GPS / maps helpers (property location, evidence pins, Street View links).
+ */
+
+type LatLng = { lat: number; lng: number };
+
+type ParseCoordsResult =
+  | { ok: true; lat: number; lng: number }
+  | { ok: false; error: string; code: "invalid" | "out_of_range" | "empty" };
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function isValidLatitude(lat: number): boolean {
+  return isFiniteNumber(lat) && lat >= -90 && lat <= 90;
+}
+
+function isValidLongitude(lng: number): boolean {
+  return isFiniteNumber(lng) && lng >= -180 && lng <= 180;
+}
+
+function isValidLatLng(lat: number, lng: number): boolean {
+  return isValidLatitude(lat) && isValidLongitude(lng);
+}
+
+/** Parse numeric or string lat/lng independently. */
+function parseCoordinatePair(
+  latRaw: unknown,
+  lngRaw: unknown,
+): ParseCoordsResult {
+  if ((latRaw == null || latRaw === "") && (lngRaw == null || lngRaw === "")) {
+    return { ok: false, error: "Coordinates are required", code: "empty" };
+  }
+  const lat =
+    typeof latRaw === "number" ? latRaw : Number(String(latRaw ?? "").trim());
+  const lng =
+    typeof lngRaw === "number" ? lngRaw : Number(String(lngRaw ?? "").trim());
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return {
+      ok: false,
+      error: "lat and lng must be valid numbers",
+      code: "invalid",
+    };
+  }
+  if (!isValidLatLng(lat, lng)) {
+    return {
+      ok: false,
+      error: "lat must be [-90,90] and lng must be [-180,180]",
+      code: "out_of_range",
+    };
+  }
+  return { ok: true, lat, lng };
+}
+
+/**
+ * Parse free-text GPS like "19.4326, -99.1332" or "19.4326 -99.1332".
+ */
+function parseGpsText(raw: unknown): ParseCoordsResult {
+  const text = String(raw ?? "").trim();
+  if (!text) {
+    return { ok: false, error: "GPS text is empty", code: "empty" };
+  }
+  const cleaned = text.replace(/°/g, " ").replace(/\s+/g, " ").trim();
+  const parts = cleaned.split(/[,;\s]+/).filter(Boolean);
+  if (parts.length < 2) {
+    return {
+      ok: false,
+      error: "Expected lat,lng pair",
+      code: "invalid",
+    };
+  }
+  return parseCoordinatePair(parts[0], parts[1]);
+}
+
+function gpsFromQuestionnaireContent(
+  contentJson: Record<string, unknown> | null | undefined,
+): { lat: number; lng: number } | null {
+  if (!contentJson) return null;
+  const parsed = parseGpsText(contentJson.propertyGps);
+  if (parsed.ok === false) return null;
+  return { lat: parsed.lat, lng: parsed.lng };
+}
+
+type QuestionnaireGpsWrite =
+  | { action: "set"; lat: number; lng: number }
+  | { action: "clear" }
+  | { action: "keep" };
+
+function questionnaireGpsWrite(
+  contentJson: Record<string, unknown> | null | undefined,
+): QuestionnaireGpsWrite {
+  if (!contentJson || !("propertyGps" in contentJson)) return { action: "keep" };
+  const raw = contentJson.propertyGps;
+  if (raw == null || String(raw).trim() === "") return { action: "clear" };
+  const parsed = parseGpsText(raw);
+  if (parsed.ok === false) return { action: "keep" };
+  return { action: "set", lat: parsed.lat, lng: parsed.lng };
+}
+
+function questionnaireStreetViewWrite(
+  contentJson: Record<string, unknown> | null | undefined,
+): "set" | "clear" | "keep" {
+  if (!contentJson) return "keep";
+  const hasKey =
+    "streetViewValidated" in contentJson || "streetView" in contentJson;
+  if (!hasKey) return "keep";
+  const raw = contentJson.streetViewValidated ?? contentJson.streetView;
+  if (typeof raw === "string" && raw.trim().length > 0) return "set";
+  return "clear";
+}
+
+/** Optional coords: empty clears; otherwise must validate. */
+function resolveOptionalLatLng(
+  latRaw: unknown,
+  lngRaw: unknown,
+): { ok: true; value: LatLng | null } | { ok: false; error: string } {
+  const latEmpty = latRaw == null || String(latRaw).trim() === "";
+  const lngEmpty = lngRaw == null || String(lngRaw).trim() === "";
+  if (latEmpty && lngEmpty) return { ok: true, value: null };
+  if (latEmpty !== lngEmpty) {
+    return { ok: false, error: "Provide both lat and lng, or neither" };
+  }
+  const parsed = parseCoordinatePair(latRaw, lngRaw);
+  if (parsed.ok === false) return { ok: false, error: parsed.error };
+  return { ok: true, value: { lat: parsed.lat, lng: parsed.lng } };
+}
+
+function googleMapsSearchUrl(opts: {
+  lat?: number | null;
+  lng?: number | null;
+  query?: string | null;
+}): string | null {
+  if (
+    opts.lat != null &&
+    opts.lng != null &&
+    isValidLatLng(opts.lat, opts.lng)
+  ) {
+    return `https://www.google.com/maps/search/?api=1&query=${opts.lat},${opts.lng}`;
+  }
+  if (opts.query?.trim()) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(opts.query.trim())}`;
+  }
+  return null;
+}
+
+function googleMapsDirectionsUrl(opts: {
+  lat?: number | null;
+  lng?: number | null;
+  query?: string | null;
+}): string | null {
+  if (
+    opts.lat != null &&
+    opts.lng != null &&
+    isValidLatLng(opts.lat, opts.lng)
+  ) {
+    return `https://www.google.com/maps/dir/?api=1&destination=${opts.lat},${opts.lng}`;
+  }
+  if (opts.query?.trim()) {
+    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(opts.query.trim())}`;
+  }
+  return null;
+}
+
+/** Street View deep link (no API key). */
+function googleStreetViewUrl(opts: {
+  lat: number;
+  lng: number;
+}): string | null {
+  if (!isValidLatLng(opts.lat, opts.lng)) return null;
+  return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${opts.lat},${opts.lng}`;
+}
+
+function osmEmbedUrl(opts: {
+  lat?: number | null;
+  lng?: number | null;
+}): string | null {
+  if (
+    opts.lat == null ||
+    opts.lng == null ||
+    !isValidLatLng(opts.lat, opts.lng)
+  ) {
+    return null;
+  }
+  const delta = 0.02;
+  const left = opts.lng - delta;
+  const right = opts.lng + delta;
+  const top = opts.lat + delta;
+  const bottom = opts.lat - delta;
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${left}%2C${bottom}%2C${right}%2C${top}&layer=mapnik&marker=${opts.lat}%2C${opts.lng}`;
+}
+
+const GEOCODE_QUERY_MIN_LEN = 3;
+const GEOCODE_QUERY_MAX_LEN = 500;
+
+function normalizeGeocodeQuery(
+  raw: unknown,
+): { ok: true; query: string } | { ok: false; error: string } {
+  const query = String(raw ?? "").trim();
+  if (query.length < GEOCODE_QUERY_MIN_LEN) {
+    return {
+      ok: false,
+      error: `query must be at least ${GEOCODE_QUERY_MIN_LEN} characters`,
+    };
+  }
+  if (query.length > GEOCODE_QUERY_MAX_LEN) {
+    return {
+      ok: false,
+      error: `query must be at most ${GEOCODE_QUERY_MAX_LEN} characters`,
+    };
+  }
+  return { ok: true, query };
+}
+
+/** Build address query from case property fields. */
+function buildPropertyQuery(parts: {
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+}): string | null {
+  const q = [
+    parts.address,
+    parts.city,
+    parts.state,
+    parts.postalCode,
+    parts.country,
+  ]
+    .map((p) => String(p || "").trim())
+    .filter(Boolean)
+    .join(", ");
+  return q || null;
+}
+
+// ---- inlined from shared/automationRules.ts ----
+/**
+ * Product.md automation decision helpers.
+ * API executes the returned actions; this module stays pure.
+ */
+
+type AutomationAction =
+  | {
+      type: "create_invoice";
+      invoiceType: "advance" | "final";
+      reason: string;
+    }
+  | {
+      type: "notify";
+      notificationType:
+        | "qa_requested"
+        | "invoice_pending"
+        | "deadline_approaching"
+        | "report_approved"
+        | "missing_documents"
+        | "inspection_scheduled"
+        | "travel_confirmed"
+        | "payment_received"
+        | "court_filing";
+      reason: string;
+    }
+  | {
+      type: "open_review";
+      stage:
+        | "grammar_qa"
+        | "technical_director"
+        | "internal_legal"
+        | "external_law_firm";
+      reason: string;
+    };
+
+function automationOnQuestionnaireApproved(): AutomationAction[] {
+  return [
+    {
+      type: "create_invoice",
+      invoiceType: "advance",
+      reason: "Questionnaire approved — trigger advance payment",
+    },
+    {
+      type: "notify",
+      notificationType: "invoice_pending",
+      reason: "Advance invoice pending after questionnaire approval",
+    },
+  ];
+}
+
+function automationOnInspectionCompleted(): AutomationAction[] {
+  return [
+    {
+      type: "notify",
+      notificationType: "qa_requested",
+      reason: "Inspection completed — notify QA",
+    },
+  ];
+}
+
+function automationOnDeadlineApproaching(severity: string): AutomationAction[] {
+  if (severity !== "critical" && severity !== "overdue") return [];
+  return [
+    {
+      type: "notify",
+      notificationType: "deadline_approaching",
+      reason: "Deadline within 2 days or overdue — escalate",
+    },
+  ];
+}
+
+function automationOnReportApproved(): AutomationAction[] {
+  return [
+    {
+      type: "notify",
+      notificationType: "report_approved",
+      reason: "Report approved — notify legal",
+    },
+  ];
+}
+
+function automationOnCaseCompletedOrRatified(
+  caseStatus: string,
+): AutomationAction[] {
+  if (caseStatus !== "completed" && caseStatus !== "accounting") return [];
+  return [
+    {
+      type: "create_invoice",
+      invoiceType: "final",
+      reason: "Case accounting/completed — enable final invoice",
+    },
+    {
+      type: "notify",
+      notificationType: "invoice_pending",
+      reason: "Final invoice pending",
+    },
+  ];
+}
+
+function automationOnReportEnterExternalReview(): AutomationAction[] {
+  return [
+    {
+      type: "open_review",
+      stage: "external_law_firm",
+      reason: "Report entered external law firm review",
+    },
+  ];
+}
+
+// ---- inlined from shared/notificationRules.ts ----
+/**
+ * Notification dual-channel + invite resend rules (unit-testable).
+ */
+
+/** Types that should also send email when creating an in-app notification. */
+const DUAL_CHANNEL_NOTIFICATION_TYPES: readonly NotificationType[] = [
+  "new_assignment",
+  "missing_documents",
+  "deadline_approaching",
+  "inspection_scheduled",
+  "travel_confirmed",
+  "qa_requested",
+  "report_approved",
+  "court_filing",
+  "payment_received",
+  "invoice_pending",
+  "general",
+] as const;
+
+function shouldDualChannelEmail(
+  type: NotificationType | null | undefined,
+): boolean {
+  if (!type) return true;
+  if (type === "otp_login") return false;
+  return (DUAL_CHANNEL_NOTIFICATION_TYPES as readonly string[]).includes(type);
+}
+
+/** Invite emails / preferred_language on invite payload. */
+function resolveInviteLocale(preferredLanguage?: string | null): AppLocale {
+  return normalizeLocale(preferredLanguage);
+}
+
+/** Only invited members can receive a resend invite email. */
+function canResendInvite(
+  status: UserStatus | string | null | undefined,
+): boolean {
+  return status === "invited";
+}
+
+type OpsEmailTone = "info" | "warn" | "success" | "accent";
+
+function toneForNotificationType(
+  type: NotificationType | null | undefined,
+): OpsEmailTone {
+  switch (type) {
+    case "missing_documents":
+    case "deadline_approaching":
+      return "warn";
+    case "payment_received":
+    case "report_approved":
+      return "success";
+    case "inspection_scheduled":
+    case "travel_confirmed":
+    case "qa_requested":
+    case "new_assignment":
+      return "accent";
+    default:
+      return "info";
+  }
+}
+
+// ---- inlined from shared/caseWorkflow.ts ----
+/** Primary forward workflow (Product.md phases 1–12 → completed) */
+const CASE_STATUS_FLOW: CaseStatus[] = [
+  "intake",
+  "assignment",
+  "questionnaire",
+  "legal_review_questionnaire",
+  "additional_docs",
+  "court_acceptance",
+  "logistics",
+  "inspection",
+  "technical_report",
+  "legal_validation",
+  "court_delivery",
+  "accounting",
+  "completed",
+];
+
+function isTerminalStatus(status: CaseStatus): boolean {
+  return status === "completed" || status === "cancelled";
+}
+
+type WorkflowTransitionOpts = {
+  role?: UserRole | null;
+  /** Workflow status the case left when it went on_hold. */
+  lastWorkflowStatus?: CaseStatus | null;
+  /** Last to_status still on the 12-point flow (legacy hold with no from_status). */
+  fallbackWorkflowStatus?: CaseStatus | null;
+};
+
+function resolveHoldResumeStatus(
+  lastHoldFromStatus?: CaseStatus | null,
+  lastWorkflowToStatus?: CaseStatus | null,
+): CaseStatus {
+  for (const candidate of [
+    lastHoldFromStatus,
+    lastWorkflowToStatus,
+    "intake" as const,
+  ]) {
+    if (
+      candidate &&
+      CASE_STATUS_FLOW.includes(candidate) &&
+      candidate !== "completed"
+    ) {
+      return candidate;
+    }
+  }
+  return "intake";
+}
+
+/** Allowed next statuses from current. */
+function getAllowedNextStatuses(
+  current: CaseStatus,
+  opts: WorkflowTransitionOpts = {},
+): CaseStatus[] {
+  if (isTerminalStatus(current)) return [];
+
+  if (current === "on_hold") {
+    if (canManageAdmin(opts.role ?? null)) {
+      return [
+        ...CASE_STATUS_FLOW.filter((s) => s !== "completed"),
+        "cancelled",
+      ];
+    }
+    const resume = resolveHoldResumeStatus(
+      opts.lastWorkflowStatus,
+      opts.fallbackWorkflowStatus,
+    );
+    return [resume, "cancelled"];
+  }
+
+  if (current === "legal_review_questionnaire") {
+    return ["additional_docs", "questionnaire", "on_hold", "cancelled"];
+  }
+
+  if (current === "legal_validation") {
+    return ["court_delivery", "technical_report", "on_hold", "cancelled"];
+  }
+
+  const idx = CASE_STATUS_FLOW.indexOf(current);
+  const next: CaseStatus[] = [];
+  if (idx >= 0 && idx < CASE_STATUS_FLOW.length - 1) {
+    next.push(CASE_STATUS_FLOW[idx + 1]);
+  }
+  next.push("on_hold", "cancelled");
+  return next;
+}
+
+function canTransition(
+  from: CaseStatus,
+  to: CaseStatus,
+  opts: WorkflowTransitionOpts = {},
+): { ok: true } | { ok: false; reason: string } {
+  if (from === to) {
+    return { ok: false, reason: "Status is already set to that value." };
+  }
+  const allowed = getAllowedNextStatuses(from, opts);
+  if (!allowed.includes(to)) {
+    return {
+      ok: false,
+      reason: `Cannot move from ${from} to ${to}. Allowed: ${allowed.join(", ") || "none"}.`,
+    };
+  }
+  return { ok: true };
+}
+
+function caseStatusAfterArtifactReject(opts: {
+  caseStatus: CaseStatus;
+  artifact: "questionnaire" | "technical_report";
+  outcome: string;
+}): CaseStatus | null {
+  const atP4 =
+    opts.artifact === "questionnaire" &&
+    opts.caseStatus === "legal_review_questionnaire";
+  const atP10 =
+    opts.artifact === "technical_report" &&
+    opts.caseStatus === "legal_validation";
+  if (!atP4 && !atP10) return null;
+  if (opts.outcome === "changes_requested") {
+    return atP4 ? "questionnaire" : "technical_report";
+  }
+  if (opts.outcome === "rejected") return "on_hold";
+  return null;
+}
+
+function shouldReopenArtifactAfterCaseReturn(
+  toStatus: CaseStatus,
+): "questionnaire" | "technical_report" | null {
+  if (toStatus === "questionnaire") return "questionnaire";
+  if (toStatus === "technical_report") return "technical_report";
+  return null;
+}
+
+// ---- inlined from shared/rejectLoopRules.ts ----
+function deadlineTypesForCaseStatus(status: CaseStatus): readonly string[] {
+  if (status === "questionnaire") return ["questionnaire"];
+  if (status === "legal_review_questionnaire") return ["legal_review"];
+  if (status === "legal_validation") return ["external_legal_validation"];
+  return [];
+}
+
+function deadlineTypesToCompleteOnTransition(
+  from: CaseStatus,
+  to: CaseStatus,
+): string[] {
+  if (from === to) return [];
+  const owned = deadlineTypesForCaseStatus(from);
+  if (owned.length === 0) return [];
+  if (to === "on_hold" || to === "cancelled") return [...owned];
+  if (deadlineTypesForCaseStatus(to).join() !== owned.join()) {
+    return [...owned];
+  }
+  return [];
+}
+
+const QUESTIONNAIRE_REOPEN_FROM_STATUSES = [
+  "submitted",
+  "legal_review",
+  "approved",
+  "rejected",
+] as const;
+
+const REPORT_REOPEN_FROM_STATUSES = [
+  "approved_internal",
+  "external_review",
+  "approved",
+  "rejected",
+] as const;
+
+function artifactToForceChangesRequested(opts: {
+  artifact: "questionnaire" | "technical_report";
+  outcome: string;
+  toStatus: CaseStatus;
+}): "questionnaire" | "technical_report" | null {
+  if (opts.outcome !== "changes_requested" && opts.outcome !== "rejected") {
+    return null;
+  }
+  const byReturn = shouldReopenArtifactAfterCaseReturn(opts.toStatus);
+  if (byReturn) return byReturn;
+  if (opts.outcome === "rejected" && opts.toStatus === "on_hold") {
+    return opts.artifact;
+  }
+  return null;
+}
+
+function shouldNotifyLawFirmAfterArtifactReject(opts: {
+  auditActorType?: "staff" | "law_firm" | "system" | null;
+}): boolean {
+  return opts.auditActorType !== "law_firm";
+}
+
+function authoringDeadlineSpec(toStatus: CaseStatus): {
+  deadlineType: string;
+  title: string;
+  businessDays: number;
+} | null {
+  if (toStatus === "questionnaire") {
+    return {
+      deadlineType: "questionnaire",
+      title: "Questionnaire, GPS and Street View (3 business days)",
+      businessDays: 3,
+    };
+  }
+  if (toStatus === "technical_report") {
+    return {
+      deadlineType: "technical_report",
+      title: "Technical report (inside 10-day clock)",
+      businessDays: 5,
+    };
+  }
+  return null;
+}
+
+// ---- inlined from shared/evidenceRules.ts ----
+/**
+ * Field evidence capture rules (Product.md Phase 8).
+ * Keep API handlers thin — validation and checklist coverage live here.
+ */
+
+const EVIDENCE_TYPES = [
+  "photo",
+  "video",
+  "voice_note",
+  "measurement",
+  "signature",
+  "gps_point",
+  "observation",
+  "court_filing",
+  "other",
+] as const;
+
+type EvidenceType = (typeof EVIDENCE_TYPES)[number];
+
+const EVIDENCE_CATEGORIES = [
+  "horizontal_distance",
+  "vertical_distance",
+  "pole_distance",
+  "pole_id",
+  "electrical_structure",
+  "conductor",
+  "facade",
+  "sidewalk",
+  "construction",
+  "property_invasion",
+  "oversized_construction",
+  "safety",
+  "general",
+] as const;
+
+type EvidenceCategory = (typeof EVIDENCE_CATEGORIES)[number];
+
+/** Product.md Phase 8 mandatory checklist categories (excludes general). */
+const EVIDENCE_CHECKLIST_CATEGORIES: readonly EvidenceCategory[] = [
+  "horizontal_distance",
+  "vertical_distance",
+  "pole_distance",
+  "pole_id",
+  "electrical_structure",
+  "conductor",
+  "facade",
+  "sidewalk",
+  "construction",
+  "property_invasion",
+  "oversized_construction",
+  "safety",
+] as const;
+
+/** Types that must include an uploaded file. */
+const EVIDENCE_TYPES_REQUIRING_FILE: readonly EvidenceType[] = [
+  "photo",
+  "video",
+  "voice_note",
+  "signature",
+  "court_filing",
+] as const;
+
+const EVIDENCE_MAX_FILE_BYTES = 15 * 1024 * 1024;
+
+type CreateEvidenceInput = {
+  evidenceType?: unknown;
+  category?: unknown;
+  title?: unknown;
+  caption?: unknown;
+  inspectionId?: unknown;
+  lat?: unknown;
+  lng?: unknown;
+  capturedAt?: unknown;
+  fileName?: unknown;
+  contentType?: unknown;
+  data?: unknown;
+  fileSizeBytes?: unknown;
+};
+
+type NormalizedEvidenceCreate = {
+  evidenceType: EvidenceType;
+  category: EvidenceCategory;
+  title: string | null;
+  caption: string | null;
+  inspectionId: number | null;
+  lat: number | null;
+  lng: number | null;
+  capturedAt: Date | null;
+  fileName: string | null;
+  contentType: string | null;
+  dataBase64: string | null;
+  requiresFile: boolean;
+};
+
+type EvidenceValidationOk = {
+  ok: true;
+  value: NormalizedEvidenceCreate;
+};
+
+type EvidenceValidationErr = {
+  ok: false;
+  error: string;
+  code:
+    | "invalid_type"
+    | "invalid_category"
+    | "file_required"
+    | "gps_required"
+    | "invalid_coordinates"
+    | "invalid_captured_at"
+    | "empty_content"
+    | "invalid_file_size"
+    | "invalid_inspection_id";
+};
+
+type EvidenceValidationResult = EvidenceValidationOk | EvidenceValidationErr;
+
+function isEvidenceType(value: unknown): value is EvidenceType {
+  return (
+    typeof value === "string" &&
+    (EVIDENCE_TYPES as readonly string[]).includes(value)
+  );
+}
+
+function isEvidenceCategory(value: unknown): value is EvidenceCategory {
+  return (
+    typeof value === "string" &&
+    (EVIDENCE_CATEGORIES as readonly string[]).includes(value)
+  );
+}
+
+function evidenceRequiresFile(type: EvidenceType): boolean {
+  return (EVIDENCE_TYPES_REQUIRING_FILE as readonly string[]).includes(type);
+}
+
+function parseOptionalNumber(value: unknown): number | null | undefined {
+  if (value === undefined || value === null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return undefined;
+  return n;
+}
+
+function trimOrNull(value: unknown): string | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  return s.length > 0 ? s : null;
+}
+
+/**
+ * Validate and normalize a create-evidence payload.
+ * File bytes can be pre-checked via `fileSizeBytes` when buffer length is known.
+ */
+function validateCreateEvidence(
+  input: CreateEvidenceInput,
+): EvidenceValidationResult {
+  if (!isEvidenceType(input.evidenceType)) {
+    return {
+      ok: false,
+      error: "Valid evidenceType is required",
+      code: "invalid_type",
+    };
+  }
+
+  const categoryRaw = input.category ?? "general";
+  if (!isEvidenceCategory(categoryRaw)) {
+    return {
+      ok: false,
+      error: "Invalid evidence category",
+      code: "invalid_category",
+    };
+  }
+
+  let inspectionId: number | null = null;
+  if (
+    input.inspectionId !== undefined &&
+    input.inspectionId !== null &&
+    input.inspectionId !== ""
+  ) {
+    const id = Number(input.inspectionId);
+    if (!Number.isInteger(id) || id <= 0) {
+      return {
+        ok: false,
+        error: "Invalid inspectionId",
+        code: "invalid_inspection_id",
+      };
+    }
+    inspectionId = id;
+  }
+
+  const lat = parseOptionalNumber(input.lat);
+  const lng = parseOptionalNumber(input.lng);
+  if (lat === undefined || lng === undefined) {
+    return {
+      ok: false,
+      error: "lat and lng must be valid numbers when provided",
+      code: "invalid_coordinates",
+    };
+  }
+  if (lat != null && (lat < -90 || lat > 90)) {
+    return {
+      ok: false,
+      error: "lat must be between -90 and 90",
+      code: "invalid_coordinates",
+    };
+  }
+  if (lng != null && (lng < -180 || lng > 180)) {
+    return {
+      ok: false,
+      error: "lng must be between -180 and 180",
+      code: "invalid_coordinates",
+    };
+  }
+  if ((lat == null) !== (lng == null)) {
+    return {
+      ok: false,
+      error: "lat and lng must both be set or both omitted",
+      code: "invalid_coordinates",
+    };
+  }
+
+  if (input.evidenceType === "gps_point" && (lat == null || lng == null)) {
+    return {
+      ok: false,
+      error: "gps_point evidence requires lat and lng",
+      code: "gps_required",
+    };
+  }
+
+  let capturedAt: Date | null = null;
+  if (input.capturedAt != null && String(input.capturedAt).trim() !== "") {
+    const d = new Date(String(input.capturedAt));
+    if (Number.isNaN(d.getTime())) {
+      return {
+        ok: false,
+        error: "Invalid capturedAt",
+        code: "invalid_captured_at",
+      };
+    }
+    capturedAt = d;
+  }
+
+  const title = trimOrNull(input.title);
+  const caption = trimOrNull(input.caption);
+  const fileName = trimOrNull(input.fileName);
+  const contentType = trimOrNull(input.contentType);
+  const dataBase64 = trimOrNull(input.data);
+  const requiresFile = evidenceRequiresFile(input.evidenceType);
+
+  if (requiresFile && (!fileName || !dataBase64)) {
+    return {
+      ok: false,
+      error: "fileName and data are required for this evidence type",
+      code: "file_required",
+    };
+  }
+
+  if (input.fileSizeBytes != null) {
+    const size = Number(input.fileSizeBytes);
+    if (!Number.isFinite(size) || size <= 0 || size > EVIDENCE_MAX_FILE_BYTES) {
+      return {
+        ok: false,
+        error: "Invalid file size",
+        code: "invalid_file_size",
+      };
+    }
+  }
+
+  const hasFile = Boolean(fileName && dataBase64);
+  const hasText = Boolean(title || caption);
+  const hasGps = lat != null && lng != null;
+  if (!hasFile && !hasText && !hasGps) {
+    return {
+      ok: false,
+      error: "Evidence needs a file, title/caption, or GPS coordinates",
+      code: "empty_content",
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      evidenceType: input.evidenceType,
+      category: categoryRaw,
+      title,
+      caption,
+      inspectionId,
+      lat,
+      lng,
+      capturedAt,
+      fileName,
+      contentType,
+      dataBase64,
+      requiresFile,
+    },
+  };
+}
+
+type EvidenceChecklistItem = {
+  category: EvidenceCategory;
+};
+
+type EvidenceChecklistStatus = {
+  covered: EvidenceCategory[];
+  missing: EvidenceCategory[];
+  coveredCount: number;
+  totalCount: number;
+  complete: boolean;
+};
+
+/** Which Phase 8 checklist categories are covered by at least one evidence item. */
+function getEvidenceChecklistStatus(
+  items: readonly EvidenceChecklistItem[],
+): EvidenceChecklistStatus {
+  const present = new Set(
+    items
+      .map((i) => i.category)
+      .filter((c) =>
+        (EVIDENCE_CHECKLIST_CATEGORIES as readonly string[]).includes(c),
+      ),
+  );
+  const covered = EVIDENCE_CHECKLIST_CATEGORIES.filter((c) => present.has(c));
+  const missing = EVIDENCE_CHECKLIST_CATEGORIES.filter((c) => !present.has(c));
+  return {
+    covered: [...covered],
+    missing: [...missing],
+    coveredCount: covered.length,
+    totalCount: EVIDENCE_CHECKLIST_CATEGORIES.length,
+    complete: missing.length === 0,
+  };
+}
+
+// ---- inlined from shared/portalCapabilities.ts ----
+/**
+ * Portal case-detail section visibility + server-aligned action RBAC by staff role.
+ */
+
+const CASE_SECTIONS = [
+  "workflow",
+  "timeline",
+  "notes",
+  "documents",
+  "assignments",
+  "deadlines",
+  "questionnaire",
+  "reviews",
+  "inspections",
+  "evidence",
+  "logistics",
+  "reports",
+  "audit",
+  "completeness",
+] as const;
+
+type CaseSection = (typeof CASE_SECTIONS)[number];
+
+/** Sections that imply mutate permission when visible (API must match). */
+type CaseMutateSection = Extract<
+  CaseSection,
+  | "documents"
+  | "questionnaire"
+  | "reviews"
+  | "inspections"
+  | "evidence"
+  | "logistics"
+  | "reports"
+>;
+
+const ALL = new Set<CaseSection>(CASE_SECTIONS);
+
+const BY_ROLE: Record<UserRole, ReadonlySet<CaseSection>> = {
+  admin: ALL,
+  case_coordinator: ALL,
+  expert: new Set([
+    "workflow",
+    "timeline",
+    "notes",
+    "documents",
+    "deadlines",
+    "questionnaire",
+    "inspections",
+    "evidence",
+    "reports",
+    "reviews",
+    "completeness",
+  ]),
+  legal: new Set([
+    "workflow",
+    "timeline",
+    "notes",
+    "documents",
+    "deadlines",
+    "questionnaire",
+    "reviews",
+    "reports",
+    "audit",
+    "completeness",
+  ]),
+  logistics: new Set([
+    "workflow",
+    "timeline",
+    "notes",
+    "deadlines",
+    "inspections",
+    "logistics",
+    "evidence",
+  ]),
+  accountant: new Set([
+    "workflow",
+    "timeline",
+    "notes",
+    "documents",
+    "deadlines",
+    "audit",
+    "completeness",
+  ]),
+};
+
+const REVIEW_STAGE_ROLES: Record<ReviewStage, readonly UserRole[]> = {
+  grammar_qa: ["admin", "case_coordinator", "expert"],
+  technical_director: ["admin", "case_coordinator", "expert"],
+  internal_legal: ["admin", "case_coordinator", "legal"],
+  /** External law-firm stage is completed via client portal; staff admin can override. */
+  external_law_firm: ["admin"],
+};
+
+function canViewCaseSection(
+  role: string | null | undefined,
+  section: CaseSection,
+): boolean {
+  if (!role) return false;
+  const set = BY_ROLE[role as UserRole];
+  if (!set) return role === "admin";
+  return set.has(section);
+}
+
+function visibleCaseSections(role: string | null | undefined): CaseSection[] {
+  return CASE_SECTIONS.filter((s) => canViewCaseSection(role, s));
+}
+
+function canMutateCaseSection(
+  role: string | null | undefined,
+  section: CaseMutateSection,
+): boolean {
+  return canViewCaseSection(role, section);
+}
+
+function canCompleteReviewStage(
+  role: string | null | undefined,
+  stage: string,
+): boolean {
+  if (!role) return false;
+  const allowed = REVIEW_STAGE_ROLES[stage as ReviewStage];
+  if (!allowed) return false;
+  return allowed.includes(role as UserRole);
+}
+
+/**
+ * Staff must not approve reports out of external_review — that is law-firm review.
+ * Admin may override for operational recovery.
+ */
+function canStaffApproveExternalReview(
+  role: string | null | undefined,
+): boolean {
+  return role === "admin";
+}
+
+/** Questionnaire approve / reject / changes_requested — legal gate. */
+function canDecideQuestionnaireReview(
+  role: string | null | undefined,
+): boolean {
+  return role === "admin" || role === "case_coordinator" || role === "legal";
+}
+
+/** Edit property GPS / address on a case. */
+function canEditCaseLocation(role: string | null | undefined): boolean {
+  return (
+    role === "admin" ||
+    role === "case_coordinator" ||
+    role === "expert" ||
+    role === "logistics"
+  );
+}
+
+/** Case workflow status transitions — coordinators and admins. */
+function canChangeCaseStatus(role: string | null | undefined): boolean {
+  return role === "admin" || role === "case_coordinator";
+}
+
+function canApplyCaseStatusChange(
+  role: string | null | undefined,
+  from: string,
+  to: string,
+): boolean {
+  if (canChangeCaseStatus(role)) return true;
+  return role === "accountant" && from === "accounting" && to === "completed";
+}
+
+/** Assignments — coordinators and admins. */
+function canManageCaseAssignments(role: string | null | undefined): boolean {
+  return role === "admin" || role === "case_coordinator";
+}
+
+/** Calendar create/update — ops roles. */
+function canManageCalendar(role: string | null | undefined): boolean {
+  return (
+    role === "admin" ||
+    role === "case_coordinator" ||
+    role === "logistics" ||
+    role === "expert"
+  );
+}
+
+/** Generic blob upload endpoint — documents or evidence roles. */
+function canUploadBlobs(role: string | null | undefined): boolean {
+  return (
+    canMutateCaseSection(role, "documents") ||
+    canMutateCaseSection(role, "evidence")
+  );
+}
+
+type CaseDetailSectionsPayload = {
+  notes: unknown[];
+  documents: Array<{ ocrText?: string | null; storageKey?: string | null }>;
+  assignments: unknown[];
+  deadlines: unknown[];
+  questionnaires: unknown[];
+  inspections: unknown[];
+  measurements: unknown[];
+  evidence: unknown[];
+  evidenceChecklist: unknown;
+  reviewRequests: unknown[];
+  documentCompleteness: unknown;
+  auditLogs: unknown[];
+  trips: unknown[];
+  expenses: unknown[];
+  technicalReports: unknown[];
+};
+
+/**
+ * Strip case-detail sections the role cannot view (server-side RBAC).
+ * Mutates a shallow copy-friendly object and returns it.
+ */
+function filterCaseDetailSectionsForRole<T extends CaseDetailSectionsPayload>(
+  role: string | null | undefined,
+  payload: T,
+): T {
+  const next = { ...payload };
+  if (!canViewCaseSection(role, "notes")) next.notes = [];
+  if (!canViewCaseSection(role, "documents")) {
+    next.documents = [];
+  } else {
+    // Hide full OCR text from roles that can see docs but shouldn't scrape content?
+    // Keep OCR for document viewers; strip storageKey is handled by signed URLs.
+    next.documents = payload.documents.map((d) => ({ ...d }));
+  }
+  if (!canViewCaseSection(role, "assignments")) next.assignments = [];
+  if (!canViewCaseSection(role, "deadlines")) next.deadlines = [];
+  if (!canViewCaseSection(role, "questionnaire")) next.questionnaires = [];
+  if (!canViewCaseSection(role, "inspections")) {
+    next.inspections = [];
+    next.measurements = [];
+  }
+  if (!canViewCaseSection(role, "evidence")) {
+    next.evidence = [];
+    next.evidenceChecklist = null;
+  }
+  if (!canViewCaseSection(role, "reviews")) next.reviewRequests = [];
+  if (!canViewCaseSection(role, "completeness"))
+    next.documentCompleteness = null;
+  if (!canViewCaseSection(role, "audit")) next.auditLogs = [];
+  if (!canViewCaseSection(role, "logistics")) {
+    next.trips = [];
+    next.expenses = [];
+  }
+  if (!canViewCaseSection(role, "reports")) next.technicalReports = [];
+  return next;
+}
+
+// ---- inlined from shared/processGates.ts ----
+/**
+ * Canonical 12-point electrical expert-witness process.
+ * Operational narrative: docs/Proceso_Peritaje_Electrico_12_Puntos.md
+ * Case statuses stay aligned with CASE_STATUS_FLOW (Product.md phases 1–12).
+ */
+
+const PROCESS_POINT_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
+
+type ProcessPointId = (typeof PROCESS_POINT_IDS)[number];
+
+type ProcessActor =
+  | "law_firm"
+  | "coordinator"
+  | "expert"
+  | "questionnaire_author"
+  | "qa"
+  | "legal_internal"
+  | "technical_director"
+  | "logistics"
+  | "accountant"
+  | "admin";
+
+type RaciLetter = "R" | "A" | "C" | "I";
+
+type ProcessSla = {
+  businessDays: number;
+  deadlineType:
+    | "questionnaire"
+    | "legal_review"
+    | "inspection"
+    | "external_legal_validation";
+  /** Starts when this event happens, not merely when the status is entered. */
+  startsOn: "status_enter" | "protesta_filed" | "report_sent_to_firm";
+  /** Nested inside another point's clock (P10 inside the 10-day P6 clock). */
+  nestedInside: ProcessPointId | null;
+};
+
+type ProcessPointDef = {
+  id: ProcessPointId;
+  caseStatus: CaseStatus;
+  slug: string;
+  sla: ProcessSla | null;
+  /** Must finish before this parent clock expires (no own SLA). */
+  boundedByPoint: ProcessPointId | null;
+  raci: Partial<Record<ProcessActor, RaciLetter>>;
+  requiredDocumentCategories: readonly string[];
+  conditionalDocumentCategories: readonly string[];
+  requiredEvidenceCategories: readonly string[];
+  rejectReturnsTo: ProcessPointId | null;
+  listadoFlags: readonly string[];
+};
+
+/** Example people → system actors (never hard-code in product logic). */
+const PROCESS_ACTOR_EXAMPLES: Record<ProcessActor, string> = {
+  law_firm: "Despacho jurídico externo",
+  coordinator: "Coordinación operativa (p. ej. Ulises Enrique León López)",
+  expert: "Perito asignado (responsable absoluto del expediente)",
+  questionnaire_author:
+    "Redacción de cuestionario (p. ej. Josué Noé Mendoza Luengas)",
+  qa: "Control de calidad gramatical / datos / fechas",
+  legal_internal: "Área legal interna",
+  technical_director: "Jefe de la Consultoría",
+  logistics: "Logística de diligencias",
+  accountant: "Contador (p. ej. Erick Flores Martínez)",
+  admin: "Administración de la plataforma",
+};
+
+const LISTADO_COLUMNS = [
+  "caseNumber",
+  "title",
+  "court",
+  "city",
+  "lawFirm",
+  "primaryExpert",
+  "processPoint",
+  "status",
+  "intakeComplete",
+  "questionnaireApproved",
+  "streetViewDone",
+  "advanceReleased",
+  "advancePaid",
+  "plaintiffQuestionnaire",
+  "protestaFiled",
+  "clock10DueAt",
+  "logisticsReady",
+  "inspectionComplete",
+  "reportInternalOk",
+  "reportFirmOk",
+  "ratified",
+  "attendedWithReport",
+  "finalReleased",
+  "finalPaid",
+] as const;
+
+type ListadoColumn = (typeof LISTADO_COLUMNS)[number];
+
+const PROCESS_POINTS: Record<ProcessPointId, ProcessPointDef> = {
+  1: {
+    id: 1,
+    caseStatus: "intake",
+    slug: "intake",
+    sla: null,
+    boundedByPoint: null,
+    raci: { law_firm: "R", coordinator: "A", admin: "I" },
+    requiredDocumentCategories: [...INTAKE_REQUIRED_CATEGORIES],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: null,
+    listadoFlags: ["intakeComplete"],
+  },
+  2: {
+    id: 2,
+    caseStatus: "assignment",
+    slug: "assignment",
+    sla: null,
+    boundedByPoint: null,
+    raci: { coordinator: "A", expert: "I", logistics: "I", accountant: "I" },
+    requiredDocumentCategories: [],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: null,
+    listadoFlags: ["primaryExpert"],
+  },
+  3: {
+    id: 3,
+    caseStatus: "questionnaire",
+    slug: "questionnaire",
+    sla: {
+      businessDays: 3,
+      deadlineType: "questionnaire",
+      startsOn: "status_enter",
+      nestedInside: null,
+    },
+    boundedByPoint: null,
+    raci: {
+      questionnaire_author: "R",
+      expert: "A",
+      qa: "C",
+      accountant: "I",
+    },
+    requiredDocumentCategories: ["questionnaire"],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: 3,
+    listadoFlags: [
+      "questionnaireApproved",
+      "streetViewDone",
+      "advanceReleased",
+    ],
+  },
+  4: {
+    id: 4,
+    caseStatus: "legal_review_questionnaire",
+    slug: "legal_review_questionnaire",
+    sla: {
+      businessDays: 2,
+      deadlineType: "legal_review",
+      startsOn: "status_enter",
+      nestedInside: null,
+    },
+    boundedByPoint: null,
+    raci: { legal_internal: "A", expert: "C", qa: "I", law_firm: "I" },
+    requiredDocumentCategories: ["questionnaire"],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: 3,
+    listadoFlags: ["questionnaireApproved"],
+  },
+  5: {
+    id: 5,
+    caseStatus: "additional_docs",
+    slug: "additional_docs",
+    sla: null,
+    boundedByPoint: null,
+    raci: { law_firm: "R", coordinator: "A", expert: "I" },
+    requiredDocumentCategories: ADDITIONAL_DOCS_CATEGORIES.filter(
+      (c) => c !== "death_certificate" && c !== "plaintiff_questionnaire",
+    ),
+    conditionalDocumentCategories: ["death_certificate"],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: null,
+    listadoFlags: ["plaintiffQuestionnaire"],
+  },
+  6: {
+    id: 6,
+    caseStatus: "court_acceptance",
+    slug: "court_acceptance",
+    sla: {
+      businessDays: 10,
+      deadlineType: "inspection",
+      startsOn: "protesta_filed",
+      nestedInside: null,
+    },
+    boundedByPoint: null,
+    raci: { expert: "A", coordinator: "C", legal_internal: "I" },
+    requiredDocumentCategories: ["protesta"],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: null,
+    listadoFlags: ["protestaFiled", "clock10DueAt", "plaintiffQuestionnaire"],
+  },
+  7: {
+    id: 7,
+    caseStatus: "logistics",
+    slug: "logistics",
+    sla: null,
+    boundedByPoint: 6,
+    raci: { logistics: "A", expert: "C", coordinator: "I", accountant: "I" },
+    requiredDocumentCategories: [],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: null,
+    listadoFlags: ["logisticsReady"],
+  },
+  8: {
+    id: 8,
+    caseStatus: "inspection",
+    slug: "inspection",
+    sla: null,
+    boundedByPoint: 6,
+    raci: { expert: "A", logistics: "C" },
+    requiredDocumentCategories: [],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [...EVIDENCE_CHECKLIST_CATEGORIES],
+    rejectReturnsTo: 8,
+    listadoFlags: ["inspectionComplete"],
+  },
+  9: {
+    id: 9,
+    caseStatus: "technical_report",
+    slug: "technical_report",
+    sla: null,
+    boundedByPoint: 6,
+    raci: {
+      expert: "R",
+      qa: "C",
+      technical_director: "A",
+      coordinator: "I",
+    },
+    requiredDocumentCategories: ["technical_report"],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: 9,
+    listadoFlags: ["reportInternalOk"],
+  },
+  10: {
+    id: 10,
+    caseStatus: "legal_validation",
+    slug: "legal_validation",
+    sla: {
+      businessDays: 3,
+      deadlineType: "external_legal_validation",
+      startsOn: "report_sent_to_firm",
+      nestedInside: 6,
+    },
+    boundedByPoint: 6,
+    raci: { law_firm: "A", expert: "C", technical_director: "I" },
+    requiredDocumentCategories: ["technical_report"],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: 9,
+    listadoFlags: ["reportFirmOk"],
+  },
+  11: {
+    id: 11,
+    caseStatus: "court_delivery",
+    slug: "court_delivery",
+    sla: null,
+    boundedByPoint: 6,
+    raci: { expert: "A", coordinator: "C", law_firm: "I" },
+    requiredDocumentCategories: ["court_filing", "ratification"],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: null,
+    listadoFlags: ["ratified", "attendedWithReport", "finalReleased"],
+  },
+  12: {
+    id: 12,
+    caseStatus: "accounting",
+    slug: "accounting",
+    sla: null,
+    boundedByPoint: null,
+    raci: { accountant: "A", coordinator: "I", admin: "I" },
+    requiredDocumentCategories: [],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: null,
+    listadoFlags: ["advancePaid", "finalPaid"],
+  },
+};
+
+const STATUS_TO_POINT = new Map<CaseStatus, ProcessPointId>(
+  PROCESS_POINT_IDS.map((id) => [PROCESS_POINTS[id].caseStatus, id]),
+);
+
+function processPointForStatus(status: CaseStatus): ProcessPointId | null {
+  return STATUS_TO_POINT.get(status) ?? null;
+}
+
+/**
+ * Forward advance along the 12-point flow evaluates gates on the *current* point.
+ * Hold, cancel, and resume from hold are not gated.
+ */
+function processPointToEnforceOnTransition(
+  from: CaseStatus,
+  to: CaseStatus,
+): ProcessPointId | null {
+  if (to === "on_hold" || to === "cancelled") return null;
+  if (from === "on_hold" || from === "cancelled" || from === "completed") {
+    return null;
+  }
+  const fromPoint = processPointForStatus(from);
+  if (!fromPoint) return null;
+  const idx = CASE_STATUS_FLOW.indexOf(from);
+  if (idx < 0 || idx >= CASE_STATUS_FLOW.length - 1) return null;
+  return to === CASE_STATUS_FLOW[idx + 1] ? fromPoint : null;
+}
+
+function questionnaireHasStreetView(contentJson: unknown): boolean {
+  if (!contentJson || typeof contentJson !== "object") return false;
+  const rec = contentJson as Record<string, unknown>;
+  const raw = rec.streetViewValidated ?? rec.streetView;
+  return typeof raw === "string" && raw.trim().length > 0;
+}
+
+function anyQuestionnaireHasStreetView(contents: readonly unknown[]): boolean {
+  return contents.some((c) => questionnaireHasStreetView(c));
+}
+
+type RankedArtifact = {
+  status: string;
+  createdAt?: string | number | Date | null;
+};
+
+function createdAtMs(value: RankedArtifact["createdAt"]): number {
+  if (value == null) return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const t = new Date(value).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Higher rank wins when several questionnaire rows exist. */
+const QUESTIONNAIRE_STATUS_RANK: Record<string, number> = {
+  approved: 5,
+  legal_review: 4,
+  submitted: 3,
+  changes_requested: 2,
+  draft: 1,
+  rejected: 0,
+};
+
+/** Leaving P3 requires the questionnaire to be in legal's hands (or already approved). */
+const QUESTIONNAIRE_READY_TO_LEAVE_P3 = new Set([
+  "submitted",
+  "legal_review",
+  "approved",
+]);
+
+const REPORT_STATUS_RANK: Record<string, number> = {
+  delivered: 8,
+  approved: 7,
+  external_review: 6,
+  approved_internal: 5,
+  technical_director: 4,
+  grammar_qa: 3,
+  changes_requested: 2,
+  draft: 1,
+  rejected: 0,
+};
+
+function pickBestByStatusRank<T extends { status: string }>(
+  rows: readonly T[],
+  rank: Record<string, number>,
+): T | null {
+  if (rows.length === 0) return null;
+  return rows.reduce((best, row) => {
+    const nextRank = rank[row.status] ?? -1;
+    const bestRank = rank[best.status] ?? -1;
+    return nextRank > bestRank ? row : best;
+  });
+}
+
+/**
+ * Strongest status wins, unless a newer row is a weaker revision
+ * (draft / changes_requested after an older approved).
+ */
+function pickCurrentProcessArtifact<T extends RankedArtifact>(
+  rows: readonly T[],
+  rank: Record<string, number>,
+): T | null {
+  if (rows.length === 0) return null;
+  const nonRejected = rows.filter((r) => r.status !== "rejected");
+  const pool = nonRejected.length > 0 ? nonRejected : [...rows];
+  const byRank = pickBestByStatusRank(pool, rank);
+  if (!byRank) return null;
+  const latest = pool.reduce((a, b) =>
+    createdAtMs(b.createdAt) > createdAtMs(a.createdAt) ? b : a,
+  );
+  if (
+    latest !== byRank &&
+    createdAtMs(latest.createdAt) > createdAtMs(byRank.createdAt) &&
+    (rank[latest.status] ?? -1) < (rank[byRank.status] ?? -1)
+  ) {
+    return latest;
+  }
+  return byRank;
+}
+
+const QUESTIONNAIRE_UPSERT_STATUSES = new Set([
+  "draft",
+  "changes_requested",
+  "submitted",
+]);
+
+function canUpsertQuestionnaire(status: string | null | undefined): boolean {
+  return Boolean(status && QUESTIONNAIRE_UPSERT_STATUSES.has(status));
+}
+
+function resolveQuestionnaireUpsert(opts: {
+  currentStatus: string | null | undefined;
+  submit: boolean;
+}):
+  | { ok: true; reuse: boolean; nextStatus: string }
+  | { ok: false; error: string } {
+  const current = opts.currentStatus ?? null;
+  if (!current) {
+    return {
+      ok: true,
+      reuse: false,
+      nextStatus: opts.submit ? "submitted" : "draft",
+    };
+  }
+  if (!canUpsertQuestionnaire(current)) {
+    return {
+      ok: false,
+      error:
+        current === "legal_review"
+          ? "Questionnaire is in legal review; request changes before editing"
+          : "Questionnaire cannot be edited in its current status",
+    };
+  }
+  if (!opts.submit || current === "submitted") {
+    return { ok: true, reuse: true, nextStatus: current };
+  }
+  if (current !== "draft" && current !== "changes_requested") {
+    return {
+      ok: false,
+      error: `Cannot move questionnaire from ${current} to submitted`,
+    };
+  }
+  return { ok: true, reuse: true, nextStatus: "submitted" };
+}
+
+function isActiveLogisticsTripStatus(
+  status: string | null | undefined,
+): boolean {
+  return Boolean(status && status !== "cancelled");
+}
+
+function shouldClearOtherPrimaryAssignments(
+  role: string,
+  isPrimary: boolean,
+): boolean {
+  return isPrimary && (role === "expert" || role === "coordinator");
+}
+
+/** Measurement types that also satisfy the P8 evidence checklist. */
+function mergeEvidenceCategories(
+  evidenceCategories: readonly string[],
+  measurementTypes: readonly string[] = [],
+): string[] {
+  const allowed = new Set<string>(EVIDENCE_CHECKLIST_CATEGORIES);
+  const set = new Set(evidenceCategories.filter((c) => allowed.has(c)));
+  for (const type of measurementTypes) {
+    if (allowed.has(type)) set.add(type);
+  }
+  return [...set];
+}
+
+const UNPAID_INVOICE_STATUSES = [
+  "issued",
+  "partially_paid",
+  "overdue",
+] as const;
+
+function hasBlockingUnpaidInvoices(
+  invoiceStatuses: readonly string[],
+): boolean {
+  return invoiceStatuses.some((s) =>
+    (UNPAID_INVOICE_STATUSES as readonly string[]).includes(s),
+  );
+}
+
+type FinanceInvoiceInput = {
+  status: string;
+  invoiceType?: string | null;
+};
+
+/** P12: unpaid issued invoices, plus draft advance/final that were never squared. */
+function isPendingFinanceInvoice(inv: FinanceInvoiceInput): boolean {
+  if (hasBlockingUnpaidInvoices([inv.status])) return true;
+  return (
+    (inv.invoiceType === "advance" || inv.invoiceType === "final") &&
+    inv.status === "draft"
+  );
+}
+
+function hasBlockingFinanceForCompletion(
+  invoices: readonly FinanceInvoiceInput[],
+): boolean {
+  return invoices.some((inv) => isPendingFinanceInvoice(inv));
+}
+
+type ListadoProgress = {
+  processPoint: ProcessPointId | null;
+  primaryExpert: boolean;
+  intakeComplete: boolean;
+  questionnaireApproved: boolean;
+  streetViewDone: boolean;
+  advanceReleased: boolean;
+  advancePaid: boolean;
+  plaintiffQuestionnaire: boolean;
+  protestaFiled: boolean;
+  clock10DueAt: string | null;
+  logisticsReady: boolean;
+  inspectionComplete: boolean;
+  reportInternalOk: boolean;
+  reportFirmOk: boolean;
+  ratified: boolean;
+  attendedWithReport: boolean;
+  finalReleased: boolean;
+  finalPaid: boolean;
+};
+
+type CaseProcessGateSnapshot = {
+  point: ProcessPointId | null;
+  ok: boolean;
+  missing: string[];
+};
+
+function buildProcessGateSnapshot(
+  status: CaseStatus,
+  input: ProcessGateInput,
+): CaseProcessGateSnapshot {
+  const point = processPointForStatus(status);
+  if (!point) return { point: null, ok: true, missing: [] };
+  const gates = evaluateProcessGates(point, input);
+  return { point, ok: gates.ok, missing: [...gates.missing] };
+}
+
+function buildListadoProgress(opts: {
+  status: CaseStatus;
+  inspectionDeadlineAt?: string | null;
+  input: ProcessGateInput;
+  invoices?: readonly FinanceInvoiceInput[];
+}): ListadoProgress {
+  const input = opts.input;
+  const invoices = opts.invoices ?? [];
+  const qApproved = input.questionnaireStatus === "approved";
+  const hasAdvance = invoices.some((i) => i.invoiceType === "advance");
+  const hasFinal = invoices.some((i) => i.invoiceType === "final");
+  const advancePaid = invoices.some(
+    (i) => i.invoiceType === "advance" && i.status === "paid",
+  );
+  const finalPaid = invoices.some(
+    (i) => i.invoiceType === "final" && i.status === "paid",
+  );
+  const intake = evaluateProcessGates(1, input).ok;
+  const reportInternal =
+    input.reportStatus === "approved_internal" ||
+    input.reportStatus === "external_review" ||
+    input.reportStatus === "approved" ||
+    input.reportStatus === "delivered";
+  const reportFirm =
+    input.reportStatus === "approved" || input.reportStatus === "delivered";
+  const ratified = Boolean(
+    input.ratificationPresent ||
+    input.documentCategories.includes("ratification"),
+  );
+  const filed = Boolean(
+    input.courtFilingPresent ||
+    input.documentCategories.includes("court_filing"),
+  );
+  return {
+    processPoint: processPointForStatus(opts.status),
+    primaryExpert: Boolean(input.hasPrimaryExpert),
+    intakeComplete: intake,
+    questionnaireApproved: qApproved,
+    streetViewDone: Boolean(input.hasStreetView),
+    advanceReleased: qApproved || hasAdvance,
+    advancePaid,
+    plaintiffQuestionnaire: Boolean(input.plaintiffQuestionnairePresent),
+    protestaFiled: Boolean(
+      input.protestaFiled || input.documentCategories.includes("protesta"),
+    ),
+    clock10DueAt: opts.inspectionDeadlineAt ?? null,
+    logisticsReady: input.logisticsReady === true,
+    inspectionComplete: input.inspectionComplete === true,
+    reportInternalOk: reportInternal,
+    reportFirmOk: reportFirm,
+    ratified,
+    attendedWithReport: ratified && filed,
+    finalReleased: ratified || hasFinal,
+    finalPaid,
+  };
+}
+
+function parseUpdateCaseFlags(
+  body: unknown,
+):
+  | { ok: true; value: { involvesFatality: boolean } }
+  | { ok: false; error: string } {
+  if (!body || typeof body !== "object") {
+    return { ok: false, error: "Invalid body" };
+  }
+  const rec = body as Record<string, unknown>;
+  if (typeof rec.involvesFatality !== "boolean") {
+    return { ok: false, error: "involvesFatality must be a boolean" };
+  }
+  return { ok: true, value: { involvesFatality: rec.involvesFatality } };
+}
+
+function accountableActor(point: ProcessPointId): ProcessActor | null {
+  const raci = PROCESS_POINTS[point].raci;
+  const found = (Object.entries(raci) as [ProcessActor, RaciLetter][]).find(
+    ([, letter]) => letter === "A",
+  );
+  return found ? found[0] : null;
+}
+
+type ProcessGateInput = {
+  documentCategories: readonly string[];
+  evidenceCategories?: readonly string[];
+  hasPrimaryExpert?: boolean;
+  questionnaireStatus?: string | null;
+  hasStreetView?: boolean;
+  hasPropertyGps?: boolean;
+  protestaFiled?: boolean;
+  plaintiffQuestionnairePresent?: boolean;
+  inspectionComplete?: boolean;
+  reportStatus?: string | null;
+  ratificationPresent?: boolean;
+  courtFilingPresent?: boolean;
+  involvesFatality?: boolean;
+  logisticsReady?: boolean;
+  hasUnpaidInvoices?: boolean;
+};
+
+type ProcessGateResult =
+  { ok: true; missing: [] } | { ok: false; missing: string[] };
+
+function hasCategory(present: readonly string[], category: string): boolean {
+  return present.includes(category);
+}
+
+/**
+ * Blocking gates to *leave* a process point (advance to the next status).
+ * Missing plaintiff questionnaire does not block protesta (P6) — it blocks
+ * inspection (P8) and the technical report (P9).
+ */
+function evaluateProcessGates(
+  point: ProcessPointId,
+  input: ProcessGateInput,
+): ProcessGateResult {
+  const def = PROCESS_POINTS[point];
+  const docs = input.documentCategories;
+  const missing: string[] = [];
+
+  for (const cat of def.requiredDocumentCategories) {
+    if (
+      cat === "questionnaire" &&
+      input.questionnaireStatus &&
+      input.questionnaireStatus !== "rejected"
+    ) {
+      continue;
+    }
+    if (
+      cat === "technical_report" &&
+      (input.reportStatus === "approved_internal" ||
+        input.reportStatus === "external_review" ||
+        input.reportStatus === "approved" ||
+        input.reportStatus === "delivered")
+    ) {
+      continue;
+    }
+    if (!hasCategory(docs, cat)) missing.push(`doc:${cat}`);
+  }
+  if (input.involvesFatality) {
+    for (const cat of def.conditionalDocumentCategories) {
+      if (!hasCategory(docs, cat)) missing.push(`doc:${cat}`);
+    }
+  }
+
+  if (point === 1) {
+    const intakeMissing = INTAKE_REQUIRED_CATEGORIES.filter(
+      (c) => !hasCategory(docs, c),
+    );
+    for (const cat of intakeMissing) {
+      const key = `doc:${cat}`;
+      if (!missing.includes(key)) missing.push(key);
+    }
+  }
+
+  if (point === 2 && !input.hasPrimaryExpert) {
+    missing.push("assignment:primary_expert");
+  }
+
+  if (point === 3) {
+    if (!input.hasPropertyGps) missing.push("location:gps");
+    if (!input.hasStreetView) missing.push("location:street_view");
+    if (!QUESTIONNAIRE_READY_TO_LEAVE_P3.has(input.questionnaireStatus ?? "")) {
+      missing.push("questionnaire:ready");
+    }
+  }
+
+  if (point === 4 && input.questionnaireStatus !== "approved") {
+    missing.push("questionnaire:legal_approved");
+  }
+
+  if (point === 6 && !input.protestaFiled && !hasCategory(docs, "protesta")) {
+    missing.push("doc:protesta");
+  }
+
+  if ((point === 8 || point === 9) && !input.plaintiffQuestionnairePresent) {
+    missing.push("doc:plaintiff_questionnaire");
+  }
+
+  if (point === 7 && input.logisticsReady !== true) {
+    missing.push("logistics:ready");
+  }
+
+  if (point === 8) {
+    const evidence = input.evidenceCategories || [];
+    for (const cat of def.requiredEvidenceCategories) {
+      if (!evidence.includes(cat)) missing.push(`evidence:${cat}`);
+    }
+    if (input.inspectionComplete !== true) {
+      missing.push("inspection:complete");
+    }
+  }
+
+  if (point === 9) {
+    const ok =
+      input.reportStatus === "approved_internal" ||
+      input.reportStatus === "external_review" ||
+      input.reportStatus === "approved" ||
+      input.reportStatus === "delivered";
+    if (!ok) missing.push("report:internal_approved");
+  }
+
+  if (point === 10) {
+    const ok =
+      input.reportStatus === "approved" || input.reportStatus === "delivered";
+    if (!ok) missing.push("report:firm_approved");
+  }
+
+  if (point === 11) {
+    if (!input.courtFilingPresent && !hasCategory(docs, "court_filing")) {
+      missing.push("doc:court_filing");
+    }
+    if (!input.ratificationPresent && !hasCategory(docs, "ratification")) {
+      missing.push("doc:ratification");
+    }
+  }
+
+  if (point === 12 && input.hasUnpaidInvoices) {
+    missing.push("finance:unpaid_invoices");
+  }
+
+  return missing.length === 0
+    ? { ok: true, missing: [] }
+    : { ok: false, missing };
+}
+
+function rejectReturnsTo(point: ProcessPointId): ProcessPointId | null {
+  return PROCESS_POINTS[point].rejectReturnsTo;
+}
+
+function pointsInsideParentClock(parent: ProcessPointId): ProcessPointId[] {
+  return PROCESS_POINT_IDS.filter(
+    (id) =>
+      PROCESS_POINTS[id].boundedByPoint === parent ||
+      PROCESS_POINTS[id].sla?.nestedInside === parent,
+  );
+}
+
+/** Assignment roles that must exist after P2 (primary expert is required). */
+const REQUIRED_ASSIGNMENT_ROLES_AFTER_P2: AssignmentRole[] = ["expert"];
+
+const RECOMMENDED_ASSIGNMENT_ROLES_AFTER_P2: AssignmentRole[] = [
+  "coordinator",
+  "qa",
+  "legal_reviewer",
+  "logistics",
+  "accountant",
+];
+
+/** Status flow 1–12 matches process points; completed is after P12. */
+function assertProcessAlignsWithCaseFlow(): {
+  ok: true;
+  statuses: CaseStatus[];
+} {
+  const statuses = PROCESS_POINT_IDS.map((id) => PROCESS_POINTS[id].caseStatus);
+  const expected = CASE_STATUS_FLOW.filter((s) => s !== "completed");
+  if (statuses.join("|") !== expected.join("|")) {
+    throw new Error(
+      `Process points drifted from CASE_STATUS_FLOW: ${statuses.join(",")} vs ${expected.join(",")}`,
+    );
+  }
+  return { ok: true, statuses };
+}
+
+// ---- inlined from lib/emails.ts ----
+/**
+ * DELACHE transactional email templates.
+ * Strategy mirrors athlete-hub (shared shell + i18n strings + builders)
+ * and optimum-credit (table layout, preheader, CTA button).
+ */
+
+const EMAIL_BRAND = {
+  bg: "#eef2f8",
+  surface: "#ffffff",
+  header: "#0b1b33",
+  primary: "#0b4ea2",
+  accent: "#2979ff",
+  text: "#0e1b31",
+  muted: "#475569",
+  dim: "#64748b",
+  border: "#dbe3f0",
+  codeBg: "#f1f5f9",
+  success: "#15803d",
+  successBg: "#f0fdf4",
+  warn: "#b45309",
+  warnBg: "#fffbeb",
+  fontFamily:
+    "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+} as const;
+
+type EmailPayload = {
+  subject: string;
+  html: string;
+  text: string;
+};
+
+type EmailTemplateKind =
+  | "otp"
+  | "inviteStaff"
+  | "inviteClient"
+  | "assignment"
+  | "caseStatus"
+  | "reportDelivered"
+  | "newCaseIntake";
+
+type EmailStrings = {
+  subjects: Record<EmailTemplateKind, string>;
+  footer: {
+    tagline: string;
+    help: string;
+    copyright: string;
+  };
+  otp: {
+    preheader: string;
+    title: string;
+    greeting: string;
+    introStaff: string;
+    introClient: string;
+    expiry: string;
+    security: string;
+  };
+  inviteStaff: {
+    preheader: string;
+    title: string;
+    greeting: string;
+    intro: string;
+    roleLabel: string;
+    steps: [string, string, string];
+    cta: string;
+  };
+  inviteClient: {
+    preheader: string;
+    title: string;
+    greeting: string;
+    intro: string;
+    firmLabel: string;
+    steps: [string, string, string];
+    cta: string;
+  };
+  assignment: {
+    preheader: string;
+    title: string;
+    greeting: string;
+    intro: string;
+    caseLabel: string;
+    roleLabel: string;
+    cta: string;
+  };
+  caseStatus: {
+    preheader: string;
+    title: string;
+    greeting: string;
+    intro: string;
+    caseLabel: string;
+    fromLabel: string;
+    toLabel: string;
+    cta: string;
+  };
+  reportDelivered: {
+    preheader: string;
+    title: string;
+    greeting: string;
+    intro: string;
+    caseLabel: string;
+    cta: string;
+  };
+  newCaseIntake: {
+    preheader: string;
+    title: string;
+    greeting: string;
+    intro: string;
+    caseLabel: string;
+    titleLabel: string;
+    cta: string;
+  };
+};
+
+const EMAIL_STRINGS_ES: EmailStrings = {
+  subjects: {
+    otp: "{{code}} es tu código de acceso DELACHE",
+    inviteStaff: "Te invitaron al portal DELACHE",
+    inviteClient: "Acceso al portal de despachos DELACHE",
+    assignment: "Nueva asignación · {{caseNumber}}",
+    caseStatus: "Actualización de expediente · {{caseNumber}}",
+    reportDelivered: "Dictamen disponible · {{caseNumber}}",
+    newCaseIntake: "Nuevo expediente · {{caseNumber}}",
+  },
+  footer: {
+    tagline: "Precisión pericial, trazabilidad total.",
+    help: "¿Necesitas ayuda? Responde este correo o escribe a tu contacto DELACHE.",
+    copyright: "© {{year}} DELACHE. Todos los derechos reservados.",
+  },
+  otp: {
+    preheader: "Tu código expira en {{minutes}} minutos",
+    title: "Código de acceso",
+    greeting: "Hola {{name}},",
+    introStaff: "Usa este código para entrar al portal interno DELACHE:",
+    introClient: "Usa este código para entrar al portal de despachos DELACHE:",
+    expiry: "Expira en {{minutes}} minutos. No lo compartas con nadie.",
+    security:
+      "Si no solicitaste este código, ignora este correo de forma segura.",
+  },
+  inviteStaff: {
+    preheader: "Tu acceso al centro de operaciones está listo",
+    title: "Bienvenido al equipo DELACHE",
+    greeting: "Hola {{name}},",
+    intro:
+      "Te invitaron a colaborar en el centro de operaciones DELACHE. Inicia sesión con tu correo — sin contraseña, solo un código de un solo uso.",
+    roleLabel: "Rol",
+    steps: [
+      "Abre el portal interno",
+      "Ingresa con tu correo institucional",
+      "Confirma el código que te enviaremos",
+    ],
+    cta: "Abrir portal interno",
+  },
+  inviteClient: {
+    preheader: "Tu despacho ya puede dar seguimiento a expedientes",
+    title: "Acceso al portal de despachos",
+    greeting: "Hola {{name}},",
+    intro:
+      "DELACHE te habilitó acceso externo para consultar expedientes, notas compartidas y dictámenes. Entra con tu correo — te enviaremos un código de un solo uso.",
+    firmLabel: "Despacho",
+    steps: [
+      "Abre el portal de despachos",
+      "Ingresa con el correo de esta invitación",
+      "Confirma el código OTP",
+    ],
+    cta: "Abrir portal de despachos",
+  },
+  assignment: {
+    preheader: "Te asignaron un expediente",
+    title: "Nueva asignación",
+    greeting: "Hola {{name}},",
+    intro:
+      "Te asignaron al expediente siguiente. Entra al portal para revisar el detalle.",
+    caseLabel: "Expediente",
+    roleLabel: "Asignación",
+    cta: "Ver expediente",
+  },
+  caseStatus: {
+    preheader: "El expediente cambió de etapa",
+    title: "Actualización de expediente",
+    greeting: "Hola {{name}},",
+    intro: "El estatus del expediente se actualizó.",
+    caseLabel: "Expediente",
+    fromLabel: "Anterior",
+    toLabel: "Nuevo",
+    cta: "Ver expediente",
+  },
+  reportDelivered: {
+    preheader: "Hay un dictamen listo para revisar",
+    title: "Dictamen disponible",
+    greeting: "Hola {{name}},",
+    intro:
+      "DELACHE entregó un dictamen técnico en tu expediente. Puedes consultarlo en el portal de despachos.",
+    caseLabel: "Expediente",
+    cta: "Ver dictamen",
+  },
+  newCaseIntake: {
+    preheader: "Un despacho envió un expediente nuevo",
+    title: "Nuevo expediente recibido",
+    greeting: "Hola {{name}},",
+    intro: "Un despacho envió un expediente nuevo al intake.",
+    caseLabel: "Expediente",
+    titleLabel: "Título",
+    cta: "Abrir expediente",
+  },
+};
+
+const EMAIL_STRINGS_EN: EmailStrings = {
+  subjects: {
+    otp: "{{code}} is your DELACHE access code",
+    inviteStaff: "You're invited to the DELACHE portal",
+    inviteClient: "DELACHE law firm portal access",
+    assignment: "New assignment · {{caseNumber}}",
+    caseStatus: "Case update · {{caseNumber}}",
+    reportDelivered: "Report available · {{caseNumber}}",
+    newCaseIntake: "New case · {{caseNumber}}",
+  },
+  footer: {
+    tagline: "Expert precision, full traceability.",
+    help: "Need help? Reply to this email or contact your DELACHE liaison.",
+    copyright: "© {{year}} DELACHE. All rights reserved.",
+  },
+  otp: {
+    preheader: "Your code expires in {{minutes}} minutes",
+    title: "Access code",
+    greeting: "Hi {{name}},",
+    introStaff: "Use this code to sign in to the DELACHE internal portal:",
+    introClient: "Use this code to sign in to the DELACHE law firm portal:",
+    expiry: "Expires in {{minutes}} minutes. Do not share it with anyone.",
+    security:
+      "If you did not request this code, you can safely ignore this email.",
+  },
+  inviteStaff: {
+    preheader: "Your operations center access is ready",
+    title: "Welcome to the DELACHE team",
+    greeting: "Hi {{name}},",
+    intro:
+      "You've been invited to collaborate in the DELACHE operations center. Sign in with your email — no password, just a one-time code.",
+    roleLabel: "Role",
+    steps: [
+      "Open the internal portal",
+      "Sign in with your work email",
+      "Confirm the code we send you",
+    ],
+    cta: "Open internal portal",
+  },
+  inviteClient: {
+    preheader: "Your firm can now track cases",
+    title: "Law firm portal access",
+    greeting: "Hi {{name}},",
+    intro:
+      "DELACHE enabled external access so you can review cases, shared notes, and reports. Sign in with your email — we'll send a one-time code.",
+    firmLabel: "Firm",
+    steps: [
+      "Open the law firm portal",
+      "Sign in with this invitation email",
+      "Confirm the OTP code",
+    ],
+    cta: "Open law firm portal",
+  },
+  assignment: {
+    preheader: "You were assigned to a case",
+    title: "New assignment",
+    greeting: "Hi {{name}},",
+    intro:
+      "You were assigned to the following case. Open the portal to review details.",
+    caseLabel: "Case",
+    roleLabel: "Assignment",
+    cta: "View case",
+  },
+  caseStatus: {
+    preheader: "A case moved to a new stage",
+    title: "Case update",
+    greeting: "Hi {{name}},",
+    intro: "The case status was updated.",
+    caseLabel: "Case",
+    fromLabel: "Previous",
+    toLabel: "New",
+    cta: "View case",
+  },
+  reportDelivered: {
+    preheader: "A technical report is ready to review",
+    title: "Report available",
+    greeting: "Hi {{name}},",
+    intro:
+      "DELACHE delivered a technical report on your case. You can review it in the law firm portal.",
+    caseLabel: "Case",
+    cta: "View report",
+  },
+  newCaseIntake: {
+    preheader: "A law firm submitted a new case",
+    title: "New case received",
+    greeting: "Hi {{name}},",
+    intro: "A law firm submitted a new case into intake.",
+    caseLabel: "Case",
+    titleLabel: "Title",
+    cta: "Open case",
+  },
+};
+
+const EMAIL_STRINGS: Record<AppLocale, EmailStrings> = {
+  es: EMAIL_STRINGS_ES,
+  en: EMAIL_STRINGS_EN,
+};
+
+function emailStrings(locale: AppLocale): EmailStrings {
+  return EMAIL_STRINGS[locale] ?? EMAIL_STRINGS.es;
+}
+
+function interpolateEmail(
+  template: string,
+  vars: Record<string, string | number>,
+): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) =>
+    String(vars[key] ?? ""),
+  );
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function brandMarkHtml(): string {
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0">
+  <tr>
+    <td width="36" height="36" align="center" valign="middle" bgcolor="${EMAIL_BRAND.accent}" style="width:36px;height:36px;border-radius:10px;background:${EMAIL_BRAND.accent};">
+      <span style="display:inline-block;width:12px;height:12px;border:2.5px solid #fff;transform:rotate(45deg);"></span>
+    </td>
+    <td style="padding-left:12px;font-size:18px;font-weight:800;letter-spacing:0.18em;color:#fff;font-family:${EMAIL_BRAND.fontFamily};">DELACHE</td>
+  </tr>
+</table>`;
+}
+
+function emailButton(url: string, label: string): string {
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0 8px;">
+  <tr>
+    <td align="center" bgcolor="${EMAIL_BRAND.accent}" style="border-radius:12px;background:linear-gradient(135deg,${EMAIL_BRAND.accent} 0%,${EMAIL_BRAND.primary} 100%);">
+      <a href="${escapeHtml(url)}" target="_blank" style="display:inline-block;padding:14px 28px;color:#ffffff;font-weight:700;font-size:15px;text-decoration:none;border-radius:12px;font-family:${EMAIL_BRAND.fontFamily};">${escapeHtml(label)}</a>
+    </td>
+  </tr>
+</table>`;
+}
+
+function otpCodeBlock(code: string): string {
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+  <tr>
+    <td align="center" style="padding:8px 0 4px;">
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" bgcolor="${EMAIL_BRAND.codeBg}" style="border:2px solid ${EMAIL_BRAND.primary};border-radius:14px;background:${EMAIL_BRAND.codeBg};">
+        <tr>
+          <td align="center" style="padding:20px 32px;font-size:34px;font-weight:800;font-family:ui-monospace,'SF Mono',Consolas,monospace;color:${EMAIL_BRAND.primary};letter-spacing:0.14em;line-height:1.2;">${escapeHtml(code)}</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>`;
+}
+
+function highlightBanner(
+  text: string,
+  tone: "accent" | "warn" | "success" | "info" = "accent",
+): string {
+  const colors =
+    tone === "warn"
+      ? {
+          bg: EMAIL_BRAND.warnBg,
+          border: EMAIL_BRAND.warn,
+          fg: EMAIL_BRAND.warn,
+        }
+      : tone === "success"
+        ? {
+            bg: EMAIL_BRAND.successBg,
+            border: EMAIL_BRAND.success,
+            fg: EMAIL_BRAND.success,
+          }
+        : tone === "info"
+          ? {
+              bg: EMAIL_BRAND.codeBg,
+              border: EMAIL_BRAND.primary,
+              fg: EMAIL_BRAND.primary,
+            }
+          : {
+              bg: "#eef5ff",
+              border: EMAIL_BRAND.accent,
+              fg: EMAIL_BRAND.primary,
+            };
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 18px;">
+  <tr>
+    <td style="padding:14px 16px;background:${colors.bg};border-radius:12px;border-left:4px solid ${colors.border};font-size:13px;font-weight:700;color:${colors.fg};line-height:1.5;">${escapeHtml(text)}</td>
+  </tr>
+</table>`;
+}
+
+function stepsList(steps: string[]): string {
+  const rows = steps
+    .map(
+      (step, i) => `<tr>
+      <td width="28" valign="top" style="padding:6px 0;font-size:13px;font-weight:800;color:${EMAIL_BRAND.accent};">${i + 1}.</td>
+      <td valign="top" style="padding:6px 0;font-size:14px;color:${EMAIL_BRAND.muted};line-height:1.5;">${escapeHtml(step)}</td>
+    </tr>`,
+    )
+    .join("");
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:16px 0 8px;">${rows}</table>`;
+}
+
+function metaCard(rows: Array<{ label: string; value: string }>): string {
+  const body = rows
+    .map(
+      (r, i) => `<tr>
+      <td style="padding:10px 0;${i < rows.length - 1 ? `border-bottom:1px solid ${EMAIL_BRAND.border};` : ""}">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${EMAIL_BRAND.dim};">${escapeHtml(r.label)}</div>
+        <div style="margin-top:4px;font-size:15px;font-weight:700;color:${EMAIL_BRAND.text};">${escapeHtml(r.value)}</div>
+      </td>
+    </tr>`,
+    )
+    .join("");
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:18px 0;padding:4px 16px;background:${EMAIL_BRAND.codeBg};border-radius:12px;border:1px solid ${EMAIL_BRAND.border};">
+    <tr><td style="padding:8px 16px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">${body}</table>
+    </td></tr>
+  </table>`;
+}
+
+interface BaseEmailOptions {
+  locale: AppLocale;
+  preheader: string;
+  title: string;
+  bodyHtml: string;
+  cta?: { label: string; url: string };
+  appUrl: string;
+}
+
+function emailShell(opts: BaseEmailOptions): string {
+  const { locale, preheader, title, bodyHtml, cta, appUrl } = opts;
+  const s = emailStrings(locale);
+  const year = new Date().getFullYear();
+  const ctaBlock = cta
+    ? `<tr><td align="center" style="padding:0 32px 8px;">${emailButton(cta.url, cta.label)}</td></tr>`
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="${locale === "es" ? "es-MX" : "en"}">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="color-scheme" content="light"/>
+  <meta name="supported-color-schemes" content="light"/>
+  <title>${escapeHtml(title)}</title>
+  <!--[if mso]><style>table{border-collapse:collapse;}td{font-family:Arial,sans-serif;}</style><![endif]-->
+  <style type="text/css">
+    body, table, td { margin: 0; padding: 0; }
+    table { border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    @media only screen and (max-width: 620px) {
+      .email-container { width: 100% !important; max-width: 100% !important; }
+      .email-content, .email-header, .email-footer { padding-left: 20px !important; padding-right: 20px !important; }
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:${EMAIL_BRAND.bg};font-family:${EMAIL_BRAND.fontFamily};-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;color:${EMAIL_BRAND.text};">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}&#847;&zwnj;&nbsp;</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="${EMAIL_BRAND.bg}">
+    <tr>
+      <td align="center" valign="top" style="padding:36px 16px;">
+        <table role="presentation" class="email-container" width="560" cellspacing="0" cellpadding="0" border="0" bgcolor="${EMAIL_BRAND.surface}" style="width:560px;max-width:560px;border-radius:16px;border:1px solid ${EMAIL_BRAND.border};overflow:hidden;box-shadow:0 10px 30px rgba(11,30,61,0.06);">
+          <tr>
+            <td class="email-header" bgcolor="${EMAIL_BRAND.header}" style="padding:28px 32px 22px;background:${EMAIL_BRAND.header};border-bottom:3px solid ${EMAIL_BRAND.accent};">
+              ${brandMarkHtml()}
+              <h1 style="margin:18px 0 0;font-size:24px;font-weight:800;color:#ffffff;line-height:1.3;">${escapeHtml(title)}</h1>
+            </td>
+          </tr>
+          <tr>
+            <td class="email-content" style="padding:28px 32px;font-size:16px;line-height:1.65;color:${EMAIL_BRAND.text};">
+              ${bodyHtml}
+            </td>
+          </tr>
+          ${ctaBlock}
+          <tr>
+            <td class="email-footer" style="padding:22px 32px 28px;border-top:1px solid ${EMAIL_BRAND.border};background:#f8fafc;">
+              <p style="margin:0 0 8px;font-size:13px;color:${EMAIL_BRAND.primary};font-weight:700;">${escapeHtml(s.footer.tagline)}</p>
+              <p style="margin:0 0 14px;font-size:12px;color:${EMAIL_BRAND.dim};line-height:1.5;">${escapeHtml(s.footer.help)}</p>
+              <p style="margin:0;font-size:11px;color:${EMAIL_BRAND.muted};">${escapeHtml(interpolateEmail(s.footer.copyright, { year }))}</p>
+              <p style="margin:10px 0 0;font-size:11px;"><a href="${escapeHtml(appUrl)}" style="color:${EMAIL_BRAND.accent};text-decoration:none;">${escapeHtml(appUrl.replace(/^https?:\/\//, ""))}</a></p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+function buildOtpEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  code: string;
+  portal: AuthActor;
+  minutes?: number;
+  appUrl: string;
+}): EmailPayload {
+  const minutes = opts.minutes ?? 10;
+  const s = emailStrings(opts.locale);
+  const intro =
+    opts.portal === "law_firm" ? s.otp.introClient : s.otp.introStaff;
+  const bodyHtml = `
+    <p style="margin:0 0 12px;font-size:17px;color:${EMAIL_BRAND.text};">${escapeHtml(interpolateEmail(s.otp.greeting, { name: opts.firstName }))}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(intro)}</p>
+    ${otpCodeBlock(opts.code)}
+    <p style="margin:16px 0 0;text-align:center;font-size:13px;color:${EMAIL_BRAND.dim};">${escapeHtml(interpolateEmail(s.otp.expiry, { minutes }))}</p>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:22px;">
+      <tr>
+        <td style="padding:14px 16px;background:${EMAIL_BRAND.warnBg};border-radius:10px;border-left:3px solid ${EMAIL_BRAND.warn};font-size:13px;color:${EMAIL_BRAND.muted};line-height:1.5;">${escapeHtml(s.otp.security)}</td>
+      </tr>
+    </table>`;
+
+  return {
+    subject: interpolateEmail(s.subjects.otp, { code: opts.code }),
+    html: emailShell({
+      locale: opts.locale,
+      preheader: interpolateEmail(s.otp.preheader, { minutes }),
+      title: s.otp.title,
+      bodyHtml,
+      appUrl: opts.appUrl,
+    }),
+    text: `${interpolateEmail(s.otp.greeting, { name: opts.firstName })}\n\n${intro}\n\n${opts.code}\n\n${interpolateEmail(s.otp.expiry, { minutes })}\n\n${opts.appUrl}`,
+  };
+}
+
+function buildInviteStaffEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  roleLabel: string;
+  appUrl: string;
+  resend?: boolean;
+}): EmailPayload {
+  const s = emailStrings(opts.locale);
+  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/portal/login`;
+  const banner =
+    opts.locale === "es"
+      ? opts.resend
+        ? "Reenviamos tu invitación — el acceso sigue activo."
+        : "Sin contraseña · Código de un solo uso · Portal seguro"
+      : opts.resend
+        ? "We resent your invitation — access is still active."
+        : "Passwordless · One-time code · Secure portal";
+  const bodyHtml = `
+    ${highlightBanner(banner, "accent")}
+    <p style="margin:0 0 12px;font-size:17px;font-weight:600;">${escapeHtml(interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName }))}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.inviteStaff.intro)}</p>
+    ${metaCard([{ label: s.inviteStaff.roleLabel, value: opts.roleLabel }])}
+    ${stepsList([...s.inviteStaff.steps])}`;
+
+  return {
+    subject: opts.resend
+      ? opts.locale === "es"
+        ? "Recordatorio: tu invitación DELACHE"
+        : "Reminder: your DELACHE invitation"
+      : s.subjects.inviteStaff,
+    html: emailShell({
+      locale: opts.locale,
+      preheader: s.inviteStaff.preheader,
+      title: s.inviteStaff.title,
+      bodyHtml,
+      cta: { label: s.inviteStaff.cta, url: loginUrl },
+      appUrl: opts.appUrl,
+    }),
+    text: `${interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName })}\n\n${s.inviteStaff.intro}\n\n${s.inviteStaff.roleLabel}: ${opts.roleLabel}\n\n${loginUrl}`,
+  };
+}
+
+function buildInviteClientEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  firmName?: string | null;
+  appUrl: string;
+  resend?: boolean;
+}): EmailPayload {
+  const s = emailStrings(opts.locale);
+  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/client/login`;
+  const banner =
+    opts.locale === "es"
+      ? opts.resend
+        ? "Reenviamos tu acceso al portal de despachos."
+        : "Seguimiento de expedientes · Notas compartidas · Dictámenes"
+      : opts.resend
+        ? "We resent your law firm portal access."
+        : "Case tracking · Shared notes · Technical reports";
+  const meta = opts.firmName
+    ? metaCard([{ label: s.inviteClient.firmLabel, value: opts.firmName }])
+    : "";
+  const bodyHtml = `
+    ${highlightBanner(banner, "accent")}
+    <p style="margin:0 0 12px;font-size:17px;font-weight:600;">${escapeHtml(interpolateEmail(s.inviteClient.greeting, { name: opts.firstName }))}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.inviteClient.intro)}</p>
+    ${meta}
+    ${stepsList([...s.inviteClient.steps])}`;
+
+  return {
+    subject: opts.resend
+      ? opts.locale === "es"
+        ? "Recordatorio: acceso al portal DELACHE"
+        : "Reminder: your DELACHE portal access"
+      : s.subjects.inviteClient,
+    html: emailShell({
+      locale: opts.locale,
+      preheader: s.inviteClient.preheader,
+      title: s.inviteClient.title,
+      bodyHtml,
+      cta: { label: s.inviteClient.cta, url: loginUrl },
+      appUrl: opts.appUrl,
+    }),
+    text: `${interpolateEmail(s.inviteClient.greeting, { name: opts.firstName })}\n\n${s.inviteClient.intro}\n\n${loginUrl}`,
+  };
+}
+
+function buildAssignmentEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  caseNumber: string;
+  caseTitle: string;
+  roleLabel: string;
+  caseUrl: string;
+  appUrl: string;
+}): EmailPayload {
+  const s = emailStrings(opts.locale);
+  const bodyHtml = `
+    <p style="margin:0 0 12px;font-size:17px;">${escapeHtml(interpolateEmail(s.assignment.greeting, { name: opts.firstName }))}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.assignment.intro)}</p>
+    ${metaCard([
+      {
+        label: s.assignment.caseLabel,
+        value: `${opts.caseNumber} — ${opts.caseTitle}`,
+      },
+      { label: s.assignment.roleLabel, value: opts.roleLabel },
+    ])}`;
+
+  return {
+    subject: interpolateEmail(s.subjects.assignment, {
+      caseNumber: opts.caseNumber,
+    }),
+    html: emailShell({
+      locale: opts.locale,
+      preheader: s.assignment.preheader,
+      title: s.assignment.title,
+      bodyHtml,
+      cta: { label: s.assignment.cta, url: opts.caseUrl },
+      appUrl: opts.appUrl,
+    }),
+    text: `${interpolateEmail(s.assignment.greeting, { name: opts.firstName })}\n\n${s.assignment.intro}\n\n${opts.caseNumber} — ${opts.caseTitle}\n${opts.roleLabel}\n\n${opts.caseUrl}`,
+  };
+}
+
+function buildCaseStatusEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  caseNumber: string;
+  caseTitle: string;
+  fromStatus: string;
+  toStatus: string;
+  caseUrl: string;
+  appUrl: string;
+}): EmailPayload {
+  const s = emailStrings(opts.locale);
+  const bodyHtml = `
+    <p style="margin:0 0 12px;font-size:17px;">${escapeHtml(interpolateEmail(s.caseStatus.greeting, { name: opts.firstName }))}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.caseStatus.intro)}</p>
+    ${metaCard([
+      {
+        label: s.caseStatus.caseLabel,
+        value: `${opts.caseNumber} — ${opts.caseTitle}`,
+      },
+      { label: s.caseStatus.fromLabel, value: opts.fromStatus },
+      { label: s.caseStatus.toLabel, value: opts.toStatus },
+    ])}`;
+
+  return {
+    subject: interpolateEmail(s.subjects.caseStatus, {
+      caseNumber: opts.caseNumber,
+    }),
+    html: emailShell({
+      locale: opts.locale,
+      preheader: s.caseStatus.preheader,
+      title: s.caseStatus.title,
+      bodyHtml,
+      cta: { label: s.caseStatus.cta, url: opts.caseUrl },
+      appUrl: opts.appUrl,
+    }),
+    text: `${interpolateEmail(s.caseStatus.greeting, { name: opts.firstName })}\n\n${s.caseStatus.intro}\n\n${opts.caseNumber}\n${opts.fromStatus} → ${opts.toStatus}\n\n${opts.caseUrl}`,
+  };
+}
+
+function buildReportDeliveredEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  caseNumber: string;
+  caseTitle: string;
+  caseUrl: string;
+  appUrl: string;
+}): EmailPayload {
+  const s = emailStrings(opts.locale);
+  const bodyHtml = `
+    <p style="margin:0 0 12px;font-size:17px;">${escapeHtml(interpolateEmail(s.reportDelivered.greeting, { name: opts.firstName }))}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.reportDelivered.intro)}</p>
+    ${metaCard([
+      {
+        label: s.reportDelivered.caseLabel,
+        value: `${opts.caseNumber} — ${opts.caseTitle}`,
+      },
+    ])}
+    <div style="margin:16px 0 0;padding:14px 16px;background:${EMAIL_BRAND.successBg};border-radius:10px;border-left:3px solid ${EMAIL_BRAND.success};font-size:13px;color:${EMAIL_BRAND.success};font-weight:600;">
+      ${opts.locale === "es" ? "Listo para revisar en el portal." : "Ready to review in the portal."}
+    </div>`;
+
+  return {
+    subject: interpolateEmail(s.subjects.reportDelivered, {
+      caseNumber: opts.caseNumber,
+    }),
+    html: emailShell({
+      locale: opts.locale,
+      preheader: s.reportDelivered.preheader,
+      title: s.reportDelivered.title,
+      bodyHtml,
+      cta: { label: s.reportDelivered.cta, url: opts.caseUrl },
+      appUrl: opts.appUrl,
+    }),
+    text: `${interpolateEmail(s.reportDelivered.greeting, { name: opts.firstName })}\n\n${s.reportDelivered.intro}\n\n${opts.caseNumber} — ${opts.caseTitle}\n\n${opts.caseUrl}`,
+  };
+}
+
+function buildNewCaseIntakeEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  caseNumber: string;
+  caseTitle: string;
+  caseUrl: string;
+  appUrl: string;
+}): EmailPayload {
+  const s = emailStrings(opts.locale);
+  const bodyHtml = `
+    <p style="margin:0 0 12px;font-size:17px;">${escapeHtml(interpolateEmail(s.newCaseIntake.greeting, { name: opts.firstName }))}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.newCaseIntake.intro)}</p>
+    ${metaCard([
+      { label: s.newCaseIntake.caseLabel, value: opts.caseNumber },
+      { label: s.newCaseIntake.titleLabel, value: opts.caseTitle },
+    ])}`;
+
+  return {
+    subject: interpolateEmail(s.subjects.newCaseIntake, {
+      caseNumber: opts.caseNumber,
+    }),
+    html: emailShell({
+      locale: opts.locale,
+      preheader: s.newCaseIntake.preheader,
+      title: s.newCaseIntake.title,
+      bodyHtml,
+      cta: { label: s.newCaseIntake.cta, url: opts.caseUrl },
+      appUrl: opts.appUrl,
+    }),
+    text: `${interpolateEmail(s.newCaseIntake.greeting, { name: opts.firstName })}\n\n${s.newCaseIntake.intro}\n\n${opts.caseNumber} — ${opts.caseTitle}\n\n${opts.caseUrl}`,
+  };
+}
+
+/** Generic dual-channel ops email for in-app notification types. */
+function buildOpsNotificationEmail(opts: {
+  locale: AppLocale;
+  firstName: string;
+  notificationType: NotificationType;
+  title: string;
+  body: string;
+  caseNumber?: string | null;
+  ctaUrl?: string | null;
+  appUrl: string;
+}): EmailPayload {
+  const tone = toneForNotificationType(opts.notificationType);
+  const greeting =
+    opts.locale === "es" ? `Hola ${opts.firstName},` : `Hi ${opts.firstName},`;
+  const ctaLabel =
+    opts.locale === "es" ? "Abrir en DELACHE" : "Open in DELACHE";
+  const preheader = opts.body.slice(0, 120);
+  const typeLabel = opts.notificationType.replace(/_/g, " ");
+  const metaRows = [
+    {
+      label: opts.locale === "es" ? "Alerta" : "Alert",
+      value: typeLabel,
+    },
+  ];
+  if (opts.caseNumber) {
+    metaRows.push({
+      label: opts.locale === "es" ? "Expediente" : "Case",
+      value: opts.caseNumber,
+    });
+  }
+  const bannerText =
+    opts.locale === "es"
+      ? "Tienes una actualización en DELACHE"
+      : "You have an update in DELACHE";
+  const bodyHtml = `
+    ${highlightBanner(bannerText, tone === "info" ? "info" : tone)}
+    <p style="margin:0 0 12px;font-size:17px;font-weight:600;">${escapeHtml(greeting)}</p>
+    <p style="margin:0 0 8px;font-size:16px;font-weight:700;color:${EMAIL_BRAND.text};">${escapeHtml(opts.title)}</p>
+    <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(opts.body)}</p>
+    ${metaCard(metaRows)}`;
+
+  return {
+    subject: opts.title,
+    html: emailShell({
+      locale: opts.locale,
+      preheader,
+      title: opts.title,
+      bodyHtml,
+      cta: opts.ctaUrl
+        ? { label: ctaLabel, url: opts.ctaUrl }
+        : { label: ctaLabel, url: opts.appUrl },
+      appUrl: opts.appUrl,
+    }),
+    text: `${greeting}\n\n${opts.title}\n\n${opts.body}\n\n${opts.ctaUrl || opts.appUrl}`,
+  };
+}
 
 // ============================================================================
 // CONFIG
@@ -150,6 +4481,212 @@ const REQUIRED_DB_VARS = [
 const MISSING_DB_VARS = REQUIRED_DB_VARS.filter((k) => !process.env[k]?.trim());
 
 let pool: Pool | null = null;
+
+const UPLOAD_JSON_PATH_PREFIXES = [
+  "/api/cases/",
+  "/api/client/cases/",
+  "/api/uploads",
+] as const;
+
+function wantsLargeJsonBody(req: Request): boolean {
+  const path = req.path || "";
+  if (path === "/api/uploads") return true;
+  if (!UPLOAD_JSON_PATH_PREFIXES.some((p) => path.startsWith(p))) return false;
+  return (
+    path.includes("/documents") ||
+    path.includes("/evidence") ||
+    path === "/api/uploads"
+  );
+}
+
+async function loadOtpRateBucket(
+  rateKey: string,
+): Promise<OtpRateLimitBucket | null> {
+  const db = getPool();
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT window_started_at, attempt_count
+       FROM otp_request_rate_limits
+      WHERE rate_key = ?
+      LIMIT 1`,
+    [rateKey],
+  );
+  if (rows.length === 0) return null;
+  return {
+    count: Number(rows[0].attempt_count) || 0,
+    windowStartedAt: new Date(
+      rows[0].window_started_at as string | Date,
+    ).getTime(),
+  };
+}
+
+async function saveOtpRateBucket(
+  rateKey: string,
+  bucket: OtpRateLimitBucket,
+): Promise<void> {
+  const db = getPool();
+  await db.query<ResultSetHeader>(
+    `INSERT INTO otp_request_rate_limits (rate_key, window_started_at, attempt_count)
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       window_started_at = VALUES(window_started_at),
+       attempt_count = VALUES(attempt_count)`,
+    [
+      rateKey,
+      toMysqlDateTimeUtc(new Date(bucket.windowStartedAt)),
+      bucket.count,
+    ],
+  );
+}
+
+/**
+ * Independent email + IP buckets. Use chargeIp / chargeEmail to control which
+ * counters increment (IP on every request; email only after eligibility).
+ */
+async function enforceOtpRequestRateLimits(opts: {
+  email: string;
+  ip: string | undefined;
+  portal: "staff" | "client";
+  chargeIp: boolean;
+  chargeEmail: boolean;
+}): Promise<
+  { ok: true } | { ok: false; error: string; retryAfterSec: number }
+> {
+  const now = Date.now();
+  const ipKey = buildOtpRateLimitKey({
+    scope: "ip",
+    portal: opts.portal,
+    value: opts.ip || "unknown",
+  });
+  const emailKey = buildOtpRateLimitKey({
+    scope: "email",
+    portal: opts.portal,
+    value: opts.email,
+  });
+
+  const [ipBucket, emailBucket] = await Promise.all([
+    loadOtpRateBucket(ipKey),
+    loadOtpRateBucket(emailKey),
+  ]);
+
+  const ipPeek = peekOtpRateLimit(ipBucket, now, {
+    maxAttempts: OTP_IP_RATE_LIMIT_MAX_ATTEMPTS,
+    windowMs: OTP_RATE_LIMIT_WINDOW_MS,
+  });
+  if (ipPeek.ok === false) {
+    return {
+      ok: false,
+      error: ipPeek.error,
+      retryAfterSec: ipPeek.retryAfterSec,
+    };
+  }
+  const emailPeek = peekOtpRateLimit(emailBucket, now, {
+    maxAttempts: OTP_RATE_LIMIT_MAX_ATTEMPTS,
+    windowMs: OTP_RATE_LIMIT_WINDOW_MS,
+  });
+  if (emailPeek.ok === false) {
+    return {
+      ok: false,
+      error: emailPeek.error,
+      retryAfterSec: emailPeek.retryAfterSec,
+    };
+  }
+
+  if (opts.chargeIp) {
+    const ipNext = resolveOtpRateLimit(ipBucket, now, {
+      maxAttempts: OTP_IP_RATE_LIMIT_MAX_ATTEMPTS,
+      windowMs: OTP_RATE_LIMIT_WINDOW_MS,
+    });
+    await saveOtpRateBucket(ipKey, ipNext.nextBucket);
+  }
+
+  if (opts.chargeEmail) {
+    const emailNext = resolveOtpRateLimit(emailBucket, now, {
+      maxAttempts: OTP_RATE_LIMIT_MAX_ATTEMPTS,
+      windowMs: OTP_RATE_LIMIT_WINDOW_MS,
+    });
+    await saveOtpRateBucket(emailKey, emailNext.nextBucket);
+  }
+
+  return { ok: true };
+}
+
+async function putPrivateBlob(
+  pathname: string,
+  buffer: Buffer,
+  contentType?: string,
+): Promise<{ url: string; pathname: string }> {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  const blob = await put(pathname, buffer, {
+    access: "private",
+    contentType: contentType || undefined,
+    token,
+  });
+  return { url: blob.url, pathname: blob.pathname };
+}
+
+async function signBlobUrlForClient(storageKey: string): Promise<string> {
+  if (!storageKey || !isPrivateBlobUrl(storageKey)) return storageKey;
+  const pathname = blobPathnameFromUrl(storageKey);
+  if (!pathname) return storageKey;
+  try {
+    const token = await issueSignedToken({
+      pathname,
+      operations: ["get"],
+      validUntil: Date.now() + 60 * 60 * 1000,
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+    });
+    const { presignedUrl } = await presignUrl(token, {
+      pathname,
+      operation: "get",
+      access: "private",
+      validUntil: Date.now() + BLOB_SIGNED_URL_TTL_MS,
+    });
+    return presignedUrl;
+  } catch (err) {
+    apiLogger.warn("blob sign failed; returning stored key", err);
+    return storageKey;
+  }
+}
+
+async function fetchBlobBytes(storageKey: string): Promise<Buffer | null> {
+  try {
+    if (isPrivateBlobUrl(storageKey)) {
+      const result = await get(storageKey, {
+        access: "private",
+        token: process.env.BLOB_READ_WRITE_TOKEN,
+      });
+      if (!result?.stream) return null;
+      const reader = result.stream.getReader();
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(Buffer.from(value));
+      }
+      return Buffer.concat(chunks);
+    }
+    if (!isAllowedBlobFetchUrl(storageKey)) {
+      apiLogger.warn("blob fetch blocked: host not allowlisted");
+      return null;
+    }
+    const fetched = await fetch(storageKey);
+    if (!fetched.ok) return null;
+    return Buffer.from(await fetched.arrayBuffer());
+  } catch (err) {
+    apiLogger.warn("blob fetch failed", err);
+    return null;
+  }
+}
+
+async function safeDeleteBlobs(urls: string[]): Promise<void> {
+  const cleaned = urls.map((u) => String(u || "").trim()).filter(Boolean);
+  if (cleaned.length === 0) return;
+  try {
+    await del(cleaned, { token: process.env.BLOB_READ_WRITE_TOKEN });
+  } catch (err) {
+    apiLogger.warn("blob cleanup failed", err);
+  }
+}
 
 function getPool(): Pool {
   if (!pool) {
@@ -249,8 +4786,11 @@ function mapCaseSummary(row: RowDataPacket): CaseSummary {
     propertyCity: (row.property_city as string | null) ?? null,
     propertyState: (row.property_state as string | null) ?? null,
     lawFirmId: (row.law_firm_id as number | null) ?? null,
+    lawFirmName: (row.law_firm_name as string | null) ?? null,
     assignedExpertId: (row.assigned_expert_id as number | null) ?? null,
+    primaryExpertName: (row.primary_expert_name as string | null) ?? null,
     inspectionDeadlineAt: toIso(row.inspection_deadline_at),
+    involvesFatality: Boolean(row.involves_fatality),
     createdAt: toIso(row.created_at) || new Date().toISOString(),
     updatedAt: toIso(row.updated_at) || new Date().toISOString(),
   };
@@ -273,6 +4813,7 @@ function mapCaseDetail(row: RowDataPacket): CaseDetail {
       (row.assigned_coordinator_id as number | null) ?? null,
     intakeReceivedAt: toIso(row.intake_received_at),
     completedAt: toIso(row.completed_at),
+    streetViewValidatedAt: toIso(row.street_view_validated_at),
   };
 }
 
@@ -312,7 +4853,11 @@ function mapUserRow(row: RowDataPacket): AuthUser {
     phone: (row.phone as string | null) ?? null,
     avatarUrl: (row.avatar_url as string | null) ?? null,
     preferredLanguage: normalizeLocale(row.preferred_language as string),
-    preferredTheme: (row.preferred_theme as AuthUser["preferredTheme"]) || "system",
+    preferredTheme:
+      (row.preferred_theme as AuthUser["preferredTheme"]) || "system",
+    showFormHelpers: isShowFormHelpersEnabled(
+      row.show_form_helpers as boolean | number | null | undefined,
+    ),
     lastLoginAt: row.last_login_at
       ? new Date(row.last_login_at as string | Date).toISOString()
       : null,
@@ -332,7 +4877,11 @@ function mapLawFirmUserRow(row: RowDataPacket): AuthUser {
     phone: (row.phone as string | null) ?? null,
     avatarUrl: (row.avatar_url as string | null) ?? null,
     preferredLanguage: normalizeLocale(row.preferred_language as string),
-    preferredTheme: (row.preferred_theme as AuthUser["preferredTheme"]) || "system",
+    preferredTheme:
+      (row.preferred_theme as AuthUser["preferredTheme"]) || "system",
+    showFormHelpers: isShowFormHelpersEnabled(
+      row.show_form_helpers as boolean | number | null | undefined,
+    ),
     lastLoginAt: row.last_login_at
       ? new Date(row.last_login_at as string | Date).toISOString()
       : null,
@@ -539,10 +5088,46 @@ async function attachAuth(
   try {
     const ok = await isSessionActive(payload);
     if (!ok) return res.status(401).json({ error: "Session expired" });
+
+    if (payload.actor === "staff") {
+      const db = getPool();
+      const [rows] = await db.query<RowDataPacket[]>(
+        `SELECT role, status, deleted_at
+           FROM staff_users
+          WHERE id = ?
+          LIMIT 1`,
+        [payload.id],
+      );
+      if (
+        rows.length === 0 ||
+        rows[0].deleted_at ||
+        (rows[0].status !== "active" && rows[0].status !== "invited")
+      ) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      payload.role = rows[0].role as UserRole;
+    }
+
+    if (payload.actor === "law_firm") {
+      const db = getPool();
+      const [rows] = await db.query<RowDataPacket[]>(
+        `SELECT status, deleted_at
+           FROM law_firm_users
+          WHERE id = ?
+          LIMIT 1`,
+        [payload.id],
+      );
+      if (
+        rows.length === 0 ||
+        rows[0].deleted_at ||
+        rows[0].status !== "active"
+      ) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+    }
+
     if (!predicate(payload)) {
-      return res
-        .status(403)
-        .json({ error: forbiddenMessage || "Forbidden" });
+      return res.status(403).json({ error: forbiddenMessage || "Forbidden" });
     }
     req.auth = payload;
     next();
@@ -636,21 +5221,79 @@ async function createNotification(opts: {
   type?: NotificationType;
   title: string;
   body: string;
+  /** Explicit branded email; when omitted, dual-channel ops template is used when allowed. */
+  email?: EmailPayload | null;
+  /** Skip outbound email (rare). */
+  skipEmail?: boolean;
+  caseNumber?: string | null;
+  caseUrl?: string | null;
+  /** Override recipient email (e.g. known law-firm contact). */
+  emailTo?: string | null;
 }): Promise<void> {
   const db = getPool();
+  const publicUuid = generatePublicUuid();
+  const type = opts.type || "general";
   await db.query<ResultSetHeader>(
     `INSERT INTO notifications
        (public_uuid, recipient_actor, recipient_id, case_id, channel, notification_type, title, body)
      VALUES (?, ?, ?, ?, 'in_app', ?, ?, ?)`,
     [
-      generatePublicUuid(),
+      publicUuid,
       opts.recipientActor,
       opts.recipientId,
       opts.caseId ?? null,
-      opts.type || "general",
+      type,
       opts.title,
       opts.body,
     ],
+  );
+
+  if (opts.skipEmail) return;
+
+  let payload = opts.email ?? null;
+  let to = opts.emailTo?.trim() || null;
+  let localeContact: Awaited<ReturnType<typeof getActorContact>> = null;
+
+  if (!to || !payload) {
+    localeContact = await getActorContact(
+      opts.recipientActor,
+      opts.recipientId,
+    );
+    if (!localeContact) return;
+    to = to || localeContact.email;
+  }
+
+  if (!payload) {
+    if (!shouldDualChannelEmail(type)) return;
+    if (!localeContact) {
+      localeContact = await getActorContact(
+        opts.recipientActor,
+        opts.recipientId,
+      );
+    }
+    if (!localeContact) return;
+    payload = buildOpsNotificationEmail({
+      locale: localeContact.locale,
+      firstName: localeContact.firstName,
+      notificationType: type,
+      title: opts.title,
+      body: opts.body,
+      caseNumber: opts.caseNumber,
+      ctaUrl: opts.caseUrl,
+      appUrl: APP_URL,
+    });
+  }
+
+  if (!to || !payload) return;
+
+  const providerId = await safeSendEmail(to, payload, `notify:${type}`);
+  if (providerId === undefined) return;
+
+  await db.query<ResultSetHeader>(
+    `UPDATE notifications
+     SET email_sent_at = NOW(), email_provider_id = ?
+     WHERE public_uuid = ?`,
+    [providerId, publicUuid],
   );
 }
 
@@ -686,6 +5329,171 @@ function mapExpense(row: RowDataPacket): LogisticsExpenseItem {
   };
 }
 
+function mapEvidenceItem(row: RowDataPacket): EvidenceItem {
+  return {
+    id: row.id as number,
+    publicUuid: row.public_uuid as string,
+    inspectionId: (row.inspection_id as number | null) ?? null,
+    evidenceType: row.evidence_type as EvidenceItem["evidenceType"],
+    category: row.category as EvidenceItem["category"],
+    title: (row.title as string | null) ?? null,
+    caption: (row.caption as string | null) ?? null,
+    storageKey: (row.storage_key as string | null) ?? null,
+    mimeType: (row.mime_type as string | null) ?? null,
+    fileSizeBytes:
+      row.file_size_bytes != null ? Number(row.file_size_bytes) : null,
+    capturedAt: toIso(row.captured_at),
+    lat: row.lat != null ? Number(row.lat) : null,
+    lng: row.lng != null ? Number(row.lng) : null,
+    capturedBy: (row.captured_by as number | null) ?? null,
+    createdAt: toIso(row.created_at) || new Date().toISOString(),
+  };
+}
+
+function mapCaseDocumentItem(row: RowDataPacket): CaseDocumentItem {
+  return {
+    id: row.id as number,
+    publicUuid: row.public_uuid as string,
+    category: row.category as DocumentCategory,
+    title: row.title as string,
+    status: row.status as string,
+    currentVersion: Number(row.current_version) || 1,
+    fileName: (row.file_name as string | null) ?? null,
+    mimeType: (row.mime_type as string | null) ?? null,
+    storageKey: (row.storage_key as string | null) ?? null,
+    fileSizeBytes:
+      row.file_size_bytes != null ? Number(row.file_size_bytes) : null,
+    ocrStatus: (row.ocr_status as OcrStatus | null) ?? null,
+    ocrText: (row.ocr_text as string | null) ?? null,
+    ocrProcessedAt: toIso(row.ocr_processed_at),
+    createdAt: toIso(row.created_at) || new Date().toISOString(),
+  };
+}
+
+async function extractPdfOcrText(buffer: Buffer): Promise<string | null> {
+  try {
+    const { extractText, getDocumentProxy } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const result = await extractText(pdf, { mergePages: true });
+    const raw = result.text;
+    const merged = Array.isArray(raw) ? raw.join("\n") : String(raw || "");
+    const truncated = truncateOcrText(merged);
+    return truncated.length > 0 ? truncated : null;
+  } catch (err) {
+    apiLogger.warn("PDF OCR extraction failed", err);
+    return null;
+  }
+}
+
+async function resolveUploadOcrFields(
+  mimeType: string,
+  buffer: Buffer,
+): Promise<{
+  ocrStatus: OcrStatus;
+  ocrText: string | null;
+  ocrProcessedAt: Date | null;
+}> {
+  let ocrStatus = initialOcrStatusForMime(mimeType);
+  let ocrText: string | null = null;
+  let ocrProcessedAt: Date | null = null;
+  if (mimeType.toLowerCase() === "application/pdf") {
+    const extracted = await extractPdfOcrText(buffer);
+    if (extracted) {
+      ocrStatus = "completed";
+      ocrText = extracted;
+      ocrProcessedAt = new Date();
+    }
+  }
+  return { ocrStatus, ocrText, ocrProcessedAt };
+}
+
+async function insertCaseDocumentUpload(
+  opts: {
+    caseId: number;
+    title: string;
+    fileName: string;
+    contentType: string;
+    buffer: Buffer;
+    category: DocumentCategory;
+    uploadedByStaffId: number | null;
+    blobPathPrefix: string;
+  },
+  conn?: PoolConnection,
+): Promise<CaseDocumentItem> {
+  const mimeType = opts.contentType || "application/octet-stream";
+  const { ocrStatus, ocrText, ocrProcessedAt } = await resolveUploadOcrFields(
+    mimeType,
+    opts.buffer,
+  );
+
+  const safeName = opts.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const pathname = `${opts.blobPathPrefix}/${Date.now()}-${safeName}`;
+  const blob = await putPrivateBlob(
+    pathname,
+    opts.buffer,
+    opts.contentType || undefined,
+  );
+
+  const db = conn ?? getPool();
+  const docUuid = generatePublicUuid();
+  const [docResult] = await db.query<ResultSetHeader>(
+    `INSERT INTO documents
+       (public_uuid, case_id, category, title, current_version, status, uploaded_by)
+     VALUES (?, ?, ?, ?, 1, 'uploaded', ?)`,
+    [docUuid, opts.caseId, opts.category, opts.title, opts.uploadedByStaffId],
+  );
+  await db.query<ResultSetHeader>(
+    `INSERT INTO document_versions
+       (document_id, version_number, storage_key, file_name, mime_type, file_size_bytes,
+        uploaded_by, ocr_text, ocr_status, ocr_processed_at)
+     VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      docResult.insertId,
+      blob.url,
+      opts.fileName,
+      mimeType,
+      opts.buffer.length,
+      opts.uploadedByStaffId,
+      ocrText,
+      ocrStatus,
+      ocrProcessedAt ? toMysqlDateTimeUtc(ocrProcessedAt) : null,
+    ],
+  );
+
+  return {
+    id: docResult.insertId,
+    publicUuid: docUuid,
+    category: opts.category,
+    title: opts.title,
+    status: "uploaded",
+    currentVersion: 1,
+    fileName: opts.fileName,
+    mimeType,
+    storageKey: await signBlobUrlForClient(blob.url),
+    fileSizeBytes: opts.buffer.length,
+    ocrStatus,
+    ocrText,
+    ocrProcessedAt: ocrProcessedAt ? ocrProcessedAt.toISOString() : null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function loadEvidenceChecklistForCase(
+  caseId: number,
+): Promise<EvidenceChecklistStatus> {
+  const db = getPool();
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT category FROM evidence_items
+     WHERE case_id = ? AND deleted_at IS NULL`,
+    [caseId],
+  );
+  return getEvidenceChecklistStatus(
+    rows.map((r) => ({
+      category: r.category as EvidenceItem["category"],
+    })),
+  );
+}
+
 async function findCaseByPublicUuid(
   publicUuid: string,
 ): Promise<RowDataPacket | null> {
@@ -714,15 +5522,14 @@ function mapDeadline(row: RowDataPacket): CaseDeadlineItem {
   const dueAt = toIso(row.due_at) || new Date().toISOString();
   const completedAt = toIso(row.completed_at);
   const severity = completedAt
-    ? ((row.severity_level as DeadlineSeverity) || "safe")
+    ? (row.severity_level as DeadlineSeverity) || "safe"
     : computeDeadlineSeverity(new Date(dueAt));
   return {
     id: row.id as number,
     deadlineType: row.deadline_type as CaseDeadlineItem["deadlineType"],
     title: row.title as string,
     dueAt,
-    businessDays:
-      row.business_days != null ? Number(row.business_days) : null,
+    businessDays: row.business_days != null ? Number(row.business_days) : null,
     severityLevel: severity,
     completedAt,
   };
@@ -730,17 +5537,24 @@ function mapDeadline(row: RowDataPacket): CaseDeadlineItem {
 
 async function ensureCourtAcceptanceDeadline(
   caseId: number,
-  actorId: number,
+  actorId: number | null,
 ): Promise<Date> {
   const db = getPool();
-  const due = addBusinessDays(new Date(), 10);
+  const computed = addBusinessDays(new Date(), 10);
   await db.query<ResultSetHeader>(
     `UPDATE cases
      SET court_acceptance_at = COALESCE(court_acceptance_at, NOW()),
-         inspection_deadline_at = ?
+         inspection_deadline_at = COALESCE(inspection_deadline_at, ?)
      WHERE id = ?`,
-    [due, caseId],
+    [computed, caseId],
   );
+  const [caseRows] = await db.query<RowDataPacket[]>(
+    `SELECT inspection_deadline_at FROM cases WHERE id = ? LIMIT 1`,
+    [caseId],
+  );
+  const due = caseRows[0]?.inspection_deadline_at
+    ? new Date(caseRows[0].inspection_deadline_at as string)
+    : computed;
   const [existing] = await db.query<RowDataPacket[]>(
     `SELECT id FROM case_deadlines
      WHERE case_id = ? AND deadline_type = 'inspection' AND completed_at IS NULL
@@ -764,6 +5578,905 @@ async function ensureCourtAcceptanceDeadline(
   return due;
 }
 
+async function completeTypedDeadlines(
+  caseId: number,
+  deadlineTypes: readonly string[],
+  conn?: PoolConnection,
+): Promise<void> {
+  if (deadlineTypes.length === 0) return;
+  const db = conn ?? getPool();
+  const placeholders = deadlineTypes.map(() => "?").join(", ");
+  await db.query<ResultSetHeader>(
+    `UPDATE case_deadlines
+     SET completed_at = COALESCE(completed_at, NOW())
+     WHERE case_id = ?
+       AND deadline_type IN (${placeholders})
+       AND completed_at IS NULL`,
+    [caseId, ...deadlineTypes],
+  );
+}
+
+async function ensureTypedDeadline(opts: {
+  caseId: number;
+  deadlineType: string;
+  title: string;
+  businessDays: number;
+  actorId: number | null;
+  clampTo?: Date | null;
+  conn?: PoolConnection;
+}): Promise<void> {
+  const db = opts.conn ?? getPool();
+  const [existing] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM case_deadlines
+     WHERE case_id = ? AND deadline_type = ? AND completed_at IS NULL
+     LIMIT 1`,
+    [opts.caseId, opts.deadlineType],
+  );
+  if (existing.length > 0) return;
+
+  let due = addBusinessDays(new Date(), opts.businessDays);
+  if (opts.clampTo && due.getTime() > opts.clampTo.getTime()) {
+    due = opts.clampTo;
+  }
+  await db.query<ResultSetHeader>(
+    `INSERT INTO case_deadlines
+       (case_id, deadline_type, title, due_at, business_days, severity_level, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      opts.caseId,
+      opts.deadlineType,
+      opts.title,
+      due,
+      opts.businessDays,
+      computeDeadlineSeverity(due),
+      opts.actorId,
+    ],
+  );
+  await db.query<ResultSetHeader>(
+    `INSERT INTO calendar_events
+       (public_uuid, case_id, event_type, title, starts_at, all_day, created_by)
+     VALUES (?, ?, 'deadline', ?, ?, 1, ?)`,
+    [generatePublicUuid(), opts.caseId, opts.title, due, opts.actorId],
+  );
+}
+
+async function maybeStartTenDayClock(
+  caseRow: RowDataPacket,
+  actorId: number | null,
+): Promise<void> {
+  const status = String(caseRow.status) as CaseStatus;
+  const flowIdx = CASE_STATUS_FLOW.indexOf(status);
+  const p6Idx = CASE_STATUS_FLOW.indexOf("court_acceptance");
+  if (flowIdx < 0 || p6Idx < 0 || flowIdx < p6Idx) return;
+  const cats = await loadCaseDocumentCategories(Number(caseRow.id));
+  if (!cats.includes("protesta")) return;
+  await ensureCourtAcceptanceDeadline(Number(caseRow.id), actorId);
+}
+
+async function loadHoldResumeStatus(caseId: number): Promise<CaseStatus> {
+  const db = getPool();
+  const [holdRows] = await db.query<RowDataPacket[]>(
+    `SELECT from_status FROM case_status_history
+     WHERE case_id = ? AND to_status = 'on_hold'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [caseId],
+  );
+  const [flowRows] = await db.query<RowDataPacket[]>(
+    `SELECT to_status FROM case_status_history
+     WHERE case_id = ? AND to_status IN (${CASE_STATUS_FLOW.map(() => "?").join(", ")})
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [caseId, ...CASE_STATUS_FLOW],
+  );
+  return resolveHoldResumeStatus(
+    (holdRows[0]?.from_status as CaseStatus | undefined) ?? null,
+    (flowRows[0]?.to_status as CaseStatus | undefined) ?? null,
+  );
+}
+
+function mapReviewRequest(row: RowDataPacket): ReviewRequestItem {
+  return {
+    id: row.id as number,
+    caseId: row.case_id as number,
+    entityType: row.entity_type as ReviewEntityType,
+    entityId: row.entity_id as number,
+    reviewStage: row.review_stage as ReviewStage,
+    status: row.status as ReviewRequestItem["status"],
+    requestedBy: (row.requested_by as number | null) ?? null,
+    assignedTo: (row.assigned_to as number | null) ?? null,
+    dueAt: toIso(row.due_at),
+    completedAt: toIso(row.completed_at),
+    notes: (row.notes as string | null) ?? null,
+    createdAt: toIso(row.created_at) || new Date().toISOString(),
+  };
+}
+
+function mapAuditLog(row: RowDataPacket): CaseAuditLogItem {
+  return {
+    id: Number(row.id),
+    publicUuid: row.public_uuid as string,
+    actorType: row.actor_type as CaseAuditLogItem["actorType"],
+    actorId: (row.actor_id as number | null) ?? null,
+    entityType: row.entity_type as string,
+    entityId: (row.entity_id as string | null) ?? null,
+    action: row.action as string,
+    comment: (row.comment as string | null) ?? null,
+    createdAt: toIso(row.created_at) || new Date().toISOString(),
+  };
+}
+
+async function openReviewRequest(opts: {
+  caseId: number;
+  entityType: ReviewEntityType;
+  entityId: number;
+  stage: ReviewStage;
+  requestedBy: number | null;
+  assignedTo?: number | null;
+  notes?: string | null;
+}): Promise<number> {
+  const db = getPool();
+  const [existing] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM review_requests
+     WHERE case_id = ? AND entity_type = ? AND entity_id = ?
+       AND review_stage = ? AND status = 'pending'
+     LIMIT 1`,
+    [opts.caseId, opts.entityType, opts.entityId, opts.stage],
+  );
+  if (existing.length > 0) return existing[0].id as number;
+
+  const dueAt = addBusinessDays(
+    new Date(),
+    defaultReviewSlaBusinessDays(opts.stage),
+  );
+  const [result] = await db.query<ResultSetHeader>(
+    `INSERT INTO review_requests
+       (case_id, entity_type, entity_id, review_stage, status,
+        requested_by, assigned_to, due_at, notes)
+     VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+    [
+      opts.caseId,
+      opts.entityType,
+      opts.entityId,
+      opts.stage,
+      opts.requestedBy,
+      opts.assignedTo ?? null,
+      dueAt,
+      opts.notes ?? null,
+    ],
+  );
+  return result.insertId;
+}
+
+async function createAutoInvoice(opts: {
+  caseId: number;
+  lawFirmId: number | null;
+  invoiceType: "advance" | "final";
+  createdBy: number;
+  notes: string;
+  amount?: number;
+}): Promise<number | null> {
+  const db = getPool();
+  const [existing] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM invoices
+     WHERE case_id = ? AND invoice_type = ?
+       AND status NOT IN ('void', 'paid')
+     LIMIT 1`,
+    [opts.caseId, opts.invoiceType],
+  );
+  if (existing.length > 0) return null;
+
+  const totalAmount =
+    opts.amount != null && Number.isFinite(opts.amount)
+      ? Number(opts.amount)
+      : 0;
+  const year = new Date().getUTCFullYear();
+  const invoiceNumber = `INV-${year}-${Date.now().toString().slice(-8)}`;
+  const publicUuid = generatePublicUuid();
+  const [result] = await db.query<ResultSetHeader>(
+    `INSERT INTO invoices
+       (public_uuid, case_id, law_firm_id, invoice_number, invoice_type, status,
+        subtotal, tax_amount, total_amount, currency, issued_at, notes, created_by)
+     VALUES (?, ?, ?, ?, ?, 'issued', ?, 0, ?, 'MXN', NOW(), ?, ?)`,
+    [
+      publicUuid,
+      opts.caseId,
+      opts.lawFirmId,
+      invoiceNumber,
+      opts.invoiceType,
+      totalAmount,
+      totalAmount,
+      opts.notes,
+      opts.createdBy,
+    ],
+  );
+  return result.insertId;
+}
+
+function parseJsonField(value: unknown): unknown {
+  if (typeof value !== "string") return value ?? null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+async function loadCaseDocumentCategories(caseId: number): Promise<string[]> {
+  const db = getPool();
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT DISTINCT category FROM documents
+     WHERE case_id = ? AND deleted_at IS NULL
+       AND status NOT IN ('rejected', 'archived')`,
+    [caseId],
+  );
+  return rows.map((r) => String(r.category));
+}
+
+async function loadProcessGateInput(
+  caseRow: RowDataPacket,
+): Promise<ProcessGateInput> {
+  const db = getPool();
+  const caseId = caseRow.id as number;
+  const documentCategories = await loadCaseDocumentCategories(caseId);
+
+  const [evidenceRows] = await db.query<RowDataPacket[]>(
+    `SELECT DISTINCT category FROM evidence_items
+     WHERE case_id = ? AND deleted_at IS NULL`,
+    [caseId],
+  );
+  const [measurementRows] = await db.query<RowDataPacket[]>(
+    `SELECT DISTINCT measurement_type FROM measurements
+     WHERE case_id = ?`,
+    [caseId],
+  );
+  const [assignmentRows] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM case_assignments
+     WHERE case_id = ? AND unassigned_at IS NULL
+       AND assignment_role = 'expert' AND is_primary = 1
+     LIMIT 1`,
+    [caseId],
+  );
+  const [questionnaireRows] = await db.query<RowDataPacket[]>(
+    `SELECT status, content_json, created_at FROM questionnaires
+     WHERE case_id = ?`,
+    [caseId],
+  );
+  const [inspectionRows] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM inspections
+     WHERE case_id = ? AND status = 'completed'
+     LIMIT 1`,
+    [caseId],
+  );
+  const [reportRows] = await db.query<RowDataPacket[]>(
+    `SELECT status, created_at FROM technical_reports
+     WHERE case_id = ?`,
+    [caseId],
+  );
+  const [tripRows] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM logistics_trips
+     WHERE case_id = ? AND status <> 'cancelled'
+     LIMIT 1`,
+    [caseId],
+  );
+  const [invoiceRows] = await db.query<RowDataPacket[]>(
+    `SELECT status, invoice_type FROM invoices WHERE case_id = ?`,
+    [caseId],
+  );
+
+  const bestQuestionnaire = pickCurrentProcessArtifact(
+    questionnaireRows.map((r) => ({
+      status: String(r.status),
+      createdAt: toIso(r.created_at),
+      contentJson: parseJsonField(r.content_json),
+    })),
+    QUESTIONNAIRE_STATUS_RANK,
+  );
+  const bestReport = pickCurrentProcessArtifact(
+    reportRows.map((r) => ({
+      status: String(r.status),
+      createdAt: toIso(r.created_at),
+    })),
+    REPORT_STATUS_RANK,
+  );
+
+  const lat = caseRow.property_lat;
+  const lng = caseRow.property_lng;
+  const hasPropertyGps =
+    lat != null &&
+    lng != null &&
+    String(lat).trim() !== "" &&
+    String(lng).trim() !== "";
+
+  return {
+    documentCategories,
+    evidenceCategories: mergeEvidenceCategories(
+      evidenceRows.map((r) => String(r.category)),
+      measurementRows.map((r) => String(r.measurement_type)),
+    ),
+    hasPrimaryExpert: assignmentRows.length > 0,
+    questionnaireStatus: bestQuestionnaire?.status ?? null,
+    hasStreetView:
+      Boolean(caseRow.street_view_validated_at) ||
+      questionnaireHasStreetView(bestQuestionnaire?.contentJson),
+    hasPropertyGps,
+    plaintiffQuestionnairePresent: documentCategories.includes(
+      "plaintiff_questionnaire",
+    ),
+    protestaFiled: documentCategories.includes("protesta"),
+    inspectionComplete: inspectionRows.length > 0,
+    reportStatus: bestReport?.status ?? null,
+    ratificationPresent: documentCategories.includes("ratification"),
+    courtFilingPresent: documentCategories.includes("court_filing"),
+    involvesFatality: Boolean(caseRow.involves_fatality),
+    logisticsReady: tripRows.length > 0,
+    hasUnpaidInvoices: hasBlockingFinanceForCompletion(
+      invoiceRows.map((r) => ({
+        status: String(r.status),
+        invoiceType: String(r.invoice_type || ""),
+      })),
+    ),
+  };
+}
+
+function groupIds(
+  rows: RowDataPacket[],
+  key = "case_id",
+): Map<number, RowDataPacket[]> {
+  const map = new Map<number, RowDataPacket[]>();
+  for (const row of rows) {
+    const id = Number(row[key]);
+    const list = map.get(id) || [];
+    list.push(row);
+    map.set(id, list);
+  }
+  return map;
+}
+
+async function attachListadoToCases(
+  cases: CaseSummary[],
+  rows: RowDataPacket[],
+): Promise<CaseSummary[]> {
+  if (cases.length === 0) return cases;
+  const ids = cases.map((c) => c.id);
+  const placeholders = ids.map(() => "?").join(", ");
+  const db = getPool();
+
+  const [docRows] = await db.query<RowDataPacket[]>(
+    `SELECT case_id, category FROM documents
+     WHERE case_id IN (${placeholders}) AND deleted_at IS NULL
+       AND status NOT IN ('rejected', 'archived')`,
+    ids,
+  );
+  const [expertRows] = await db.query<RowDataPacket[]>(
+    `SELECT a.case_id, u.first_name, u.last_name
+     FROM case_assignments a
+     JOIN staff_users u ON u.id = a.user_id
+     WHERE a.case_id IN (${placeholders})
+       AND a.unassigned_at IS NULL
+       AND a.assignment_role = 'expert' AND a.is_primary = 1`,
+    ids,
+  );
+  const [qRows] = await db.query<RowDataPacket[]>(
+    `SELECT case_id, status, content_json, created_at FROM questionnaires
+     WHERE case_id IN (${placeholders})`,
+    ids,
+  );
+  const [inspRows] = await db.query<RowDataPacket[]>(
+    `SELECT case_id FROM inspections
+     WHERE case_id IN (${placeholders}) AND status = 'completed'`,
+    ids,
+  );
+  const [reportRows] = await db.query<RowDataPacket[]>(
+    `SELECT case_id, status, created_at FROM technical_reports
+     WHERE case_id IN (${placeholders})`,
+    ids,
+  );
+  const [tripRows] = await db.query<RowDataPacket[]>(
+    `SELECT case_id FROM logistics_trips
+     WHERE case_id IN (${placeholders}) AND status <> 'cancelled'`,
+    ids,
+  );
+  const [invoiceRows] = await db.query<RowDataPacket[]>(
+    `SELECT case_id, status, invoice_type FROM invoices
+     WHERE case_id IN (${placeholders})`,
+    ids,
+  );
+  const [firmRows] = await db.query<RowDataPacket[]>(
+    `SELECT id, name FROM law_firms
+     WHERE id IN (${cases.map(() => "?").join(", ")})`,
+    cases.map((c) => c.lawFirmId || 0),
+  );
+
+  const docsBy = groupIds(docRows);
+  const expertsBy = groupIds(expertRows);
+  const qBy = groupIds(qRows);
+  const inspBy = new Set(inspRows.map((r) => Number(r.case_id)));
+  const reportsBy = groupIds(reportRows);
+  const tripsBy = new Set(tripRows.map((r) => Number(r.case_id)));
+  const invoicesBy = groupIds(invoiceRows);
+  const firmName = new Map(
+    firmRows.map((r) => [Number(r.id), String(r.name || "")]),
+  );
+  const rowById = new Map(rows.map((r) => [Number(r.id), r]));
+
+  return cases.map((item) => {
+    const raw = rowById.get(item.id);
+    const docs = (docsBy.get(item.id) || []).map((d) => String(d.category));
+    const expert = expertsBy.get(item.id)?.[0];
+    const bestQ = pickCurrentProcessArtifact(
+      (qBy.get(item.id) || []).map((q) => ({
+        status: String(q.status),
+        createdAt: toIso(q.created_at),
+        contentJson: parseJsonField(q.content_json),
+      })),
+      QUESTIONNAIRE_STATUS_RANK,
+    );
+    const bestReport = pickCurrentProcessArtifact(
+      (reportsBy.get(item.id) || []).map((r) => ({
+        status: String(r.status),
+        createdAt: toIso(r.created_at),
+      })),
+      REPORT_STATUS_RANK,
+    );
+    const invoices = (invoicesBy.get(item.id) || []).map((r) => ({
+      status: String(r.status),
+      invoiceType: String(r.invoice_type || ""),
+    }));
+    const input: ProcessGateInput = {
+      documentCategories: docs,
+      hasPrimaryExpert: Boolean(expert),
+      questionnaireStatus: bestQ?.status ?? null,
+      hasStreetView:
+        Boolean(raw?.street_view_validated_at) ||
+        questionnaireHasStreetView(bestQ?.contentJson),
+      hasPropertyGps: raw?.property_lat != null && raw?.property_lng != null,
+      plaintiffQuestionnairePresent: docs.includes("plaintiff_questionnaire"),
+      protestaFiled: docs.includes("protesta"),
+      inspectionComplete: inspBy.has(item.id),
+      reportStatus: bestReport?.status ?? null,
+      ratificationPresent: docs.includes("ratification"),
+      courtFilingPresent: docs.includes("court_filing"),
+      involvesFatality: Boolean(
+        raw?.involves_fatality ?? item.involvesFatality,
+      ),
+      logisticsReady: tripsBy.has(item.id),
+      hasUnpaidInvoices: hasBlockingFinanceForCompletion(invoices),
+    };
+    return {
+      ...item,
+      lawFirmName:
+        item.lawFirmName || firmName.get(item.lawFirmId || 0) || null,
+      primaryExpertName: expert
+        ? `${expert.first_name || ""} ${expert.last_name || ""}`.trim() || null
+        : item.primaryExpertName || null,
+      listado: buildListadoProgress({
+        status: item.status,
+        inspectionDeadlineAt: item.inspectionDeadlineAt,
+        input,
+        invoices,
+      }),
+    };
+  });
+}
+
+function buildDocumentCompleteness(
+  categories: readonly string[],
+  involvesFatality = false,
+): {
+  intake: DocumentCompletenessInfo;
+  additionalDocs: DocumentCompletenessInfo;
+  courtFiling: DocumentCompletenessInfo;
+} {
+  const intake = getIntakeCompleteness(categories);
+  const additionalDocs = getAdditionalDocsCompleteness(categories, {
+    involvesFatality,
+  });
+  const courtFiling = getCourtFilingCompleteness(categories);
+  return {
+    intake: {
+      phase: intake.phase,
+      required: [...intake.required],
+      present: [...intake.present],
+      missing: [...intake.missing],
+      complete: intake.complete,
+    },
+    additionalDocs: {
+      phase: additionalDocs.phase,
+      required: [...additionalDocs.required],
+      present: [...additionalDocs.present],
+      missing: [...additionalDocs.missing],
+      complete: additionalDocs.complete,
+    },
+    courtFiling: {
+      phase: courtFiling.phase,
+      required: [...courtFiling.required],
+      present: [...courtFiling.present],
+      missing: [...courtFiling.missing],
+      complete: courtFiling.complete,
+    },
+  };
+}
+
+async function resolveCoordinatorOrAdmin(
+  caseRow: RowDataPacket,
+): Promise<number | null> {
+  if (caseRow.assigned_coordinator_id != null) {
+    return Number(caseRow.assigned_coordinator_id);
+  }
+  const db = getPool();
+  const [admins] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM staff_users
+     WHERE role = 'admin' AND status = 'active' AND deleted_at IS NULL
+     ORDER BY id ASC
+     LIMIT 1`,
+  );
+  return admins[0]?.id != null ? Number(admins[0].id) : null;
+}
+
+async function notifyMissingDocumentsIfNeeded(
+  caseRow: RowDataPacket,
+): Promise<void> {
+  const categories = await loadCaseDocumentCategories(Number(caseRow.id));
+  const status = String(caseRow.status);
+  const active = activeCompletenessForCaseStatus(status, categories, {
+    involvesFatality: Boolean(caseRow.involves_fatality),
+  });
+  if (!shouldEmitMissingDocumentsAlert(status, active)) {
+    return;
+  }
+
+  const db = getPool();
+  const [recent] = await db.query<RowDataPacket[]>(
+    `SELECT created_at FROM notifications
+     WHERE case_id = ? AND notification_type = 'missing_documents'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [caseRow.id],
+  );
+  const lastAt = recent[0]?.created_at
+    ? new Date(recent[0].created_at as string | Date).getTime()
+    : null;
+  if (shouldThrottleMissingDocumentsAlert(lastAt, Date.now())) {
+    return;
+  }
+
+  const missingLabel = active.missing.join(", ") || "required documents";
+  const title = `Missing documents · ${caseRow.case_number}`;
+  const body = `Missing: ${missingLabel}.`;
+
+  const recipientId = await resolveCoordinatorOrAdmin(caseRow);
+  if (recipientId != null) {
+    await createNotification({
+      recipientActor: "staff",
+      recipientId,
+      caseId: Number(caseRow.id),
+      type: "missing_documents",
+      title,
+      body,
+      caseNumber: String(caseRow.case_number),
+      caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+    });
+  }
+
+  const lawFirmId =
+    caseRow.law_firm_id != null ? Number(caseRow.law_firm_id) : null;
+  if (lawFirmId && shouldNotifyLawFirmOfMissingDocs(active)) {
+    const contacts = await listLawFirmContacts(lawFirmId);
+    for (const contact of contacts) {
+      await createNotification({
+        recipientActor: "law_firm",
+        recipientId: contact.id,
+        caseId: Number(caseRow.id),
+        type: "missing_documents",
+        title,
+        body,
+        emailTo: contact.email,
+        caseNumber: String(caseRow.case_number),
+        caseUrl: `${APP_URL}/client/cases/${caseRow.public_uuid}`,
+      });
+    }
+    if (shouldWriteLawFirmMissingDocsNote(active)) {
+      await db.query<ResultSetHeader>(
+        `INSERT INTO case_notes (case_id, author_id, visibility, body)
+         VALUES (?, NULL, 'law_firm', ?)`,
+        [caseRow.id, body],
+      );
+    }
+  }
+}
+
+async function applyArtifactRejectLoop(opts: {
+  caseRow: RowDataPacket;
+  artifact: "questionnaire" | "technical_report";
+  outcome: string;
+  actorId: number | null;
+  reason?: string | null;
+  conn?: PoolConnection;
+  auditActorType?: "staff" | "law_firm" | "system";
+  auditActorId?: number | null;
+}): Promise<CaseStatus | null> {
+  const fromStatus = opts.caseRow.status as CaseStatus;
+  const toStatus = caseStatusAfterArtifactReject({
+    caseStatus: fromStatus,
+    artifact: opts.artifact,
+    outcome: opts.outcome,
+  });
+  if (!toStatus) return null;
+  const db = opts.conn ?? getPool();
+  const caseId = Number(opts.caseRow.id);
+  await completeTypedDeadlines(
+    caseId,
+    deadlineTypesToCompleteOnTransition(fromStatus, toStatus),
+    opts.conn,
+  );
+  await db.query<ResultSetHeader>(
+    `UPDATE cases SET status = ? WHERE id = ?`,
+    [toStatus, caseId],
+  );
+  const reopen = artifactToForceChangesRequested({
+    artifact: opts.artifact,
+    outcome: opts.outcome,
+    toStatus,
+  });
+  if (reopen === "questionnaire") {
+    const statuses = QUESTIONNAIRE_REOPEN_FROM_STATUSES.map(() => "?").join(
+      ", ",
+    );
+    await db.query<ResultSetHeader>(
+      `UPDATE questionnaires
+       SET status = 'changes_requested'
+       WHERE case_id = ?
+         AND status IN (${statuses})`,
+      [caseId, ...QUESTIONNAIRE_REOPEN_FROM_STATUSES],
+    );
+  }
+  if (reopen === "technical_report") {
+    const statuses = REPORT_REOPEN_FROM_STATUSES.map(() => "?").join(", ");
+    await db.query<ResultSetHeader>(
+      `UPDATE technical_reports
+       SET status = 'changes_requested'
+       WHERE case_id = ?
+         AND status IN (${statuses})`,
+      [caseId, ...REPORT_REOPEN_FROM_STATUSES],
+    );
+  }
+  await db.query<ResultSetHeader>(
+    `INSERT INTO case_status_history
+       (case_id, from_status, to_status, changed_by, reason)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      caseId,
+      fromStatus,
+      toStatus,
+      opts.actorId,
+      opts.reason?.trim() || `Review ${opts.outcome} returned the case`,
+    ],
+  );
+  await db.query<ResultSetHeader>(
+    `INSERT INTO audit_logs
+       (public_uuid, actor_type, actor_id, case_id, entity_type, entity_id, action,
+        previous_value_json, new_value_json)
+     VALUES (?, ?, ?, ?, 'case', ?, 'status_change', ?, ?)`,
+    [
+      generatePublicUuid(),
+      opts.auditActorType ?? "staff",
+      opts.auditActorId ?? opts.actorId,
+      caseId,
+      String(caseId),
+      JSON.stringify({ status: fromStatus }),
+      JSON.stringify({ status: toStatus, outcome: opts.outcome }),
+    ],
+  );
+  opts.caseRow.status = toStatus;
+  return toStatus;
+}
+
+async function afterArtifactRejectLoop(opts: {
+  caseRow: RowDataPacket;
+  fromStatus: CaseStatus;
+  toStatus: CaseStatus;
+  actorId: number | null;
+  auditActorType?: "staff" | "law_firm" | "system" | null;
+}): Promise<void> {
+  const spec = authoringDeadlineSpec(opts.toStatus);
+  if (spec) {
+    await ensureTypedDeadline({
+      caseId: Number(opts.caseRow.id),
+      deadlineType: spec.deadlineType,
+      title: spec.title,
+      businessDays: spec.businessDays,
+      actorId: opts.actorId,
+    });
+  }
+  if (
+    !shouldNotifyLawFirmAfterArtifactReject({
+      auditActorType: opts.auditActorType,
+    })
+  ) {
+    return;
+  }
+  if (!opts.caseRow.law_firm_id) return;
+  const contacts = await listLawFirmContacts(Number(opts.caseRow.law_firm_id));
+  for (const contact of contacts) {
+    await createNotification({
+      recipientActor: "law_firm",
+      recipientId: contact.id,
+      caseId: Number(opts.caseRow.id),
+      type: "general",
+      title: `${opts.caseRow.case_number}: ${opts.toStatus}`,
+      body: `Status updated from ${opts.fromStatus} to ${opts.toStatus}.`,
+      emailTo: contact.email,
+      caseNumber: String(opts.caseRow.case_number),
+      caseUrl: `${APP_URL}/client/cases/${opts.caseRow.public_uuid}`,
+      email: buildCaseStatusEmail({
+        locale: contact.locale,
+        firstName: contact.firstName,
+        caseNumber: String(opts.caseRow.case_number),
+        caseTitle: String(opts.caseRow.title || opts.caseRow.case_number),
+        fromStatus: String(opts.fromStatus),
+        toStatus: String(opts.toStatus),
+        caseUrl: `${APP_URL}/client/cases/${opts.caseRow.public_uuid}`,
+        appUrl: APP_URL,
+      }),
+    });
+  }
+}
+
+async function findStaffIdsByRoles(roles: string[]): Promise<number[]> {
+  if (roles.length === 0) return [];
+  const db = getPool();
+  const placeholders = roles.map(() => "?").join(", ");
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM staff_users
+     WHERE role IN (${placeholders}) AND status = 'active' AND deleted_at IS NULL
+     ORDER BY id ASC
+     LIMIT 20`,
+    roles,
+  );
+  return rows.map((r) => Number(r.id));
+}
+
+async function completePendingReviewsForEntity(opts: {
+  entityType: ReviewEntityType;
+  entityId: number;
+  outcome: ReviewOutcome;
+  notes?: string | null;
+  stage?: ReviewStage | null;
+  conn?: PoolConnection;
+}): Promise<number> {
+  const db = opts.conn ?? getPool();
+  const params: unknown[] = [
+    opts.outcome,
+    opts.notes ?? null,
+    opts.entityType,
+    opts.entityId,
+  ];
+  let stageSql = "";
+  if (opts.stage) {
+    stageSql = " AND review_stage = ?";
+    params.push(opts.stage);
+  }
+  const [result] = await db.query<ResultSetHeader>(
+    `UPDATE review_requests
+     SET status = ?, completed_at = NOW(), notes = COALESCE(?, notes)
+     WHERE entity_type = ? AND entity_id = ? AND status = 'pending'${stageSql}`,
+    params,
+  );
+  return result.affectedRows;
+}
+
+async function runAutomationActions(
+  actions: AutomationAction[],
+  ctx: {
+    caseId: number;
+    lawFirmId: number | null;
+    actorId: number;
+    caseNumber: string;
+    entityType?: ReviewEntityType;
+    entityId?: number;
+    fallbackRecipientId?: number | null;
+  },
+): Promise<void> {
+  for (const action of actions) {
+    if (action.type === "create_invoice") {
+      await createAutoInvoice({
+        caseId: ctx.caseId,
+        lawFirmId: ctx.lawFirmId,
+        invoiceType: action.invoiceType,
+        createdBy: ctx.actorId,
+        notes: action.reason,
+      });
+    } else if (action.type === "open_review") {
+      if (ctx.entityType != null && ctx.entityId != null) {
+        await openReviewRequest({
+          caseId: ctx.caseId,
+          entityType: ctx.entityType,
+          entityId: ctx.entityId,
+          stage: action.stage,
+          requestedBy: ctx.actorId,
+          notes: action.reason,
+        });
+      }
+    } else if (action.type === "notify") {
+      let recipients = await findStaffIdsByRoles(
+        action.notificationType === "invoice_pending"
+          ? ["accountant", "admin"]
+          : action.notificationType === "report_approved" ||
+              action.notificationType === "qa_requested"
+            ? ["legal", "admin", "case_coordinator"]
+            : ["admin", "case_coordinator"],
+      );
+      if (recipients.length === 0 && ctx.fallbackRecipientId != null) {
+        recipients = [ctx.fallbackRecipientId];
+      }
+      if (recipients.length === 0) {
+        recipients = [ctx.actorId];
+      }
+      for (const recipientId of recipients) {
+        await createNotification({
+          recipientActor: "staff",
+          recipientId,
+          caseId: ctx.caseId,
+          type: action.notificationType,
+          title: `${action.notificationType} · ${ctx.caseNumber}`,
+          body: action.reason,
+          caseNumber: ctx.caseNumber,
+          caseUrl: `${APP_URL}/portal/cases`,
+        });
+      }
+    }
+  }
+}
+
+async function maybeNotifyDeadlineApproaching(
+  caseRow: RowDataPacket,
+  deadlines: CaseDeadlineItem[],
+): Promise<void> {
+  const critical = deadlines.find(
+    (d) =>
+      !d.completedAt &&
+      (d.severityLevel === "critical" || d.severityLevel === "overdue"),
+  );
+  if (!critical) return;
+  const actions = automationOnDeadlineApproaching(critical.severityLevel);
+  if (actions.length === 0) return;
+
+  const db = getPool();
+  const [recent] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM notifications
+     WHERE case_id = ? AND notification_type = 'deadline_approaching'
+       AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
+     LIMIT 1`,
+    [caseRow.id],
+  );
+  if (recent.length > 0) return;
+
+  const recipientIds = new Set<number>();
+  if (caseRow.assigned_expert_id != null) {
+    recipientIds.add(Number(caseRow.assigned_expert_id));
+  }
+  if (caseRow.assigned_coordinator_id != null) {
+    recipientIds.add(Number(caseRow.assigned_coordinator_id));
+  }
+  if (recipientIds.size === 0) {
+    const adminId = await resolveCoordinatorOrAdmin(caseRow);
+    if (adminId != null) recipientIds.add(adminId);
+  }
+  for (const recipientId of recipientIds) {
+    await createNotification({
+      recipientActor: "staff",
+      recipientId,
+      caseId: Number(caseRow.id),
+      type: "deadline_approaching",
+      title: `Deadline · ${caseRow.case_number}`,
+      body: `${critical.title} is ${critical.severityLevel}.`,
+      caseNumber: String(caseRow.case_number),
+      caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+    });
+  }
+}
+
 function dbUnavailable(req: Request, res: Response, next: NextFunction) {
   if (MISSING_DB_VARS.length > 0) {
     return res.status(503).json({
@@ -782,14 +6495,14 @@ async function sendEmail(opts: {
   subject: string;
   html: string;
   text: string;
-}): Promise<void> {
+}): Promise<string | null> {
   if (!resendClient) {
     apiLogger.info("[email:dev-fallback]", {
       to: opts.to,
       subject: opts.subject,
       text: opts.text,
     });
-    return;
+    return "dev-fallback";
   }
   const { data, error } = await resendClient.emails.send({
     from: FROM_EMAIL,
@@ -802,17 +6515,21 @@ async function sendEmail(opts: {
     throw new Error(error.message || "Resend send failed");
   }
   apiLogger.info("[email:sent]", { to: opts.to, id: data?.id });
+  return data?.id ?? null;
 }
 
+/** Returns provider id on success, undefined on failure (errors logged). */
 async function safeSendEmail(
   to: string,
   payload: EmailPayload,
   context: string,
-): Promise<void> {
+): Promise<string | undefined> {
   try {
-    await sendEmail({ to, ...payload });
+    const id = await sendEmail({ to, ...payload });
+    return id ?? undefined;
   } catch (err) {
     apiLogger.error(`email failed (${context})`, err);
+    return undefined;
   }
 }
 
@@ -884,8 +6601,15 @@ export function createServer() {
   const app = express();
 
   app.use(cors());
-  app.use(express.json({ limit: "2mb" }));
-  app.use(express.urlencoded({ extended: true }));
+  app.use((req, res, next) => {
+    const limit = wantsLargeJsonBody(req)
+      ? DMS_JSON_BODY_LIMIT
+      : JSON_BODY_LIMIT_DEFAULT;
+    express.json({ limit })(req, res, next);
+  });
+  app.use(
+    express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT_DEFAULT }),
+  );
 
   app.get("/api/ping", (_req, res) => {
     const ping = process.env.PING_MESSAGE ?? "ping";
@@ -938,6 +6662,22 @@ export function createServer() {
         return res.status(400).json({ error: "Valid email required" });
       }
 
+      const ipRate = await enforceOtpRequestRateLimits({
+        email,
+        ip: req.ip,
+        portal: "staff",
+        chargeIp: true,
+        chargeEmail: false,
+      });
+      if (ipRate.ok === false) {
+        res.setHeader("Retry-After", String(ipRate.retryAfterSec));
+        return res.status(429).json({
+          error: ipRate.error,
+          code: "rate_limited",
+          retryAfterSec: ipRate.retryAfterSec,
+        });
+      }
+
       const db = getPool();
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, email, first_name, preferred_language, status, role, deleted_at
@@ -947,33 +6687,46 @@ export function createServer() {
         [email],
       );
 
-      const generic: RequestOtpResponse = {
-        ok: true,
-        message: "If an account exists, a verification code was sent.",
-      };
-
-      if (rows.length === 0 || rows[0].deleted_at) {
-        return res.json(generic);
-      }
-
-      const user = rows[0];
-      if (user.status !== "active" && user.status !== "invited") {
-        return res.json(generic);
-      }
-
+      const found = rows.length > 0;
+      const user = found ? rows[0] : null;
       const allowed = await getLoginAllowedRoles();
-      if (!allowed.has(String(user.role))) {
-        return res.json(generic);
+      const eligibility = resolveOtpRequestEligibility({
+        found,
+        deleted: user?.deleted_at != null,
+        status: user ? String(user.status) : null,
+        roleAllowed: user ? allowed.has(String(user.role)) : undefined,
+      });
+      if (eligibility.ok === false) {
+        return res.status(404).json({
+          error: eligibility.error,
+          code: eligibility.code,
+        });
+      }
+
+      const emailRate = await enforceOtpRequestRateLimits({
+        email,
+        ip: req.ip,
+        portal: "staff",
+        chargeIp: false,
+        chargeEmail: true,
+      });
+      if (emailRate.ok === false) {
+        res.setHeader("Retry-After", String(emailRate.retryAfterSec));
+        return res.status(429).json({
+          error: emailRate.error,
+          code: "rate_limited",
+          retryAfterSec: emailRate.retryAfterSec,
+        });
       }
 
       const locale = resolveRequestLocale(
         req,
-        user.preferred_language as string,
+        user!.preferred_language as string,
         req.body?.locale,
       );
       const code = await createOtp(
         "staff",
-        user.id as number,
+        user!.id as number,
         "login",
         req.ip,
         req.headers["user-agent"] as string | undefined,
@@ -982,14 +6735,14 @@ export function createServer() {
       try {
         const emailContent = buildOtpEmail({
           locale,
-          firstName: (user.first_name as string) || "Usuario",
+          firstName: (user!.first_name as string) || "Usuario",
           code,
           portal: "staff",
           minutes: OTP_TTL_MIN,
           appUrl: APP_URL,
         });
         await sendEmail({
-          to: user.email as string,
+          to: user!.email as string,
           ...emailContent,
         });
       } catch (err) {
@@ -999,7 +6752,12 @@ export function createServer() {
         });
       }
 
-      return res.json(generic);
+      const response: RequestOtpResponse = {
+        ok: true,
+        sent: true,
+        message: "Verification code sent.",
+      };
+      return res.json(response);
     } catch (err) {
       apiLogger.error("staff request-otp failed", err);
       return res.status(500).json({ error: "Internal server error" });
@@ -1021,7 +6779,7 @@ export function createServer() {
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, public_uuid, email, first_name, last_name, role, status,
                 phone, avatar_url, preferred_language, preferred_theme,
-                last_login_at, deleted_at
+                show_form_helpers, last_login_at, deleted_at
          FROM staff_users
          WHERE LOWER(TRIM(email)) = ?
          LIMIT 1`,
@@ -1039,7 +6797,9 @@ export function createServer() {
 
       const allowed = await getLoginAllowedRoles();
       if (!allowed.has(String(row.role))) {
-        return res.status(403).json({ error: "Login not allowed for this role" });
+        return res
+          .status(403)
+          .json({ error: "Login not allowed for this role" });
       }
 
       const ok = await consumeOtp("staff", row.id as number, code, "login");
@@ -1085,7 +6845,8 @@ export function createServer() {
       const db = getPool();
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, public_uuid, email, first_name, last_name, role, status,
-                phone, avatar_url, preferred_language, preferred_theme, last_login_at
+                phone, avatar_url, preferred_language, preferred_theme,
+                show_form_helpers, last_login_at
          FROM staff_users
          WHERE id = ? AND deleted_at IS NULL
          LIMIT 1`,
@@ -1096,7 +6857,9 @@ export function createServer() {
       }
       const allowed = await getLoginAllowedRoles();
       if (!allowed.has(String(rows[0].role))) {
-        return res.status(403).json({ error: "Login not allowed for this role" });
+        return res
+          .status(403)
+          .json({ error: "Login not allowed for this role" });
       }
       const response: AuthMeResponse = { user: mapUserRow(rows[0]) };
       return res.json(response);
@@ -1124,6 +6887,22 @@ export function createServer() {
         return res.status(400).json({ error: "Valid email required" });
       }
 
+      const ipRate = await enforceOtpRequestRateLimits({
+        email,
+        ip: req.ip,
+        portal: "client",
+        chargeIp: true,
+        chargeEmail: false,
+      });
+      if (ipRate.ok === false) {
+        res.setHeader("Retry-After", String(ipRate.retryAfterSec));
+        return res.status(429).json({
+          error: ipRate.error,
+          code: "rate_limited",
+          retryAfterSec: ipRate.retryAfterSec,
+        });
+      }
+
       const db = getPool();
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, email, first_name, preferred_language, status, deleted_at
@@ -1133,28 +6912,44 @@ export function createServer() {
         [email],
       );
 
-      const generic: RequestOtpResponse = {
-        ok: true,
-        message: "If an account exists, a verification code was sent.",
-      };
-
-      if (rows.length === 0 || rows[0].deleted_at) {
-        return res.json(generic);
+      const found = rows.length > 0;
+      const user = found ? rows[0] : null;
+      const eligibility = resolveOtpRequestEligibility({
+        found,
+        deleted: user?.deleted_at != null,
+        status: user ? String(user.status) : null,
+      });
+      if (eligibility.ok === false) {
+        return res.status(404).json({
+          error: eligibility.error,
+          code: eligibility.code,
+        });
       }
 
-      const user = rows[0];
-      if (user.status !== "active" && user.status !== "invited") {
-        return res.json(generic);
+      const emailRate = await enforceOtpRequestRateLimits({
+        email,
+        ip: req.ip,
+        portal: "client",
+        chargeIp: false,
+        chargeEmail: true,
+      });
+      if (emailRate.ok === false) {
+        res.setHeader("Retry-After", String(emailRate.retryAfterSec));
+        return res.status(429).json({
+          error: emailRate.error,
+          code: "rate_limited",
+          retryAfterSec: emailRate.retryAfterSec,
+        });
       }
 
       const locale = resolveRequestLocale(
         req,
-        user.preferred_language as string,
+        user!.preferred_language as string,
         req.body?.locale,
       );
       const code = await createOtp(
         "law_firm",
-        user.id as number,
+        user!.id as number,
         "login",
         req.ip,
         req.headers["user-agent"] as string | undefined,
@@ -1163,14 +6958,14 @@ export function createServer() {
       try {
         const emailContent = buildOtpEmail({
           locale,
-          firstName: (user.first_name as string) || "Usuario",
+          firstName: (user!.first_name as string) || "Usuario",
           code,
           portal: "law_firm",
           minutes: OTP_TTL_MIN,
           appUrl: APP_URL,
         });
         await sendEmail({
-          to: user.email as string,
+          to: user!.email as string,
           ...emailContent,
         });
       } catch (err) {
@@ -1180,7 +6975,12 @@ export function createServer() {
         });
       }
 
-      return res.json(generic);
+      const response: RequestOtpResponse = {
+        ok: true,
+        sent: true,
+        message: "Verification code sent.",
+      };
+      return res.json(response);
     } catch (err) {
       apiLogger.error("client request-otp failed", err);
       return res.status(500).json({ error: "Internal server error" });
@@ -1202,7 +7002,7 @@ export function createServer() {
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, public_uuid, email, first_name, last_name, status,
                 phone, avatar_url, preferred_language, preferred_theme,
-                last_login_at, deleted_at
+                show_form_helpers, last_login_at, deleted_at
          FROM law_firm_users
          WHERE LOWER(TRIM(email)) = ?
          LIMIT 1`,
@@ -1261,7 +7061,8 @@ export function createServer() {
       const db = getPool();
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, public_uuid, email, first_name, last_name, status,
-                phone, avatar_url, preferred_language, preferred_theme, last_login_at
+                phone, avatar_url, preferred_language, preferred_theme,
+                show_form_helpers, last_login_at
          FROM law_firm_users
          WHERE id = ? AND deleted_at IS NULL
          LIMIT 1`,
@@ -1281,11 +7082,89 @@ export function createServer() {
   app.post("/api/auth/staff/request-otp", dbUnavailable, staffRequestOtp);
   app.post("/api/auth/staff/verify-otp", dbUnavailable, staffVerifyOtp);
   app.get("/api/auth/staff/me", dbUnavailable, requireStaff, staffMe);
+  app.patch(
+    "/api/auth/staff/preferences",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const parsed = parseUpdatePreferences(req.body);
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
+        const db = getPool();
+        await db.query<ResultSetHeader>(
+          `UPDATE staff_users
+           SET show_form_helpers = ?
+           WHERE id = ? AND deleted_at IS NULL`,
+          [parsed.showFormHelpers ? 1 : 0, req.auth!.id],
+        );
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, email, first_name, last_name, role, status,
+                  phone, avatar_url, preferred_language, preferred_theme,
+                  show_form_helpers, last_login_at
+           FROM staff_users
+           WHERE id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [req.auth!.id],
+        );
+        if (rows.length === 0) {
+          return res.status(401).json({ error: "Unauthorized" });
+        }
+        const response: UpdatePreferencesResponse = {
+          user: mapUserRow(rows[0]),
+        };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("staff preferences update failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
   app.post("/api/auth/staff/logout", dbUnavailable, authLogout);
 
   app.post("/api/auth/client/request-otp", dbUnavailable, clientRequestOtp);
   app.post("/api/auth/client/verify-otp", dbUnavailable, clientVerifyOtp);
   app.get("/api/auth/client/me", dbUnavailable, requireLawFirm, clientMe);
+  app.patch(
+    "/api/auth/client/preferences",
+    dbUnavailable,
+    requireLawFirm,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const parsed = parseUpdatePreferences(req.body);
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
+        const db = getPool();
+        await db.query<ResultSetHeader>(
+          `UPDATE law_firm_users
+           SET show_form_helpers = ?
+           WHERE id = ? AND deleted_at IS NULL`,
+          [parsed.showFormHelpers ? 1 : 0, req.auth!.id],
+        );
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, email, first_name, last_name, status,
+                  phone, avatar_url, preferred_language, preferred_theme,
+                  show_form_helpers, last_login_at
+           FROM law_firm_users
+           WHERE id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [req.auth!.id],
+        );
+        if (rows.length === 0) {
+          return res.status(401).json({ error: "Unauthorized" });
+        }
+        const response: UpdatePreferencesResponse = {
+          user: mapLawFirmUserRow(rows[0]),
+        };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("client preferences update failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
   app.post("/api/auth/client/logout", dbUnavailable, authLogout);
 
   // Legacy aliases → staff auth
@@ -1383,10 +7262,22 @@ export function createServer() {
         const params: unknown[] = [];
         if (q) {
           where.push(
-            `(case_number LIKE ? OR title LIKE ? OR IFNULL(court_name,'') LIKE ? OR IFNULL(property_city,'') LIKE ?)`,
+            `(case_number LIKE ? OR title LIKE ? OR IFNULL(court_name,'') LIKE ? OR IFNULL(property_city,'') LIKE ?
+              OR EXISTS (
+                SELECT 1 FROM law_firms lf
+                WHERE lf.id = cases.law_firm_id AND lf.name LIKE ?
+              )
+              OR EXISTS (
+                SELECT 1 FROM case_assignments a
+                JOIN staff_users u ON u.id = a.user_id
+                WHERE a.case_id = cases.id
+                  AND a.unassigned_at IS NULL
+                  AND a.assignment_role = 'expert' AND a.is_primary = 1
+                  AND CONCAT(IFNULL(u.first_name,''), ' ', IFNULL(u.last_name,'')) LIKE ?
+              ))`,
           );
           const like = `%${q}%`;
-          params.push(like, like, like, like);
+          params.push(like, like, like, like, like, like);
         }
         if (status) {
           where.push("status = ?");
@@ -1408,7 +7299,9 @@ export function createServer() {
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT id, public_uuid, case_number, title, status, priority,
                   court_name, property_city, property_state, law_firm_id,
-                  assigned_expert_id, inspection_deadline_at, created_at, updated_at
+                  assigned_expert_id, inspection_deadline_at, involves_fatality,
+                  street_view_validated_at, property_lat, property_lng,
+                  created_at, updated_at
            FROM cases
            WHERE ${whereSql}
            ORDER BY ${sortCol} ${sortDir}
@@ -1416,7 +7309,7 @@ export function createServer() {
           [...params, limit, offset],
         );
         const response: CasesListResponse = {
-          cases: rows.map(mapCaseSummary),
+          cases: await attachListadoToCases(rows.map(mapCaseSummary), rows),
           pagination: buildPagination(page, limit, total),
         };
         return res.json(response);
@@ -1450,6 +7343,14 @@ export function createServer() {
           return res.status(400).json({ error: "Invalid priority" });
         }
 
+        const coords = resolveOptionalLatLng(
+          body.propertyLat,
+          body.propertyLng,
+        );
+        if (coords.ok === false) {
+          return res.status(400).json({ error: coords.error });
+        }
+
         const caseNumber = await allocateCaseNumber();
         const publicUuid = generatePublicUuid();
         const db = getPool();
@@ -1459,8 +7360,9 @@ export function createServer() {
              court_name, external_reference, priority, status,
              plaintiff_name, defendant_name, property_address, property_city,
              property_state, property_postal_code, property_country,
+             property_lat, property_lng, involves_fatality,
              intake_received_at, created_by
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
           [
             publicUuid,
             caseNumber,
@@ -1477,6 +7379,9 @@ export function createServer() {
             body.propertyState?.trim() || null,
             body.propertyPostalCode?.trim() || null,
             body.propertyCountry?.trim() || "MX",
+            coords.value?.lat ?? null,
+            coords.value?.lng ?? null,
+            body.involvesFatality ? 1 : 0,
             req.auth!.id,
           ],
         );
@@ -1552,7 +7457,8 @@ export function createServer() {
         );
         const [docRows] = await db.query<RowDataPacket[]>(
           `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
-                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes
+                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
+                  v.ocr_status, v.ocr_text, v.ocr_processed_at
            FROM documents d
            LEFT JOIN document_versions v
              ON v.document_id = d.id AND v.version_number = d.current_version
@@ -1603,6 +7509,16 @@ export function createServer() {
            LIMIT 100`,
           [caseId],
         );
+        const [evidenceRows] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, inspection_id, evidence_type, category, title, caption,
+                  storage_key, mime_type, file_size_bytes, captured_at, lat, lng,
+                  captured_by, created_at
+           FROM evidence_items
+           WHERE case_id = ? AND deleted_at IS NULL
+           ORDER BY created_at DESC
+           LIMIT 200`,
+          [caseId],
+        );
         const [tripRows] = await db.query<RowDataPacket[]>(
           `SELECT id, public_uuid, status, departure_at, return_at, origin_city, destination_city, notes
            FROM logistics_trips
@@ -1619,6 +7535,10 @@ export function createServer() {
            LIMIT 100`,
           [caseId],
         );
+        const [invoiceStatusRows] = await db.query<RowDataPacket[]>(
+          `SELECT status, invoice_type FROM invoices WHERE case_id = ?`,
+          [caseId],
+        );
         const [reportRows] = await db.query<RowDataPacket[]>(
           `SELECT id, public_uuid, status, version_number, investigation_summary, conclusions,
                   submitted_at, approved_at, delivered_at, created_at
@@ -1626,6 +7546,24 @@ export function createServer() {
            WHERE case_id = ?
            ORDER BY created_at DESC
            LIMIT 20`,
+          [caseId],
+        );
+        const [reviewRows] = await db.query<RowDataPacket[]>(
+          `SELECT id, case_id, entity_type, entity_id, review_stage, status,
+                  requested_by, assigned_to, due_at, completed_at, notes, created_at
+           FROM review_requests
+           WHERE case_id = ?
+           ORDER BY created_at DESC
+           LIMIT 50`,
+          [caseId],
+        );
+        const [auditRows] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, actor_type, actor_id, entity_type, entity_id,
+                  action, comment, created_at
+           FROM audit_logs
+           WHERE case_id = ?
+           ORDER BY created_at DESC
+           LIMIT 50`,
           [caseId],
         );
 
@@ -1644,33 +7582,34 @@ export function createServer() {
           authorId: (n.author_id as number | null) ?? null,
           createdAt: toIso(n.created_at) || new Date().toISOString(),
         }));
-        const documents: CaseDocumentItem[] = docRows.map((d) => ({
-          id: d.id as number,
-          publicUuid: d.public_uuid as string,
-          category: d.category as DocumentCategory,
-          title: d.title as string,
-          status: d.status as string,
-          currentVersion: Number(d.current_version) || 1,
-          fileName: (d.file_name as string | null) ?? null,
-          mimeType: (d.mime_type as string | null) ?? null,
-          storageKey: (d.storage_key as string | null) ?? null,
-          fileSizeBytes:
-            d.file_size_bytes != null ? Number(d.file_size_bytes) : null,
-          createdAt: toIso(d.created_at) || new Date().toISOString(),
-        }));
+        const documentsRaw: CaseDocumentItem[] =
+          docRows.map(mapCaseDocumentItem);
+        const documents: CaseDocumentItem[] = await Promise.all(
+          documentsRaw.map(async (d) => ({
+            ...d,
+            storageKey: d.storageKey
+              ? await signBlobUrlForClient(d.storageKey)
+              : null,
+          })),
+        );
         const questionnaires: QuestionnaireItem[] = questionnaireRows.map(
-          (q) => ({
-            id: q.id as number,
-            publicUuid: q.public_uuid as string,
-            status: q.status as QuestionnaireItem["status"],
-            contentJson: (q.content_json as Record<string, unknown> | null) ?? null,
-            chronologyJson:
-              (q.chronology_json as Record<string, unknown> | null) ?? null,
-            technicalObservations:
-              (q.technical_observations as string | null) ?? null,
-            submittedAt: toIso(q.submitted_at),
-            createdAt: toIso(q.created_at) || new Date().toISOString(),
-          }),
+          (q) => {
+            const qStatus = q.status as QuestionnaireStatus;
+            return {
+              id: q.id as number,
+              publicUuid: q.public_uuid as string,
+              status: qStatus,
+              contentJson:
+                (q.content_json as Record<string, unknown> | null) ?? null,
+              chronologyJson:
+                (q.chronology_json as Record<string, unknown> | null) ?? null,
+              technicalObservations:
+                (q.technical_observations as string | null) ?? null,
+              submittedAt: toIso(q.submitted_at),
+              createdAt: toIso(q.created_at) || new Date().toISOString(),
+              allowedNextStatuses: getAllowedQuestionnaireStatuses(qStatus),
+            };
+          },
         );
         const inspections: InspectionItem[] = inspectionRows.map((i) => ({
           id: i.id as number,
@@ -1684,13 +7623,37 @@ export function createServer() {
         const measurements: MeasurementItem[] = measurementRows.map((m) => ({
           id: m.id as number,
           inspectionId: (m.inspection_id as number | null) ?? null,
-          measurementType: m.measurement_type as MeasurementItem["measurementType"],
+          measurementType:
+            m.measurement_type as MeasurementItem["measurementType"],
           valueNumeric: Number(m.value_numeric) || 0,
           unit: m.unit as MeasurementItem["unit"],
           poleId: (m.pole_id as string | null) ?? null,
           notes: (m.notes as string | null) ?? null,
           recordedAt: toIso(m.recorded_at) || new Date().toISOString(),
         }));
+        const evidenceRaw: EvidenceItem[] = evidenceRows.map(mapEvidenceItem);
+        const evidence: EvidenceItem[] = await Promise.all(
+          evidenceRaw.map(async (e) => ({
+            ...e,
+            storageKey: e.storageKey
+              ? await signBlobUrlForClient(e.storageKey)
+              : null,
+          })),
+        );
+        const evidenceChecklist = getEvidenceChecklistStatus(
+          mergeEvidenceCategories(
+            evidence.map((e) => e.category),
+            measurements.map((m) => m.measurementType),
+          ).map((category) => ({
+            category: category as EvidenceItem["category"],
+          })),
+        );
+        const hasUnpaidInvoices = hasBlockingFinanceForCompletion(
+          invoiceStatusRows.map((r) => ({
+            status: String(r.status),
+            invoiceType: String(r.invoice_type || ""),
+          })),
+        );
         const trips: LogisticsTripItem[] = tripRows.map((t) => ({
           id: t.id as number,
           publicUuid: t.public_uuid as string,
@@ -1701,25 +7664,282 @@ export function createServer() {
           destinationCity: (t.destination_city as string | null) ?? null,
           notes: (t.notes as string | null) ?? null,
         }));
+        const deadlines = deadlineRows.map(mapDeadline);
+        const documentCompleteness = buildDocumentCompleteness(
+          documentsRaw
+            .filter((d) => isActiveDocumentStatus(d.status))
+            .map((d) => d.category),
+          Boolean(caseRow.involves_fatality),
+        );
 
-        const response: CaseDetailResponse = {
-          case: mapCaseDetail(caseRow),
-          history,
+        await maybeNotifyDeadlineApproaching(caseRow, deadlines);
+
+        const scoped = filterCaseDetailSectionsForRole(req.auth?.role, {
           notes,
           documents,
           assignments: assignmentRows.map(mapAssignment),
-          deadlines: deadlineRows.map(mapDeadline),
+          deadlines,
           questionnaires,
           inspections,
           measurements,
+          evidence,
+          evidenceChecklist,
+          reviewRequests: reviewRows.map(mapReviewRequest),
+          documentCompleteness,
+          auditLogs: auditRows.map(mapAuditLog),
           trips,
           expenses: expenseRows.map(mapExpense),
           technicalReports: reportRows.map(mapTechnicalReport),
-          allowedNextStatuses: getAllowedNextStatuses(status),
+        });
+
+        const lastWorkflowStatus =
+          status === "on_hold" ? await loadHoldResumeStatus(caseId) : null;
+        const response: CaseDetailResponse = {
+          case: mapCaseDetail(caseRow),
+          history,
+          ...scoped,
+          allowedNextStatuses: getAllowedNextStatuses(status, {
+            role: req.auth?.role,
+            lastWorkflowStatus,
+          }).filter((to) =>
+            canApplyCaseStatusChange(req.auth?.role, status, to),
+          ),
+          hasUnpaidInvoices,
+          processGate: buildProcessGateSnapshot(
+            status,
+            await loadProcessGateInput(caseRow),
+          ),
         };
         return res.json(response);
       } catch (err) {
         apiLogger.error("cases get failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/cases/:publicUuid/location",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canEditCaseLocation(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const body = req.body as UpdateCaseLocationRequest;
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+
+        let nextLatLng: { lat: number; lng: number } | null;
+        if (body.propertyLat === undefined && body.propertyLng === undefined) {
+          nextLatLng =
+            caseRow.property_lat != null && caseRow.property_lng != null
+              ? {
+                  lat: Number(caseRow.property_lat),
+                  lng: Number(caseRow.property_lng),
+                }
+              : null;
+        } else {
+          const resolved = resolveOptionalLatLng(
+            body.propertyLat,
+            body.propertyLng,
+          );
+          if (resolved.ok === false) {
+            return res.status(400).json({ error: resolved.error });
+          }
+          nextLatLng = resolved.value;
+        }
+
+        const db = getPool();
+        await db.query<ResultSetHeader>(
+          `UPDATE cases
+           SET property_address = ?,
+               property_city = ?,
+               property_state = ?,
+               property_postal_code = ?,
+               property_country = ?,
+               property_lat = ?,
+               property_lng = ?,
+               gps_validated_at = CASE
+                 WHEN ? IS NULL THEN NULL
+                 ELSE COALESCE(gps_validated_at, NOW())
+               END
+           WHERE id = ?`,
+          [
+            body.propertyAddress !== undefined
+              ? body.propertyAddress?.trim() || null
+              : caseRow.property_address,
+            body.propertyCity !== undefined
+              ? body.propertyCity?.trim() || null
+              : caseRow.property_city,
+            body.propertyState !== undefined
+              ? body.propertyState?.trim() || null
+              : caseRow.property_state,
+            body.propertyPostalCode !== undefined
+              ? body.propertyPostalCode?.trim() || null
+              : caseRow.property_postal_code,
+            body.propertyCountry !== undefined
+              ? body.propertyCountry?.trim() || "MX"
+              : caseRow.property_country || "MX",
+            nextLatLng?.lat ?? null,
+            nextLatLng?.lng ?? null,
+            nextLatLng?.lat ?? null,
+            caseRow.id,
+          ],
+        );
+
+        await db.query<ResultSetHeader>(
+          `INSERT INTO audit_logs
+             (public_uuid, actor_type, actor_id, case_id, entity_type, entity_id, action,
+              previous_value_json, new_value_json, ip_address)
+           VALUES (?, 'staff', ?, ?, 'case', ?, 'location_update', ?, ?, ?)`,
+          [
+            generatePublicUuid(),
+            req.auth!.id,
+            caseRow.id,
+            String(caseRow.id),
+            JSON.stringify({
+              propertyLat: caseRow.property_lat,
+              propertyLng: caseRow.property_lng,
+            }),
+            JSON.stringify({
+              propertyLat: nextLatLng?.lat ?? null,
+              propertyLng: nextLatLng?.lng ?? null,
+            }),
+            req.ip || null,
+          ],
+        );
+
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM cases WHERE id = ? LIMIT 1`,
+          [caseRow.id],
+        );
+        const response: CaseResponse = { case: mapCaseDetail(updated[0]) };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("cases location patch failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/cases/:publicUuid",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canChangeCaseStatus(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const parsed = parseUpdateCaseFlags(req.body as UpdateCaseFlagsRequest);
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+
+        const db = getPool();
+        await db.query<ResultSetHeader>(
+          `UPDATE cases SET involves_fatality = ? WHERE id = ?`,
+          [parsed.value.involvesFatality ? 1 : 0, caseRow.id],
+        );
+        await db.query<ResultSetHeader>(
+          `INSERT INTO audit_logs
+             (public_uuid, actor_type, actor_id, case_id, entity_type, entity_id, action,
+              previous_value_json, new_value_json, ip_address)
+           VALUES (?, 'staff', ?, ?, 'case', ?, 'flags_update', ?, ?, ?)`,
+          [
+            generatePublicUuid(),
+            req.auth!.id,
+            caseRow.id,
+            String(caseRow.id),
+            JSON.stringify({
+              involvesFatality: Boolean(caseRow.involves_fatality),
+            }),
+            JSON.stringify({ involvesFatality: parsed.value.involvesFatality }),
+            req.ip || null,
+          ],
+        );
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM cases WHERE id = ? LIMIT 1`,
+          [caseRow.id],
+        );
+        await notifyMissingDocumentsIfNeeded(updated[0]);
+        const response: CaseResponse = { case: mapCaseDetail(updated[0]) };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("cases flags patch failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/geo/geocode",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const body = req.body as GeocodeRequest;
+        const normalized = normalizeGeocodeQuery(body?.query);
+        if (normalized.ok === false) {
+          return res.status(400).json({ error: normalized.error });
+        }
+        const query = normalized.query;
+        const asCoords = parseGpsText(query);
+        if (asCoords.ok === true) {
+          const response: GeocodeResponse = {
+            lat: asCoords.lat,
+            lng: asCoords.lng,
+            displayName: `${asCoords.lat}, ${asCoords.lng}`,
+          };
+          return res.json(response);
+        }
+
+        const url = new URL("https://nominatim.openstreetmap.org/search");
+        url.searchParams.set("q", query);
+        url.searchParams.set("format", "json");
+        url.searchParams.set("limit", "1");
+        const fetched = await fetch(url.toString(), {
+          headers: {
+            Accept: "application/json",
+            "User-Agent":
+              "DELACHE/1.0 (case operations; https://delache.local)",
+          },
+        });
+        if (!fetched.ok) {
+          return res.status(502).json({ error: "Geocoding provider failed" });
+        }
+        const data = (await fetched.json()) as Array<{
+          lat?: string;
+          lon?: string;
+          display_name?: string;
+        }>;
+        if (!Array.isArray(data) || data.length === 0) {
+          return res.status(404).json({ error: "No results for query" });
+        }
+        const hit = data[0];
+        const resolved = resolveOptionalLatLng(
+          Number(hit.lat),
+          Number(hit.lon),
+        );
+        if (resolved.ok === false || !resolved.value) {
+          return res.status(502).json({ error: "Invalid geocode result" });
+        }
+        const response: GeocodeResponse = {
+          lat: resolved.value.lat,
+          lng: resolved.value.lng,
+          displayName: String(hit.display_name || query),
+        };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("geocode failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -1747,9 +7967,34 @@ export function createServer() {
         }
 
         const fromStatus = rows[0].status as CaseStatus;
-        const check = canTransition(fromStatus, toStatus);
+        if (!canApplyCaseStatusChange(req.auth?.role, fromStatus, toStatus)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const lastWorkflowStatus =
+          fromStatus === "on_hold"
+            ? await loadHoldResumeStatus(rows[0].id as number)
+            : null;
+        const check = canTransition(fromStatus, toStatus, {
+          role: req.auth?.role,
+          lastWorkflowStatus,
+        });
         if (check.ok === false) {
           return res.status(400).json({ error: check.reason });
+        }
+
+        const enforcePoint = processPointToEnforceOnTransition(
+          fromStatus,
+          toStatus,
+        );
+        if (enforcePoint) {
+          const gateInput = await loadProcessGateInput(rows[0]);
+          const gates = evaluateProcessGates(enforcePoint, gateInput);
+          if (gates.ok === false) {
+            return res.status(409).json({
+              error: "Process gates not satisfied",
+              missing: gates.missing,
+            });
+          }
         }
 
         const completedAt =
@@ -1775,8 +8020,67 @@ export function createServer() {
           ],
         );
 
-        if (toStatus === "court_acceptance") {
-          await ensureCourtAcceptanceDeadline(rows[0].id as number, req.auth!.id);
+        const caseId = rows[0].id as number;
+        const actorId = req.auth!.id;
+        await completeTypedDeadlines(
+          caseId,
+          deadlineTypesToCompleteOnTransition(fromStatus, toStatus),
+        );
+        await maybeStartTenDayClock({ ...rows[0], status: toStatus }, actorId);
+        if (
+          fromStatus === "legal_review_questionnaire" &&
+          toStatus === "questionnaire"
+        ) {
+          await db.query<ResultSetHeader>(
+            `UPDATE questionnaires
+             SET status = 'changes_requested'
+             WHERE case_id = ?
+               AND status IN ('submitted', 'legal_review', 'approved')`,
+            [caseId],
+          );
+        }
+        if (
+          fromStatus === "legal_validation" &&
+          toStatus === "technical_report"
+        ) {
+          await db.query<ResultSetHeader>(
+            `UPDATE technical_reports
+             SET status = 'changes_requested'
+             WHERE case_id = ?
+               AND status IN (
+                 'approved_internal', 'external_review', 'approved'
+               )`,
+            [caseId],
+          );
+        }
+        if (toStatus === "questionnaire") {
+          await ensureTypedDeadline({
+            caseId,
+            deadlineType: "questionnaire",
+            title: "Questionnaire, GPS and Street View (3 business days)",
+            businessDays: 3,
+            actorId,
+          });
+        }
+        if (toStatus === "legal_review_questionnaire") {
+          await ensureTypedDeadline({
+            caseId,
+            deadlineType: "legal_review",
+            title: "Internal legal review of questionnaire (2 business days)",
+            businessDays: 2,
+            actorId,
+          });
+        }
+        if (toStatus === "legal_validation") {
+          const clampRaw = rows[0].inspection_deadline_at;
+          await ensureTypedDeadline({
+            caseId,
+            deadlineType: "external_legal_validation",
+            title: "Law-firm validation (3 business days, inside 10-day clock)",
+            businessDays: 3,
+            actorId,
+            clampTo: clampRaw ? new Date(clampRaw as string) : null,
+          });
         }
 
         await db.query<ResultSetHeader>(
@@ -1817,13 +8121,16 @@ export function createServer() {
               recipientActor: "law_firm",
               recipientId: contact.id,
               caseId: rows[0].id as number,
-              type: "general",
+              type:
+                toStatus === "court_delivery" || toStatus === "court_acceptance"
+                  ? "court_filing"
+                  : "general",
               title: `${rows[0].case_number}: ${toStatus}`,
               body: `Status updated from ${fromStatus} to ${toStatus}.`,
-            });
-            await safeSendEmail(
-              contact.email,
-              buildCaseStatusEmail({
+              emailTo: contact.email,
+              caseNumber: String(rows[0].case_number),
+              caseUrl: `${APP_URL}/client/cases/${rows[0].public_uuid}`,
+              email: buildCaseStatusEmail({
                 locale: contact.locale,
                 firstName: contact.firstName,
                 caseNumber: String(rows[0].case_number),
@@ -1833,15 +8140,40 @@ export function createServer() {
                 caseUrl: `${APP_URL}/client/cases/${rows[0].public_uuid}`,
                 appUrl: APP_URL,
               }),
-              "case-status",
-            );
+            });
           }
         }
+
+        const caseAutomation = automationOnCaseCompletedOrRatified(toStatus);
+        if (caseAutomation.length > 0) {
+          await runAutomationActions(caseAutomation, {
+            caseId: rows[0].id as number,
+            lawFirmId:
+              rows[0].law_firm_id != null ? Number(rows[0].law_firm_id) : null,
+            actorId: req.auth!.id,
+            caseNumber: String(rows[0].case_number),
+            fallbackRecipientId: req.auth!.id,
+          });
+        }
+
+        const [deadlineRows] = await db.query<RowDataPacket[]>(
+          `SELECT id, deadline_type, title, due_at, business_days, severity_level, completed_at
+           FROM case_deadlines
+           WHERE case_id = ? AND completed_at IS NULL
+           ORDER BY due_at ASC
+           LIMIT 50`,
+          [rows[0].id],
+        );
+        await maybeNotifyDeadlineApproaching(
+          rows[0],
+          deadlineRows.map(mapDeadline),
+        );
 
         const [updated] = await db.query<RowDataPacket[]>(
           `SELECT * FROM cases WHERE id = ? LIMIT 1`,
           [rows[0].id],
         );
+        await notifyMissingDocumentsIfNeeded(updated[0]);
         const response: CaseResponse = { case: mapCaseDetail(updated[0]) };
         return res.json(response);
       } catch (err) {
@@ -1857,6 +8189,9 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canViewCaseSection(req.auth?.role, "notes")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateCaseNoteRequest;
         const text = String(body?.body || "").trim();
         if (!text) {
@@ -1897,6 +8232,9 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canMutateCaseSection(req.auth?.role, "documents")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         if (!process.env.BLOB_READ_WRITE_TOKEN) {
           return res.status(503).json({
             error: "BLOB_READ_WRITE_TOKEN not configured",
@@ -1906,7 +8244,11 @@ export function createServer() {
         const title = String(body?.title || "").trim();
         const fileName = String(body?.fileName || "").trim();
         const base64 = String(body?.data || "");
-        const category = (body.category || "other") as DocumentCategory;
+        const categoryParsed = parseRequiredDocumentCategory(body.category);
+        if (categoryParsed.ok === false) {
+          return res.status(400).json({ error: categoryParsed.error });
+        }
+        const category = categoryParsed.value;
         if (!title || !fileName || !base64) {
           return res
             .status(400)
@@ -1915,7 +8257,7 @@ export function createServer() {
 
         const db = getPool();
         const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT id FROM cases WHERE public_uuid = ? AND deleted_at IS NULL LIMIT 1`,
+          `SELECT * FROM cases WHERE public_uuid = ? AND deleted_at IS NULL LIMIT 1`,
           [req.params.publicUuid],
         );
         if (rows.length === 0) {
@@ -1923,55 +8265,369 @@ export function createServer() {
         }
 
         const buffer = Buffer.from(base64, "base64");
-        if (buffer.length === 0 || buffer.length > 15 * 1024 * 1024) {
+        if (buffer.length === 0 || buffer.length > DMS_MAX_FILE_BYTES) {
           return res.status(400).json({ error: "Invalid file size" });
         }
 
-        const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const pathname = `cases/${rows[0].id}/${Date.now()}-${safeName}`;
-        const blob = await put(pathname, buffer, {
-          access: "public",
-          contentType: body.contentType || undefined,
-          token: process.env.BLOB_READ_WRITE_TOKEN,
+        const document = await insertCaseDocumentUpload({
+          caseId: rows[0].id as number,
+          title,
+          fileName,
+          contentType: body.contentType || "application/octet-stream",
+          buffer,
+          category,
+          uploadedByStaffId: req.auth!.id,
+          blobPathPrefix: `cases/${rows[0].id}`,
         });
 
-        const docUuid = generatePublicUuid();
-        const [docResult] = await db.query<ResultSetHeader>(
-          `INSERT INTO documents
-             (public_uuid, case_id, category, title, current_version, status, uploaded_by)
-           VALUES (?, ?, ?, ?, 1, 'uploaded', ?)`,
-          [docUuid, rows[0].id, category, title, req.auth!.id],
-        );
-        await db.query<ResultSetHeader>(
-          `INSERT INTO document_versions
-             (document_id, version_number, storage_key, file_name, mime_type, file_size_bytes, uploaded_by)
-           VALUES (?, 1, ?, ?, ?, ?, ?)`,
-          [
-            docResult.insertId,
-            blob.url,
-            fileName,
-            body.contentType || "application/octet-stream",
-            buffer.length,
-            req.auth!.id,
-          ],
-        );
+        await notifyMissingDocumentsIfNeeded(rows[0]);
+        await maybeStartTenDayClock(rows[0], req.auth!.id);
 
-        const document: CaseDocumentItem = {
-          id: docResult.insertId,
-          publicUuid: docUuid,
-          category,
-          title,
-          status: "uploaded",
-          currentVersion: 1,
-          fileName,
-          mimeType: body.contentType || null,
-          storageKey: blob.url,
-          fileSizeBytes: buffer.length,
-          createdAt: new Date().toISOString(),
-        };
         return res.status(201).json({ document });
       } catch (err) {
         apiLogger.error("cases documents create failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/cases/:publicUuid/documents/:documentUuid",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canMutateCaseSection(req.auth?.role, "documents")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const parsed = parseUpdateDocumentCategory(req.body);
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
+        const db = getPool();
+        const [cases] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM cases WHERE public_uuid = ? AND deleted_at IS NULL LIMIT 1`,
+          [req.params.publicUuid],
+        );
+        if (cases.length === 0) {
+          return res.status(404).json({ error: "Case not found" });
+        }
+        const [docs] = await db.query<RowDataPacket[]>(
+          `SELECT id FROM documents
+           WHERE public_uuid = ? AND case_id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [req.params.documentUuid, cases[0].id],
+        );
+        if (docs.length === 0) {
+          return res.status(404).json({ error: "Document not found" });
+        }
+        await db.query<ResultSetHeader>(
+          `UPDATE documents SET category = ? WHERE id = ?`,
+          [parsed.value.category, docs[0].id],
+        );
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
+                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
+                  v.ocr_status, v.ocr_text, v.ocr_processed_at
+           FROM documents d
+           LEFT JOIN document_versions v
+             ON v.document_id = d.id AND v.version_number = d.current_version
+           WHERE d.id = ?
+           LIMIT 1`,
+          [docs[0].id],
+        );
+        await notifyMissingDocumentsIfNeeded(cases[0]);
+        await maybeStartTenDayClock(cases[0], req.auth!.id);
+        return res.json({ document: mapCaseDocumentItem(updated[0]) });
+      } catch (err) {
+        apiLogger.error("cases document category patch failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/cases/:publicUuid/documents/bulk",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canMutateCaseSection(req.auth?.role, "documents")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        if (!process.env.BLOB_READ_WRITE_TOKEN) {
+          return res.status(503).json({
+            error: "BLOB_READ_WRITE_TOKEN not configured",
+          });
+        }
+        const body = req.body as BulkUploadDocumentsRequest;
+        const validated = validateBulkDocuments(body?.files);
+        if (validated.ok === false) {
+          return res.status(400).json({ error: validated.error });
+        }
+
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM cases WHERE public_uuid = ? AND deleted_at IS NULL LIMIT 1`,
+          [req.params.publicUuid],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Case not found" });
+        }
+
+        const prepared: Array<{
+          title: string;
+          fileName: string;
+          contentType: string;
+          buffer: Buffer;
+          category: DocumentCategory;
+        }> = [];
+        for (const file of validated.files) {
+          const buffer = Buffer.from(file.dataBase64, "base64");
+          if (buffer.length === 0 || buffer.length > DMS_MAX_FILE_BYTES) {
+            return res.status(400).json({
+              error: `Invalid file size for ${file.fileName}`,
+            });
+          }
+          const catParsed = parseRequiredDocumentCategory(file.category);
+          if (catParsed.ok === false) {
+            return res.status(400).json({
+              error: `${file.fileName}: ${catParsed.error}`,
+            });
+          }
+          prepared.push({
+            title: file.title,
+            fileName: file.fileName,
+            contentType: file.contentType,
+            buffer,
+            category: catParsed.value,
+          });
+        }
+
+        // Blob uploads first (outside DB txn), then insert all rows atomically.
+        const staged: Array<{
+          title: string;
+          fileName: string;
+          mimeType: string;
+          buffer: Buffer;
+          category: DocumentCategory;
+          storageKey: string;
+          ocrStatus: OcrStatus;
+          ocrText: string | null;
+          ocrProcessedAt: Date | null;
+        }> = [];
+        for (const file of prepared) {
+          const mimeType = file.contentType || "application/octet-stream";
+          const ocr = await resolveUploadOcrFields(mimeType, file.buffer);
+          const safeName = file.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const pathname = `cases/${rows[0].id}/${Date.now()}-${safeName}`;
+          const blob = await putPrivateBlob(
+            pathname,
+            file.buffer,
+            file.contentType || undefined,
+          );
+          staged.push({
+            title: file.title,
+            fileName: file.fileName,
+            mimeType,
+            buffer: file.buffer,
+            category: file.category,
+            storageKey: blob.url,
+            ocrStatus: ocr.ocrStatus,
+            ocrText: ocr.ocrText,
+            ocrProcessedAt: ocr.ocrProcessedAt,
+          });
+        }
+
+        const conn = await db.getConnection();
+        const documents: CaseDocumentItem[] = [];
+        try {
+          await conn.beginTransaction();
+          for (const file of staged) {
+            const docUuid = generatePublicUuid();
+            const [docResult] = await conn.query<ResultSetHeader>(
+              `INSERT INTO documents
+                 (public_uuid, case_id, category, title, current_version, status, uploaded_by)
+               VALUES (?, ?, ?, ?, 1, 'uploaded', ?)`,
+              [docUuid, rows[0].id, file.category, file.title, req.auth!.id],
+            );
+            await conn.query<ResultSetHeader>(
+              `INSERT INTO document_versions
+                 (document_id, version_number, storage_key, file_name, mime_type, file_size_bytes,
+                  uploaded_by, ocr_text, ocr_status, ocr_processed_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                docResult.insertId,
+                file.storageKey,
+                file.fileName,
+                file.mimeType,
+                file.buffer.length,
+                req.auth!.id,
+                file.ocrText,
+                file.ocrStatus,
+                file.ocrProcessedAt
+                  ? toMysqlDateTimeUtc(file.ocrProcessedAt)
+                  : null,
+              ],
+            );
+            documents.push({
+              id: docResult.insertId,
+              publicUuid: docUuid,
+              category: file.category,
+              title: file.title,
+              status: "uploaded",
+              currentVersion: 1,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              storageKey: await signBlobUrlForClient(file.storageKey),
+              fileSizeBytes: file.buffer.length,
+              ocrStatus: file.ocrStatus,
+              ocrText: file.ocrText,
+              ocrProcessedAt: file.ocrProcessedAt
+                ? file.ocrProcessedAt.toISOString()
+                : null,
+              createdAt: new Date().toISOString(),
+            });
+          }
+          await conn.commit();
+        } catch (err) {
+          await conn.rollback();
+          await safeDeleteBlobs(staged.map((s) => s.storageKey));
+          throw err;
+        } finally {
+          conn.release();
+        }
+
+        await notifyMissingDocumentsIfNeeded(rows[0]);
+        await maybeStartTenDayClock(rows[0], req.auth!.id);
+
+        const response: BulkUploadDocumentsResponse = { documents };
+        return res.status(201).json(response);
+      } catch (err) {
+        apiLogger.error("cases documents bulk create failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/cases/:publicUuid/documents/:documentUuid/ocr",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canMutateCaseSection(req.auth?.role, "documents")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const body = (req.body || {}) as SaveDocumentOcrRequest;
+        const clientOcrText =
+          body.ocrText != null ? String(body.ocrText).trim() : "";
+
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
+                  d.created_at, v.id AS version_id, v.file_name, v.mime_type, v.storage_key,
+                  v.file_size_bytes, v.ocr_status, v.ocr_text, v.ocr_processed_at
+           FROM documents d
+           JOIN cases c ON c.id = d.case_id
+           LEFT JOIN document_versions v
+             ON v.document_id = d.id AND v.version_number = d.current_version
+           WHERE c.public_uuid = ? AND c.deleted_at IS NULL
+             AND d.public_uuid = ? AND d.deleted_at IS NULL
+           LIMIT 1`,
+          [req.params.publicUuid, req.params.documentUuid],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Document not found" });
+        }
+
+        const row = rows[0];
+        const versionId = row.version_id as number | null;
+        if (!versionId) {
+          return res.status(400).json({ error: "Document has no version" });
+        }
+
+        const mimeType = String(row.mime_type || "").toLowerCase();
+        let ocrStatus: OcrStatus =
+          (body.ocrStatus as OcrStatus | undefined) || "completed";
+        let ocrText: string | null = null;
+        let ocrProcessedAt = new Date();
+
+        if (clientOcrText) {
+          ocrText = truncateOcrText(clientOcrText);
+          ocrStatus = body.ocrStatus || "completed";
+        } else if (mimeType === "application/pdf") {
+          const storageKey = String(row.storage_key || "").trim();
+          if (!storageKey) {
+            return res.status(400).json({
+              error: "PDF storage URL unavailable for OCR",
+            });
+          }
+          await db.query<ResultSetHeader>(
+            `UPDATE document_versions SET ocr_status = 'processing' WHERE id = ?`,
+            [versionId],
+          );
+          const buffer = await fetchBlobBytes(storageKey);
+          if (!buffer) {
+            await db.query<ResultSetHeader>(
+              `UPDATE document_versions
+                 SET ocr_status = 'failed', ocr_processed_at = ?
+               WHERE id = ?`,
+              [toMysqlDateTimeUtc(new Date()), versionId],
+            );
+            return res
+              .status(502)
+              .json({ error: "Failed to fetch PDF for OCR" });
+          }
+          const extracted = await extractPdfOcrText(buffer);
+          if (!extracted) {
+            await db.query<ResultSetHeader>(
+              `UPDATE document_versions
+                 SET ocr_status = 'failed', ocr_processed_at = ?
+               WHERE id = ?`,
+              [toMysqlDateTimeUtc(new Date()), versionId],
+            );
+            return res
+              .status(422)
+              .json({ error: "PDF text extraction failed" });
+          }
+          ocrText = extracted;
+          ocrStatus = "completed";
+        } else if (mimeType.startsWith("image/") || isOcrableMime(mimeType)) {
+          return res.status(400).json({
+            error:
+              "Image OCR requires client-side extraction; POST { ocrText } from Tesseract",
+          });
+        } else {
+          return res.status(400).json({
+            error: "Document type is not OCR-eligible",
+          });
+        }
+
+        await db.query<ResultSetHeader>(
+          `UPDATE document_versions
+             SET ocr_text = ?, ocr_status = ?, ocr_processed_at = ?
+           WHERE id = ?`,
+          [ocrText, ocrStatus, toMysqlDateTimeUtc(ocrProcessedAt), versionId],
+        );
+
+        const document = mapCaseDocumentItem({
+          ...row,
+          ocr_text: ocrText,
+          ocr_status: ocrStatus,
+          ocr_processed_at: ocrProcessedAt,
+        });
+        const response: RunDocumentOcrResponse = {
+          document: {
+            ...document,
+            storageKey: document.storageKey
+              ? await signBlobUrlForClient(document.storageKey)
+              : null,
+          },
+        };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("cases document ocr failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -2010,16 +8666,340 @@ export function createServer() {
             urgentOpen += cnt;
           }
         }
+        const [extra] = await db.query<RowDataPacket[]>(
+          `SELECT
+             (SELECT COUNT(*) FROM review_requests WHERE status = 'pending') AS pending_reviews,
+             (SELECT COUNT(*) FROM invoices
+               WHERE status IN ('issued', 'partially_paid', 'overdue')
+                  OR (status = 'draft' AND invoice_type IN ('advance', 'final'))) AS pending_invoices,
+             (SELECT COUNT(*) FROM case_deadlines
+               WHERE completed_at IS NULL
+                 AND severity_level IN ('critical', 'overdue')) AS delayed_deadlines,
+             (SELECT COUNT(*) FROM cases c
+                WHERE c.deleted_at IS NULL
+                  AND (
+                    (
+                      c.status IN ('intake', 'assignment')
+                      AND (
+                        SELECT COUNT(DISTINCT d.category)
+                          FROM documents d
+                         WHERE d.case_id = c.id AND d.deleted_at IS NULL
+                           AND d.status NOT IN ('rejected', 'archived')
+                           AND d.category IN (
+                             'lawsuit', 'medical_record', 'cfe_report', 'preliminary_photo'
+                           )
+                      ) < 4
+                    )
+                    OR (
+                      c.status IN ('additional_docs', 'legal_review_questionnaire')
+                      AND (
+                        (
+                          SELECT COUNT(DISTINCT d.category)
+                            FROM documents d
+                           WHERE d.case_id = c.id AND d.deleted_at IS NULL
+                             AND d.status NOT IN ('rejected', 'archived')
+                             AND d.category IN (
+                               'defendant_response', 'sketch',
+                               'plaintiff_questionnaire'
+                             )
+                        ) < 3
+                        OR (
+                          c.involves_fatality = 1
+                          AND NOT EXISTS (
+                            SELECT 1 FROM documents d
+                             WHERE d.case_id = c.id AND d.deleted_at IS NULL
+                               AND d.status NOT IN ('rejected', 'archived')
+                               AND d.category = 'death_certificate'
+                          )
+                        )
+                      )
+                    )
+                    OR (
+                      c.status IN (
+                        'court_acceptance', 'court_delivery', 'legal_validation'
+                      )
+                      AND (
+                        SELECT COUNT(DISTINCT d.category)
+                          FROM documents d
+                         WHERE d.case_id = c.id AND d.deleted_at IS NULL
+                           AND d.status NOT IN ('rejected', 'archived')
+                           AND d.category IN (
+                             'protesta', 'court_filing', 'ratification'
+                           )
+                      ) < 3
+                    )
+                  )
+             ) AS missing_docs_cases`,
+        );
         const response: DashboardStatsResponse = {
           totalCases,
           byStatus,
           urgentOpen,
           completed,
           onHold,
+          pendingReviews: Number(extra[0]?.pending_reviews) || 0,
+          pendingInvoices: Number(extra[0]?.pending_invoices) || 0,
+          delayedDeadlines: Number(extra[0]?.delayed_deadlines) || 0,
+          missingDocsCases: Number(extra[0]?.missing_docs_cases) || 0,
         };
         return res.json(response);
       } catch (err) {
         apiLogger.error("dashboard stats failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/documents",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const { page, limit, offset } = parsePageLimit(
+          req.query as Record<string, unknown>,
+          { page: 1, limit: 20, maxLimit: 100 },
+        );
+        const q = String(req.query.q || "").trim();
+        const where: string[] = [
+          "d.deleted_at IS NULL",
+          "c.deleted_at IS NULL",
+        ];
+        const params: unknown[] = [];
+        if (q) {
+          where.push(
+            `(d.title LIKE ? OR c.case_number LIKE ? OR v.ocr_text LIKE ?)`,
+          );
+          const like = `%${q}%`;
+          params.push(like, like, like);
+        }
+        const whereSql = where.join(" AND ");
+        const db = getPool();
+        const [countRows] = await db.query<RowDataPacket[]>(
+          `SELECT COUNT(*) AS total
+           FROM documents d
+           JOIN cases c ON c.id = d.case_id
+           LEFT JOIN document_versions v
+             ON v.document_id = d.id AND v.version_number = d.current_version
+           WHERE ${whereSql}`,
+          params,
+        );
+        const total = Number(countRows[0]?.total || 0);
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.created_at,
+                  c.public_uuid AS case_public_uuid, c.case_number,
+                  v.mime_type, v.storage_key, v.file_name, v.ocr_status,
+                  LEFT(v.ocr_text, 280) AS ocr_text_preview
+           FROM documents d
+           JOIN cases c ON c.id = d.case_id
+           LEFT JOIN document_versions v
+             ON v.document_id = d.id AND v.version_number = d.current_version
+           WHERE ${whereSql}
+           ORDER BY d.created_at DESC
+           LIMIT ? OFFSET ?`,
+          [...params, limit, offset],
+        );
+        const documents: DocumentsIndexItem[] = await Promise.all(
+          rows.map(async (r) => ({
+            id: r.id as number,
+            publicUuid: r.public_uuid as string,
+            casePublicUuid: r.case_public_uuid as string,
+            caseNumber: r.case_number as string,
+            category: r.category as string,
+            title: r.title as string,
+            status: r.status as string,
+            mimeType: (r.mime_type as string | null) ?? null,
+            storageKey: r.storage_key
+              ? await signBlobUrlForClient(String(r.storage_key))
+              : null,
+            fileName: (r.file_name as string | null) ?? null,
+            ocrStatus: (r.ocr_status as OcrStatus | null) ?? null,
+            ocrTextPreview: (r.ocr_text_preview as string | null) ?? null,
+            createdAt: toIso(r.created_at) || new Date().toISOString(),
+          })),
+        );
+        const response: DocumentsIndexResponse = {
+          documents,
+          pagination: buildPagination(page, limit, total),
+        };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("documents index failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/search",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const q = String(req.query.q || "").trim();
+        if (!q) {
+          const empty: GlobalSearchResponse = { query: "", results: [] };
+          return res.json(empty);
+        }
+        const like = `%${q}%`;
+        const db = getPool();
+        const results: GlobalSearchHit[] = [];
+
+        const [cases] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, case_number, title
+           FROM cases
+           WHERE deleted_at IS NULL
+             AND (case_number LIKE ? OR title LIKE ? OR plaintiff_name LIKE ?)
+           ORDER BY updated_at DESC
+           LIMIT 10`,
+          [like, like, like],
+        );
+        for (const r of cases) {
+          results.push({
+            kind: "case",
+            id: r.id as number,
+            publicUuid: r.public_uuid as string,
+            title: String(r.case_number),
+            subtitle: (r.title as string | null) ?? null,
+            href: `/portal/cases/${r.public_uuid}`,
+          });
+        }
+
+        const [docs] = await db.query<RowDataPacket[]>(
+          `SELECT d.id, d.public_uuid, d.title, c.public_uuid AS case_public_uuid, c.case_number
+           FROM documents d
+           JOIN cases c ON c.id = d.case_id
+           LEFT JOIN document_versions v
+             ON v.document_id = d.id AND v.version_number = d.current_version
+           WHERE d.deleted_at IS NULL AND c.deleted_at IS NULL
+             AND (d.title LIKE ? OR c.case_number LIKE ? OR v.ocr_text LIKE ?)
+           ORDER BY d.created_at DESC
+           LIMIT 10`,
+          [like, like, like],
+        );
+        for (const r of docs) {
+          results.push({
+            kind: "document",
+            id: r.id as number,
+            publicUuid: r.public_uuid as string,
+            title: String(r.title),
+            subtitle: String(r.case_number),
+            href: `/portal/cases/${r.case_public_uuid}`,
+          });
+        }
+
+        const [invoices] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, invoice_number, status, total_amount
+           FROM invoices
+           WHERE invoice_number LIKE ?
+           ORDER BY created_at DESC
+           LIMIT 10`,
+          [like],
+        );
+        for (const r of invoices) {
+          results.push({
+            kind: "invoice",
+            id: r.id as number,
+            publicUuid: r.public_uuid as string,
+            title: String(r.invoice_number),
+            subtitle: `${r.status} · ${r.total_amount}`,
+            href: `/portal/finance`,
+          });
+        }
+
+        const [members] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, first_name, last_name, email, role
+           FROM staff_users
+           WHERE deleted_at IS NULL
+             AND (email LIKE ? OR first_name LIKE ? OR last_name LIKE ?)
+           ORDER BY last_name ASC
+           LIMIT 10`,
+          [like, like, like],
+        );
+        for (const r of members) {
+          results.push({
+            kind: "member",
+            id: r.id as number,
+            publicUuid: r.public_uuid as string,
+            title: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
+            subtitle: `${r.role} · ${r.email}`,
+            href: `/portal/team`,
+          });
+        }
+
+        const response: GlobalSearchResponse = { query: q, results };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("global search failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/reports/kpis",
+    dbUnavailable,
+    requireStaff,
+    async (_req: AuthedRequest, res: Response) => {
+      try {
+        const db = getPool();
+        const [statusRows] = await db.query<RowDataPacket[]>(
+          `SELECT status, COUNT(*) AS cnt
+           FROM cases WHERE deleted_at IS NULL
+           GROUP BY status`,
+        );
+        const casesByStatus: Record<string, number> = {};
+        let completedCount = 0;
+        for (const row of statusRows) {
+          const status = String(row.status);
+          const cnt = Number(row.cnt) || 0;
+          casesByStatus[status] = cnt;
+          if (status === "completed") completedCount = cnt;
+        }
+
+        const [expertRows] = await db.query<RowDataPacket[]>(
+          `SELECT u.id AS user_id,
+                  CONCAT(u.first_name, ' ', u.last_name) AS name,
+                  COUNT(*) AS cnt
+           FROM cases c
+           JOIN staff_users u ON u.id = c.assigned_expert_id
+           WHERE c.deleted_at IS NULL AND c.assigned_expert_id IS NOT NULL
+           GROUP BY u.id, u.first_name, u.last_name
+           ORDER BY cnt DESC
+           LIMIT 20`,
+        );
+
+        const [agg] = await db.query<RowDataPacket[]>(
+          `SELECT
+             (SELECT COUNT(*) FROM case_deadlines
+               WHERE completed_at IS NULL
+                 AND severity_level IN ('critical', 'overdue')) AS delayed_count,
+             (SELECT COUNT(*) FROM invoices
+               WHERE status IN ('issued', 'partially_paid', 'overdue')
+                  OR (status = 'draft' AND invoice_type IN ('advance', 'final'))) AS pending_invoices,
+             (SELECT COUNT(*) FROM review_requests WHERE status = 'pending') AS pending_reviews,
+             (SELECT AVG(DATEDIFF(completed_at, COALESCE(intake_received_at, created_at)))
+                FROM cases
+               WHERE deleted_at IS NULL AND completed_at IS NOT NULL) AS avg_days`,
+        );
+
+        const response: ReportsKpiResponse = {
+          casesByStatus,
+          casesByExpert: expertRows.map((r) => ({
+            userId: Number(r.user_id),
+            name: String(r.name || "").trim(),
+            count: Number(r.cnt) || 0,
+          })),
+          completedCount,
+          delayedCount: Number(agg[0]?.delayed_count) || 0,
+          pendingInvoices: Number(agg[0]?.pending_invoices) || 0,
+          pendingReviews: Number(agg[0]?.pending_reviews) || 0,
+          averageCompletionDays:
+            agg[0]?.avg_days != null ? Number(agg[0].avg_days) : null,
+        };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("reports kpis failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -2083,6 +9063,9 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canManageCalendar(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateCalendarEventRequest;
         const title = String(body?.title || "").trim();
         if (!title || !body?.startsAt) {
@@ -2153,7 +9136,9 @@ export function createServer() {
         const where: string[] = ["1=1"];
         const params: unknown[] = [];
         if (q) {
-          where.push(`(invoice_number LIKE ? OR CAST(total_amount AS CHAR) LIKE ?)`);
+          where.push(
+            `(invoice_number LIKE ? OR CAST(total_amount AS CHAR) LIKE ?)`,
+          );
           const like = `%${q}%`;
           params.push(like, like);
         }
@@ -2330,6 +9315,30 @@ export function createServer() {
            WHERE id = ?`,
           [status, status === "paid" ? paidAt : inv.paid_at, inv.id],
         );
+        const payCase =
+          inv.case_id != null
+            ? (
+                await getPool().query<RowDataPacket[]>(
+                  `SELECT * FROM cases WHERE id = ? LIMIT 1`,
+                  [inv.case_id],
+                )
+              )[0][0]
+            : null;
+        const payRecipient = payCase
+          ? ((await resolveCoordinatorOrAdmin(payCase)) ?? req.auth!.id)
+          : req.auth!.id;
+        await createNotification({
+          recipientActor: "staff",
+          recipientId: payRecipient,
+          caseId: inv.case_id != null ? Number(inv.case_id) : null,
+          type: "payment_received",
+          title: `Payment received · ${inv.invoice_number}`,
+          body: `Payment of ${amount} ${inv.currency || "MXN"} recorded.`,
+          caseNumber: payCase ? String(payCase.case_number) : null,
+          caseUrl: payCase
+            ? `${APP_URL}/portal/cases/${payCase.public_uuid}`
+            : `${APP_URL}/portal/finance`,
+        });
         return res.status(201).json({
           payment: {
             publicUuid,
@@ -2375,9 +9384,7 @@ export function createServer() {
         const where: string[] = ["deleted_at IS NULL"];
         const params: unknown[] = [];
         if (q) {
-          where.push(
-            `(email LIKE ? OR first_name LIKE ? OR last_name LIKE ?)`,
-          );
+          where.push(`(email LIKE ? OR first_name LIKE ? OR last_name LIKE ?)`);
           const like = `%${q}%`;
           params.push(like, like, like);
         }
@@ -2433,34 +9440,30 @@ export function createServer() {
     async (req: AuthedRequest, res: Response) => {
       try {
         const body = req.body as InviteTeamMemberRequest;
-        const email = normalizeLookupEmail(String(body?.email || ""));
-        const firstName = String(body?.firstName || "").trim();
-        const lastName = String(body?.lastName || "").trim();
-        const role = body?.role as UserRole | "law_firm_user";
-        const staffRoles: UserRole[] = [
-          "admin",
-          "case_coordinator",
-          "expert",
-          "legal",
-          "logistics",
-          "accountant",
-        ];
-        const validRole =
-          role === "law_firm_user" || staffRoles.includes(role as UserRole);
-        if (!isValidEmail(email) || !firstName || !lastName || !validRole) {
+        const invite = validateTeamInvite({
+          email: String(body?.email || ""),
+          firstName: String(body?.firstName || ""),
+          lastName: String(body?.lastName || ""),
+          role: String(body?.role || ""),
+          lawFirmId: body?.lawFirmId ?? null,
+        });
+        if (invite.ok === false) {
+          return res.status(400).json({ error: invite.error });
+        }
+        const email = normalizeLookupEmail(invite.email);
+        if (!isValidEmail(email)) {
           return res
             .status(400)
             .json({ error: "email, firstName, lastName and role required" });
         }
+        const { firstName, lastName, role, lawFirmId } = invite;
+        const inviteLocale = resolveInviteLocale(
+          (body as InviteTeamMemberRequest).preferredLanguage,
+        );
         const db = getPool();
         const publicUuid = generatePublicUuid();
 
         if (role === "law_firm_user") {
-          if (!body.lawFirmId) {
-            return res
-              .status(400)
-              .json({ error: "lawFirmId required for law firm users" });
-          }
           const [existing] = await db.query<RowDataPacket[]>(
             `SELECT id FROM law_firm_users WHERE email = ? LIMIT 1`,
             [email],
@@ -2471,32 +9474,33 @@ export function createServer() {
           const [result] = await db.query<ResultSetHeader>(
             `INSERT INTO law_firm_users
                (public_uuid, email, first_name, last_name, phone, status, preferred_language)
-             VALUES (?, ?, ?, ?, ?, 'invited', 'es')`,
+             VALUES (?, ?, ?, ?, ?, 'invited', ?)`,
             [
               publicUuid,
               email,
               firstName,
               lastName,
               body.phone?.trim() || null,
+              inviteLocale,
             ],
           );
           await db.query<ResultSetHeader>(
             `INSERT INTO law_firm_members (law_firm_id, law_firm_user_id, member_role)
              VALUES (?, ?, 'member')`,
-            [body.lawFirmId, result.insertId],
+            [lawFirmId, result.insertId],
           );
 
           let firmName: string | null = null;
           const [firms] = await db.query<RowDataPacket[]>(
             `SELECT name FROM law_firms WHERE id = ? LIMIT 1`,
-            [body.lawFirmId],
+            [lawFirmId],
           );
           firmName = firms[0]?.name ? String(firms[0].name) : null;
 
           await safeSendEmail(
             email,
             buildInviteClientEmail({
-              locale: "es",
+              locale: inviteLocale,
               firstName,
               firmName,
               appUrl: APP_URL,
@@ -2528,7 +9532,7 @@ export function createServer() {
         const [result] = await db.query<ResultSetHeader>(
           `INSERT INTO staff_users
              (public_uuid, email, first_name, last_name, phone, role, status, preferred_language)
-           VALUES (?, ?, ?, ?, ?, ?, 'invited', 'es')`,
+           VALUES (?, ?, ?, ?, ?, ?, 'invited', ?)`,
           [
             publicUuid,
             email,
@@ -2536,13 +9540,14 @@ export function createServer() {
             lastName,
             body.phone?.trim() || null,
             role,
+            inviteLocale,
           ],
         );
 
         await safeSendEmail(
           email,
           buildInviteStaffEmail({
-            locale: "es",
+            locale: inviteLocale,
             firstName,
             roleLabel: String(role),
             appUrl: APP_URL,
@@ -2568,6 +9573,347 @@ export function createServer() {
     },
   );
 
+  app.post(
+    "/api/team/members/:publicUuid/resend-invite",
+    dbUnavailable,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const publicUuid = String(req.params.publicUuid || "");
+        const db = getPool();
+        const [staffRows] = await db.query<RowDataPacket[]>(
+          `SELECT id, email, first_name, role, status, preferred_language
+             FROM staff_users
+            WHERE public_uuid = ? AND deleted_at IS NULL
+            LIMIT 1`,
+          [publicUuid],
+        );
+        if (staffRows.length > 0) {
+          const row = staffRows[0];
+          if (!canResendInvite(String(row.status))) {
+            return res
+              .status(400)
+              .json({ error: "Invite can only be resent for invited members" });
+          }
+          const locale = resolveInviteLocale(
+            row.preferred_language as string | null,
+          );
+          await safeSendEmail(
+            String(row.email),
+            buildInviteStaffEmail({
+              locale,
+              firstName: String(row.first_name),
+              roleLabel: String(row.role),
+              appUrl: APP_URL,
+              resend: true,
+            }),
+            "resend-invite-staff",
+          );
+          return res.json({ ok: true });
+        }
+
+        const [clientRows] = await db.query<RowDataPacket[]>(
+          `SELECT u.id, u.email, u.first_name, u.status, u.preferred_language, f.name AS firm_name
+             FROM law_firm_users u
+             LEFT JOIN law_firm_members m
+               ON m.law_firm_user_id = u.id AND m.deleted_at IS NULL
+             LEFT JOIN law_firms f ON f.id = m.law_firm_id
+            WHERE u.public_uuid = ? AND u.deleted_at IS NULL
+            LIMIT 1`,
+          [publicUuid],
+        );
+        if (clientRows.length === 0) {
+          return res.status(404).json({ error: "Member not found" });
+        }
+        const row = clientRows[0];
+        if (!canResendInvite(String(row.status))) {
+          return res
+            .status(400)
+            .json({ error: "Invite can only be resent for invited members" });
+        }
+        const locale = resolveInviteLocale(
+          row.preferred_language as string | null,
+        );
+        await safeSendEmail(
+          String(row.email),
+          buildInviteClientEmail({
+            locale,
+            firstName: String(row.first_name),
+            firmName: row.firm_name ? String(row.firm_name) : null,
+            appUrl: APP_URL,
+            resend: true,
+          }),
+          "resend-invite-client",
+        );
+        return res.json({ ok: true });
+      } catch (err) {
+        apiLogger.error("team resend invite failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  const mapTeamMemberRow = (r: RowDataPacket): TeamMemberItem => ({
+    id: r.id as number,
+    publicUuid: r.public_uuid as string,
+    email: r.email as string,
+    firstName: r.first_name as string,
+    lastName: r.last_name as string,
+    role: r.role as UserRole,
+    status: r.status as UserStatus,
+    lastLoginAt: toIso(r.last_login_at),
+  });
+
+  app.get(
+    "/api/team/members/:publicUuid",
+    dbUnavailable,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const publicUuid = String(req.params.publicUuid || "");
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, email, first_name, last_name, role, status, last_login_at
+             FROM staff_users
+            WHERE public_uuid = ? AND deleted_at IS NULL
+            LIMIT 1`,
+          [publicUuid],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Member not found" });
+        }
+        const member = mapTeamMemberRow(rows[0]);
+        const [sessionRows] = await db.query<RowDataPacket[]>(
+          `SELECT id, ip_address, user_agent, is_active, created_at, expires_at, revoked_at
+             FROM staff_sessions
+            WHERE staff_user_id = ?
+            ORDER BY created_at DESC
+            LIMIT 25`,
+          [member.id],
+        );
+        const sessions: TeamMemberSessionItem[] = sessionRows.map((s) => ({
+          id: s.id as number,
+          ipAddress: (s.ip_address as string | null) ?? null,
+          userAgent: (s.user_agent as string | null) ?? null,
+          isActive: Boolean(s.is_active),
+          createdAt: toIso(s.created_at) || new Date().toISOString(),
+          expiresAt: toIso(s.expires_at) || new Date().toISOString(),
+          revokedAt: toIso(s.revoked_at),
+        }));
+        const [auditRows] = await db.query<RowDataPacket[]>(
+          `SELECT id, action, comment, previous_value_json, new_value_json, created_at
+             FROM audit_logs
+            WHERE entity_type = 'staff_user' AND entity_id = ?
+            ORDER BY created_at DESC
+            LIMIT 25`,
+          [String(member.id)],
+        );
+        const audit: TeamMemberAuditItem[] = auditRows.map((a) => ({
+          id: a.id as number,
+          action: a.action as string,
+          comment: (a.comment as string | null) ?? null,
+          previousValueJson:
+            a.previous_value_json != null
+              ? typeof a.previous_value_json === "string"
+                ? a.previous_value_json
+                : JSON.stringify(a.previous_value_json)
+              : null,
+          newValueJson:
+            a.new_value_json != null
+              ? typeof a.new_value_json === "string"
+                ? a.new_value_json
+                : JSON.stringify(a.new_value_json)
+              : null,
+          createdAt: toIso(a.created_at) || new Date().toISOString(),
+        }));
+        const response: TeamMemberDetailResponse = {
+          member,
+          sessions,
+          audit,
+        };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("team member detail failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/team/members/:publicUuid",
+    dbUnavailable,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const publicUuid = String(req.params.publicUuid || "");
+        const body = req.body as UpdateTeamMemberRequest;
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, email, first_name, last_name, phone, role, status, last_login_at
+             FROM staff_users
+            WHERE public_uuid = ? AND deleted_at IS NULL
+            LIMIT 1`,
+          [publicUuid],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Member not found" });
+        }
+        const current = rows[0];
+        const memberId = current.id as number;
+        const resolved = resolveTeamMemberUpdate(
+          req.auth!.id,
+          {
+            id: memberId,
+            firstName: current.first_name as string,
+            lastName: current.last_name as string,
+            role: current.role as UserRole,
+            status: current.status as UserStatus,
+            phone: (current.phone as string | null) ?? null,
+          },
+          body,
+        );
+        if (resolved.ok === false) {
+          return res.status(400).json({ error: resolved.error });
+        }
+
+        const { next, revokeSessions } = resolved;
+        const sets = [
+          "first_name = ?",
+          "last_name = ?",
+          "role = ?",
+          "status = ?",
+        ];
+        const params: unknown[] = [
+          next.firstName,
+          next.lastName,
+          next.role,
+          next.status,
+        ];
+        if (next.phoneChanged) {
+          sets.push("phone = ?");
+          params.push(next.phone ?? null);
+        }
+        params.push(memberId);
+
+        await db.query<ResultSetHeader>(
+          `UPDATE staff_users SET ${sets.join(", ")} WHERE id = ?`,
+          params,
+        );
+
+        if (revokeSessions) {
+          await db.query<ResultSetHeader>(
+            `UPDATE staff_sessions
+                SET is_active = 0, revoked_at = UTC_TIMESTAMP()
+              WHERE staff_user_id = ? AND is_active = 1 AND revoked_at IS NULL`,
+            [memberId],
+          );
+        }
+
+        await db.query<ResultSetHeader>(
+          `INSERT INTO audit_logs
+             (public_uuid, actor_type, actor_id, entity_type, entity_id, action,
+              previous_value_json, new_value_json, comment, ip_address)
+           VALUES (?, 'staff', ?, 'staff_user', ?, 'update', ?, ?, ?, ?)`,
+          [
+            generatePublicUuid(),
+            req.auth!.id,
+            String(memberId),
+            JSON.stringify({
+              firstName: current.first_name,
+              lastName: current.last_name,
+              role: current.role,
+              status: current.status,
+            }),
+            JSON.stringify({
+              firstName: next.firstName,
+              lastName: next.lastName,
+              role: next.role,
+              status: next.status,
+            }),
+            "Team member updated",
+            req.ip || null,
+          ],
+        );
+
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, email, first_name, last_name, role, status, last_login_at
+             FROM staff_users WHERE id = ? LIMIT 1`,
+          [memberId],
+        );
+        return res.json({ member: mapTeamMemberRow(updated[0]) });
+      } catch (err) {
+        apiLogger.error("team member update failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.delete(
+    "/api/team/members/:publicUuid",
+    dbUnavailable,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const publicUuid = String(req.params.publicUuid || "");
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT id, email, first_name, last_name, role, status
+             FROM staff_users
+            WHERE public_uuid = ? AND deleted_at IS NULL
+            LIMIT 1`,
+          [publicUuid],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Member not found" });
+        }
+        const memberId = rows[0].id as number;
+        if (!canRemoveMember(req.auth!.id, memberId)) {
+          return res
+            .status(400)
+            .json({ error: "Cannot remove your own account" });
+        }
+
+        await db.query<ResultSetHeader>(
+          `UPDATE staff_users
+              SET deleted_at = UTC_TIMESTAMP(), status = 'inactive'
+            WHERE id = ?`,
+          [memberId],
+        );
+        await db.query<ResultSetHeader>(
+          `UPDATE staff_sessions
+              SET is_active = 0, revoked_at = UTC_TIMESTAMP()
+            WHERE staff_user_id = ? AND is_active = 1 AND revoked_at IS NULL`,
+          [memberId],
+        );
+        await db.query<ResultSetHeader>(
+          `INSERT INTO audit_logs
+             (public_uuid, actor_type, actor_id, entity_type, entity_id, action,
+              previous_value_json, comment, ip_address)
+           VALUES (?, 'staff', ?, 'staff_user', ?, 'delete', ?, ?, ?)`,
+          [
+            generatePublicUuid(),
+            req.auth!.id,
+            String(memberId),
+            JSON.stringify({
+              email: rows[0].email,
+              firstName: rows[0].first_name,
+              lastName: rows[0].last_name,
+              role: rows[0].role,
+              status: rows[0].status,
+            }),
+            "Team member soft-deleted",
+            req.ip || null,
+          ],
+        );
+
+        return res.json({ ok: true });
+      } catch (err) {
+        apiLogger.error("team member delete failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
   // ---- Case assignments ----
 
   app.post(
@@ -2576,6 +9922,9 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canManageCaseAssignments(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateAssignmentRequest;
         const userId = Number(body?.userId);
         const role = body?.assignmentRole as AssignmentRole;
@@ -2590,9 +9939,13 @@ export function createServer() {
           "observer",
         ];
         if (!userId || !allowedRoles.includes(role)) {
-          return res.status(400).json({ error: "userId and assignmentRole required" });
+          return res
+            .status(400)
+            .json({ error: "userId and assignmentRole required" });
         }
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
 
         const db = getPool();
@@ -2605,6 +9958,14 @@ export function createServer() {
         }
 
         const isPrimary = Boolean(body.isPrimary);
+        if (shouldClearOtherPrimaryAssignments(role, isPrimary)) {
+          await db.query<ResultSetHeader>(
+            `UPDATE case_assignments
+             SET is_primary = 0
+             WHERE case_id = ? AND assignment_role = ? AND unassigned_at IS NULL`,
+            [caseRow.id, role],
+          );
+        }
         const [existing] = await db.query<RowDataPacket[]>(
           `SELECT id FROM case_assignments
            WHERE case_id = ? AND user_id = ? AND assignment_role = ?
@@ -2617,7 +9978,12 @@ export function createServer() {
              SET unassigned_at = NULL, is_primary = ?, assigned_by = ?,
                  assigned_at = NOW(), notes = ?
              WHERE id = ?`,
-            [isPrimary ? 1 : 0, req.auth!.id, body.notes?.trim() || null, existing[0].id],
+            [
+              isPrimary ? 1 : 0,
+              req.auth!.id,
+              body.notes?.trim() || null,
+              existing[0].id,
+            ],
           );
         } else {
           await db.query<ResultSetHeader>(
@@ -2648,6 +10014,7 @@ export function createServer() {
           );
         }
 
+        const assignee = await getActorContact("staff", userId);
         await createNotification({
           recipientActor: "staff",
           recipientId: userId,
@@ -2655,24 +10022,21 @@ export function createServer() {
           type: "new_assignment",
           title: `Assigned to ${caseRow.case_number}`,
           body: `You were assigned as ${role} on case ${caseRow.case_number}.`,
+          caseNumber: String(caseRow.case_number),
+          caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          email: assignee
+            ? buildAssignmentEmail({
+                locale: assignee.locale,
+                firstName: assignee.firstName,
+                caseNumber: String(caseRow.case_number),
+                caseTitle: String(caseRow.title || caseRow.case_number),
+                roleLabel: String(role),
+                caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+                appUrl: APP_URL,
+              })
+            : null,
+          emailTo: assignee?.email,
         });
-
-        const assignee = await getActorContact("staff", userId);
-        if (assignee) {
-          await safeSendEmail(
-            assignee.email,
-            buildAssignmentEmail({
-              locale: assignee.locale,
-              firstName: assignee.firstName,
-              caseNumber: String(caseRow.case_number),
-              caseTitle: String(caseRow.title || caseRow.case_number),
-              roleLabel: String(role),
-              caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
-              appUrl: APP_URL,
-            }),
-            "assignment",
-          );
-        }
 
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT a.id, a.user_id, a.assignment_role, a.is_primary, a.assigned_at, a.notes,
@@ -2698,17 +10062,48 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        if (!canManageCaseAssignments(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const db = getPool();
-        const [result] = await db.query<ResultSetHeader>(
+        const [asgRows] = await db.query<RowDataPacket[]>(
+          `SELECT id, user_id, assignment_role, is_primary FROM case_assignments
+           WHERE id = ? AND case_id = ? AND unassigned_at IS NULL
+           LIMIT 1`,
+          [Number(req.params.assignmentId), caseRow.id],
+        );
+        if (asgRows.length === 0) {
+          return res.status(404).json({ error: "Assignment not found" });
+        }
+        await db.query<ResultSetHeader>(
           `UPDATE case_assignments
            SET unassigned_at = NOW()
            WHERE id = ? AND case_id = ? AND unassigned_at IS NULL`,
-          [Number(req.params.assignmentId), caseRow.id],
+          [asgRows[0].id, caseRow.id],
         );
-        if (result.affectedRows === 0) {
-          return res.status(404).json({ error: "Assignment not found" });
+        if (
+          asgRows[0].assignment_role === "expert" &&
+          Number(asgRows[0].is_primary) === 1
+        ) {
+          await db.query<ResultSetHeader>(
+            `UPDATE cases SET assigned_expert_id = NULL
+             WHERE id = ? AND assigned_expert_id = ?`,
+            [caseRow.id, asgRows[0].user_id],
+          );
+        }
+        if (
+          asgRows[0].assignment_role === "coordinator" &&
+          Number(asgRows[0].is_primary) === 1
+        ) {
+          await db.query<ResultSetHeader>(
+            `UPDATE cases SET assigned_coordinator_id = NULL
+             WHERE id = ? AND assigned_coordinator_id = ?`,
+            [caseRow.id, asgRows[0].user_id],
+          );
         }
         return res.json({ ok: true });
       } catch (err) {
@@ -2726,41 +10121,538 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canMutateCaseSection(req.auth?.role, "questionnaire")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateQuestionnaireRequest;
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const submit = Boolean(body.submit);
-        const publicUuid = generatePublicUuid();
         const db = getPool();
-        const [result] = await db.query<ResultSetHeader>(
-          `INSERT INTO questionnaires
-             (public_uuid, case_id, status, content_json, chronology_json,
-              technical_observations, prepared_by, submitted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            publicUuid,
-            caseRow.id,
-            submit ? "submitted" : "draft",
-            body.contentJson ? JSON.stringify(body.contentJson) : null,
-            body.chronologyJson ? JSON.stringify(body.chronologyJson) : null,
-            body.technicalObservations?.trim() || null,
-            req.auth!.id,
-            submit ? new Date() : null,
-          ],
+        const [latestRows] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM questionnaires
+           WHERE case_id = ?
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [caseRow.id],
         );
-        const item: QuestionnaireItem = {
-          id: result.insertId,
-          publicUuid,
-          status: submit ? "submitted" : "draft",
-          contentJson: body.contentJson || null,
-          chronologyJson: body.chronologyJson || null,
-          technicalObservations: body.technicalObservations?.trim() || null,
-          submittedAt: submit ? new Date().toISOString() : null,
-          createdAt: new Date().toISOString(),
-        };
-        return res.status(201).json({ questionnaire: item });
+        const latest = latestRows[0];
+        const upsert = resolveQuestionnaireUpsert({
+          currentStatus: latest ? String(latest.status) : null,
+          submit,
+        });
+        if (upsert.ok === false) {
+          return res.status(409).json({ error: upsert.error });
+        }
+        const canReuse = upsert.reuse;
+        const nextStatus = upsert.nextStatus;
+        const contentJson = body.contentJson
+          ? JSON.stringify(body.contentJson)
+          : null;
+        const chronologyJson = body.chronologyJson
+          ? JSON.stringify(body.chronologyJson)
+          : null;
+        const observations = body.technicalObservations?.trim() || null;
+
+        let item: QuestionnaireItem;
+        if (canReuse) {
+          await db.query<ResultSetHeader>(
+            `UPDATE questionnaires
+             SET status = ?, content_json = ?, chronology_json = ?,
+                 technical_observations = ?,
+                 submitted_at = CASE WHEN ? = 1 THEN NOW() ELSE submitted_at END
+             WHERE id = ?`,
+            [
+              nextStatus,
+              contentJson,
+              chronologyJson,
+              observations,
+              submit ? 1 : 0,
+              latest.id,
+            ],
+          );
+          item = {
+            id: latest.id as number,
+            publicUuid: String(latest.public_uuid),
+            status: nextStatus as QuestionnaireItem["status"],
+            contentJson: body.contentJson || null,
+            chronologyJson: body.chronologyJson || null,
+            technicalObservations: observations,
+            submittedAt: submit
+              ? new Date().toISOString()
+              : toIso(latest.submitted_at),
+            createdAt: toIso(latest.created_at) || new Date().toISOString(),
+          };
+        } else {
+          const publicUuid = generatePublicUuid();
+          const [result] = await db.query<ResultSetHeader>(
+            `INSERT INTO questionnaires
+               (public_uuid, case_id, status, content_json, chronology_json,
+                technical_observations, prepared_by, submitted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              publicUuid,
+              caseRow.id,
+              nextStatus,
+              contentJson,
+              chronologyJson,
+              observations,
+              req.auth!.id,
+              submit ? new Date() : null,
+            ],
+          );
+          item = {
+            id: result.insertId,
+            publicUuid,
+            status: nextStatus as QuestionnaireItem["status"],
+            contentJson: body.contentJson || null,
+            chronologyJson: body.chronologyJson || null,
+            technicalObservations: observations,
+            submittedAt: submit ? new Date().toISOString() : null,
+            createdAt: new Date().toISOString(),
+          };
+        }
+
+        const contentRec = (body.contentJson || null) as
+          | Record<string, unknown>
+          | null;
+        const svWrite = questionnaireStreetViewWrite(contentRec);
+        if (svWrite === "set") {
+          await db.query<ResultSetHeader>(
+            `UPDATE cases
+             SET street_view_validated_at = COALESCE(street_view_validated_at, NOW())
+             WHERE id = ?`,
+            [caseRow.id],
+          );
+        } else if (svWrite === "clear") {
+          await db.query<ResultSetHeader>(
+            `UPDATE cases SET street_view_validated_at = NULL WHERE id = ?`,
+            [caseRow.id],
+          );
+        }
+        const gpsWrite = questionnaireGpsWrite(contentRec);
+        if (gpsWrite.action === "set") {
+          await db.query<ResultSetHeader>(
+            `UPDATE cases
+             SET property_lat = ?, property_lng = ?
+             WHERE id = ?`,
+            [gpsWrite.lat, gpsWrite.lng, caseRow.id],
+          );
+        } else if (gpsWrite.action === "clear") {
+          await db.query<ResultSetHeader>(
+            `UPDATE cases
+             SET property_lat = NULL, property_lng = NULL
+             WHERE id = ?`,
+            [caseRow.id],
+          );
+        }
+        return res.status(canReuse ? 200 : 201).json({ questionnaire: item });
       } catch (err) {
         apiLogger.error("questionnaire create failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/cases/:publicUuid/questionnaires/:questionnaireUuid/status",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const body = req.body as UpdateQuestionnaireStatusRequest;
+        const toStatus = body?.status as QuestionnaireStatus;
+        if (!toStatus) {
+          return res.status(400).json({ error: "status is required" });
+        }
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM questionnaires
+           WHERE public_uuid = ? AND case_id = ?
+           LIMIT 1`,
+          [req.params.questionnaireUuid, caseRow.id],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Questionnaire not found" });
+        }
+        const fromStatus = rows[0].status as QuestionnaireStatus;
+        const check = canTransitionQuestionnaire(fromStatus, toStatus);
+        if (check.ok === false) {
+          return res.status(400).json({ error: check.reason });
+        }
+        if (
+          ["approved", "changes_requested", "rejected"].includes(toStatus) &&
+          !canDecideQuestionnaireReview(req.auth?.role)
+        ) {
+          return res.status(403).json({
+            error: "Insufficient permissions to decide questionnaire review",
+          });
+        }
+        if (
+          !canMutateCaseSection(req.auth?.role, "questionnaire") &&
+          !canDecideQuestionnaireReview(req.auth?.role)
+        ) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+
+        const fromCaseStatus = caseRow.status as CaseStatus;
+        let looped: CaseStatus | null = null;
+        const conn = await db.getConnection();
+        try {
+          await conn.beginTransaction();
+          await conn.query<ResultSetHeader>(
+            `UPDATE questionnaires
+             SET status = ?,
+                 submitted_at = COALESCE(submitted_at, ?),
+                 reviewed_by = ?,
+                 reviewed_at = ?
+             WHERE id = ?`,
+            [
+              toStatus,
+              toStatus === "submitted" ? new Date() : null,
+              [
+                "legal_review",
+                "approved",
+                "changes_requested",
+                "rejected",
+              ].includes(toStatus)
+                ? req.auth!.id
+                : rows[0].reviewed_by,
+              ["approved", "changes_requested", "rejected"].includes(toStatus)
+                ? new Date()
+                : rows[0].reviewed_at,
+              rows[0].id,
+            ],
+          );
+
+          if (
+            toStatus === "approved" ||
+            toStatus === "changes_requested" ||
+            toStatus === "rejected"
+          ) {
+            await completePendingReviewsForEntity({
+              entityType: "questionnaire",
+              entityId: rows[0].id as number,
+              outcome: toStatus,
+              notes: body.notes?.trim() || null,
+              stage: "internal_legal",
+              conn,
+            });
+          }
+
+          looped = await applyArtifactRejectLoop({
+            caseRow,
+            artifact: "questionnaire",
+            outcome: toStatus,
+            actorId: req.auth!.id,
+            reason: body.notes?.trim() || null,
+            conn,
+            auditActorType: "staff",
+            auditActorId: req.auth!.id,
+          });
+          await conn.commit();
+        } catch (err) {
+          await conn.rollback();
+          throw err;
+        } finally {
+          conn.release();
+        }
+
+        if (shouldOpenInternalLegalReview(toStatus)) {
+          await openReviewRequest({
+            caseId: caseRow.id as number,
+            entityType: "questionnaire",
+            entityId: rows[0].id as number,
+            stage: "internal_legal",
+            requestedBy: req.auth!.id,
+            notes: body.notes?.trim() || null,
+          });
+        }
+
+        if (toStatus === "approved") {
+          await runAutomationActions(automationOnQuestionnaireApproved(), {
+            caseId: caseRow.id as number,
+            lawFirmId:
+              caseRow.law_firm_id != null ? Number(caseRow.law_firm_id) : null,
+            actorId: req.auth!.id,
+            caseNumber: String(caseRow.case_number),
+            fallbackRecipientId: req.auth!.id,
+          });
+        }
+
+        if (looped) {
+          await afterArtifactRejectLoop({
+            caseRow,
+            fromStatus: fromCaseStatus,
+            toStatus: looped,
+            actorId: req.auth!.id,
+            auditActorType: "staff",
+          });
+        }
+
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM questionnaires WHERE id = ? LIMIT 1`,
+          [rows[0].id],
+        );
+        const qStatus = updated[0].status as QuestionnaireStatus;
+        const item: QuestionnaireItem = {
+          id: updated[0].id as number,
+          publicUuid: updated[0].public_uuid as string,
+          status: qStatus,
+          contentJson:
+            (updated[0].content_json as Record<string, unknown> | null) ?? null,
+          chronologyJson:
+            (updated[0].chronology_json as Record<string, unknown> | null) ??
+            null,
+          technicalObservations:
+            (updated[0].technical_observations as string | null) ?? null,
+          submittedAt: toIso(updated[0].submitted_at),
+          createdAt: toIso(updated[0].created_at) || new Date().toISOString(),
+          allowedNextStatuses: getAllowedQuestionnaireStatuses(qStatus),
+        };
+        return res.json({ questionnaire: item });
+      } catch (err) {
+        apiLogger.error("questionnaire status failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/cases/:publicUuid/reviews/:reviewId/complete",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const body = req.body as CompleteReviewRequest;
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        const reviewId = Number(req.params.reviewId);
+        if (!reviewId) {
+          return res.status(400).json({ error: "Invalid review id" });
+        }
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM review_requests
+           WHERE id = ? AND case_id = ?
+           LIMIT 1`,
+          [reviewId, caseRow.id],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Review request not found" });
+        }
+        const stage = rows[0].review_stage as ReviewStage;
+        if (!canCompleteReviewStage(req.auth?.role, stage)) {
+          return res.status(403).json({
+            error: "Insufficient permissions for this review stage",
+          });
+        }
+        const resolved = resolveReviewCompletion(
+          String(rows[0].status),
+          body?.outcome,
+        );
+        if (resolved.ok === false) {
+          return res.status(400).json({ error: resolved.error });
+        }
+
+        const entityType = rows[0].entity_type as ReviewEntityType;
+        const entityId = rows[0].entity_id as number;
+        let reportAutomationStatus: TechnicalReportStatus | null = null;
+
+        if (entityType === "technical_report") {
+          const nextReport = reportStatusFromReview(stage, resolved.nextStatus);
+          if (nextReport) {
+            const [reportRows] = await db.query<RowDataPacket[]>(
+              `SELECT status FROM technical_reports
+               WHERE id = ? AND case_id = ? LIMIT 1`,
+              [entityId, caseRow.id],
+            );
+            if (reportRows.length === 0) {
+              return res.status(400).json({
+                error: "Linked technical report not found",
+              });
+            }
+            const fromStatus = reportRows[0].status as TechnicalReportStatus;
+            const toStatus = nextReport as TechnicalReportStatus;
+            const check = canTransitionReport(fromStatus, toStatus);
+            if (check.ok === false) {
+              return res.status(400).json({ error: check.reason });
+            }
+            reportAutomationStatus = toStatus;
+          }
+        }
+
+        const fromCaseStatus = caseRow.status as CaseStatus;
+        let looped: CaseStatus | null = null;
+        const conn = await db.getConnection();
+        try {
+          await conn.beginTransaction();
+          const [reviewUpdate] = await conn.query<ResultSetHeader>(
+            `UPDATE review_requests
+             SET status = ?, completed_at = NOW(), notes = COALESCE(?, notes),
+                 assigned_to = COALESCE(assigned_to, ?)
+             WHERE id = ? AND status = 'pending'`,
+            [
+              resolved.nextStatus,
+              body.notes?.trim() || null,
+              req.auth!.id,
+              reviewId,
+            ],
+          );
+          if (reviewUpdate.affectedRows === 0) {
+            await conn.rollback();
+            return res.status(409).json({
+              error: "Review is no longer pending",
+            });
+          }
+
+          if (entityType === "questionnaire") {
+            const nextQ = questionnaireStatusFromReview(resolved.nextStatus);
+            await conn.query<ResultSetHeader>(
+              `UPDATE questionnaires
+               SET status = ?, reviewed_by = ?, reviewed_at = NOW()
+               WHERE id = ? AND case_id = ?`,
+              [nextQ, req.auth!.id, entityId, caseRow.id],
+            );
+            looped = await applyArtifactRejectLoop({
+              caseRow,
+              artifact: "questionnaire",
+              outcome: resolved.nextStatus,
+              actorId: req.auth!.id,
+              reason: body.notes?.trim() || null,
+              conn,
+              auditActorType: "staff",
+              auditActorId: req.auth!.id,
+            });
+          }
+
+          if (entityType === "technical_report" && reportAutomationStatus) {
+            await conn.query<ResultSetHeader>(
+              `UPDATE technical_reports
+               SET status = ?,
+                   approved_at = ?
+               WHERE id = ?`,
+              [
+                reportAutomationStatus,
+                reportAutomationStatus === "approved" ||
+                reportAutomationStatus === "approved_internal"
+                  ? new Date()
+                  : null,
+                entityId,
+              ],
+            );
+            looped = await applyArtifactRejectLoop({
+              caseRow,
+              artifact: "technical_report",
+              outcome: resolved.nextStatus,
+              actorId: req.auth!.id,
+              reason: body.notes?.trim() || null,
+              conn,
+              auditActorType: "staff",
+              auditActorId: req.auth!.id,
+            });
+          }
+
+          await conn.commit();
+        } catch (err) {
+          await conn.rollback();
+          throw err;
+        } finally {
+          conn.release();
+        }
+
+        if (
+          entityType === "questionnaire" &&
+          questionnaireStatusFromReview(resolved.nextStatus) === "approved"
+        ) {
+          await runAutomationActions(automationOnQuestionnaireApproved(), {
+            caseId: caseRow.id as number,
+            lawFirmId:
+              caseRow.law_firm_id != null ? Number(caseRow.law_firm_id) : null,
+            actorId: req.auth!.id,
+            caseNumber: String(caseRow.case_number),
+            fallbackRecipientId: req.auth!.id,
+          });
+        }
+
+        if (looped) {
+          await afterArtifactRejectLoop({
+            caseRow,
+            fromStatus: fromCaseStatus,
+            toStatus: looped,
+            actorId: req.auth!.id,
+            auditActorType: "staff",
+          });
+        }
+
+        if (entityType === "technical_report" && reportAutomationStatus) {
+          const toStatus = reportAutomationStatus;
+          const enterStage = reviewStageForReportStatus(toStatus);
+          if (enterStage) {
+            await openReviewRequest({
+              caseId: caseRow.id as number,
+              entityType: "technical_report",
+              entityId,
+              stage: enterStage,
+              requestedBy: req.auth!.id,
+            });
+          }
+          if (toStatus === "external_review") {
+            await runAutomationActions(
+              automationOnReportEnterExternalReview(),
+              {
+                caseId: caseRow.id as number,
+                lawFirmId:
+                  caseRow.law_firm_id != null
+                    ? Number(caseRow.law_firm_id)
+                    : null,
+                actorId: req.auth!.id,
+                caseNumber: String(caseRow.case_number),
+                entityType: "technical_report",
+                entityId,
+              },
+            );
+          }
+          if (toStatus === "approved") {
+            await runAutomationActions(automationOnReportApproved(), {
+              caseId: caseRow.id as number,
+              lawFirmId:
+                caseRow.law_firm_id != null
+                  ? Number(caseRow.law_firm_id)
+                  : null,
+              actorId: req.auth!.id,
+              caseNumber: String(caseRow.case_number),
+              fallbackRecipientId: req.auth!.id,
+            });
+          }
+        }
+
+        await createNotification({
+          recipientActor: "staff",
+          recipientId: (rows[0].requested_by as number) || req.auth!.id,
+          caseId: caseRow.id as number,
+          type: "qa_requested",
+          title: `Review ${resolved.nextStatus} · ${caseRow.case_number}`,
+          body: body.notes?.trim() || `Review marked ${resolved.nextStatus}.`,
+          caseNumber: String(caseRow.case_number),
+          caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+        });
+
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM review_requests WHERE id = ? LIMIT 1`,
+          [reviewId],
+        );
+        return res.json({ review: mapReviewRequest(updated[0]) });
+      } catch (err) {
+        apiLogger.error("review complete failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -2774,11 +10666,18 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canMutateCaseSection(req.auth?.role, "inspections")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateInspectionRequest;
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const publicUuid = generatePublicUuid();
-        const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : null;
+        const scheduledAt = body.scheduledAt
+          ? new Date(body.scheduledAt)
+          : null;
         const db = getPool();
         const [result] = await db.query<ResultSetHeader>(
           `INSERT INTO inspections
@@ -2818,9 +10717,101 @@ export function createServer() {
             (caseRow.assigned_expert_id as number | null) ??
             null,
         };
+        if (scheduledAt) {
+          const inspRecipient =
+            (await resolveCoordinatorOrAdmin(caseRow)) ?? req.auth!.id;
+          await createNotification({
+            recipientActor: "staff",
+            recipientId: inspRecipient,
+            caseId: caseRow.id as number,
+            type: "inspection_scheduled",
+            title: `Inspection scheduled · ${caseRow.case_number}`,
+            body: `Inspection scheduled for ${scheduledAt.toISOString()}.`,
+            caseNumber: String(caseRow.case_number),
+            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          });
+        }
         return res.status(201).json({ inspection: item });
       } catch (err) {
         apiLogger.error("inspection create failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/cases/:publicUuid/inspections/:inspectionUuid/status",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const toStatus = (req.body as { status?: InspectionStatus })?.status;
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        if (!canMutateCaseSection(req.auth?.role, "inspections")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM inspections
+           WHERE public_uuid = ? AND case_id = ?
+           LIMIT 1`,
+          [req.params.inspectionUuid, caseRow.id],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Inspection not found" });
+        }
+        const transition = canTransitionInspection(
+          String(rows[0].status),
+          toStatus,
+        );
+        if (transition.ok === false) {
+          return res.status(400).json({ error: transition.error });
+        }
+        const nextStatus = toStatus as InspectionStatus;
+        await db.query<ResultSetHeader>(
+          `UPDATE inspections
+           SET status = ?,
+               started_at = ?,
+               completed_at = ?
+           WHERE id = ?`,
+          [
+            nextStatus,
+            nextStatus === "in_progress"
+              ? rows[0].started_at || new Date()
+              : rows[0].started_at,
+            nextStatus === "completed" ? new Date() : rows[0].completed_at,
+            rows[0].id,
+          ],
+        );
+        if (nextStatus === "completed") {
+          await runAutomationActions(automationOnInspectionCompleted(), {
+            caseId: caseRow.id as number,
+            lawFirmId:
+              caseRow.law_firm_id != null ? Number(caseRow.law_firm_id) : null,
+            actorId: req.auth!.id,
+            caseNumber: String(caseRow.case_number),
+            fallbackRecipientId: req.auth!.id,
+          });
+        }
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM inspections WHERE id = ? LIMIT 1`,
+          [rows[0].id],
+        );
+        const item: InspectionItem = {
+          id: updated[0].id as number,
+          publicUuid: updated[0].public_uuid as string,
+          status: updated[0].status as InspectionStatus,
+          scheduledAt: toIso(updated[0].scheduled_at),
+          completedAt: toIso(updated[0].completed_at),
+          notes: (updated[0].notes as string | null) ?? null,
+          leadExpertId: (updated[0].lead_expert_id as number | null) ?? null,
+        };
+        return res.json({ inspection: item });
+      } catch (err) {
+        apiLogger.error("inspection status failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -2832,6 +10823,9 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canMutateCaseSection(req.auth?.role, "inspections")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateMeasurementRequest;
         const types = [
           "horizontal_distance",
@@ -2847,7 +10841,9 @@ export function createServer() {
             .status(400)
             .json({ error: "measurementType and valueNumeric required" });
         }
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const unit = body.unit || "m";
         const db = getPool();
@@ -2884,6 +10880,175 @@ export function createServer() {
     },
   );
 
+  app.post(
+    "/api/cases/:publicUuid/evidence",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canMutateCaseSection(req.auth?.role, "evidence")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const body = req.body as CreateEvidenceRequest;
+        const validated = validateCreateEvidence(body);
+        if (validated.ok === false) {
+          return res.status(400).json({ error: validated.error });
+        }
+        const value = validated.value;
+
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+
+        const db = getPool();
+        if (value.inspectionId != null) {
+          const [inspRows] = await db.query<RowDataPacket[]>(
+            `SELECT id FROM inspections
+             WHERE id = ? AND case_id = ?
+             LIMIT 1`,
+            [value.inspectionId, caseRow.id],
+          );
+          if (inspRows.length === 0) {
+            return res
+              .status(400)
+              .json({ error: "inspectionId does not belong to this case" });
+          }
+        }
+
+        let storageKey: string | null = null;
+        let mimeType: string | null = value.contentType;
+        let fileSizeBytes: number | null = null;
+
+        if (value.dataBase64 && value.fileName) {
+          if (!process.env.BLOB_READ_WRITE_TOKEN) {
+            return res.status(503).json({
+              error: "BLOB_READ_WRITE_TOKEN not configured",
+            });
+          }
+          const buffer = Buffer.from(value.dataBase64, "base64");
+          const sizeCheck = validateCreateEvidence({
+            ...body,
+            fileSizeBytes: buffer.length,
+          });
+          if (sizeCheck.ok === false) {
+            return res.status(400).json({ error: sizeCheck.error });
+          }
+          if (buffer.length === 0 || buffer.length > EVIDENCE_MAX_FILE_BYTES) {
+            return res.status(400).json({ error: "Invalid file size" });
+          }
+          const safeName = value.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const pathname = `cases/${caseRow.id}/evidence/${Date.now()}-${safeName}`;
+          const blob = await putPrivateBlob(
+            pathname,
+            buffer,
+            value.contentType || undefined,
+          );
+          storageKey = blob.url;
+          mimeType = value.contentType || "application/octet-stream";
+          fileSizeBytes = buffer.length;
+        }
+
+        const publicUuid = generatePublicUuid();
+        const [result] = await db.query<ResultSetHeader>(
+          `INSERT INTO evidence_items
+             (public_uuid, case_id, inspection_id, evidence_type, category, title, caption,
+              storage_key, mime_type, file_size_bytes, captured_at, lat, lng, captured_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            publicUuid,
+            caseRow.id,
+            value.inspectionId,
+            value.evidenceType,
+            value.category,
+            value.title,
+            value.caption,
+            storageKey,
+            mimeType,
+            fileSizeBytes,
+            value.capturedAt,
+            value.lat,
+            value.lng,
+            req.auth!.id,
+          ],
+        );
+
+        const item: EvidenceItem = {
+          id: result.insertId,
+          publicUuid,
+          inspectionId: value.inspectionId,
+          evidenceType: value.evidenceType,
+          category: value.category,
+          title: value.title,
+          caption: value.caption,
+          storageKey: storageKey
+            ? await signBlobUrlForClient(storageKey)
+            : null,
+          mimeType,
+          fileSizeBytes,
+          capturedAt: value.capturedAt ? value.capturedAt.toISOString() : null,
+          lat: value.lat,
+          lng: value.lng,
+          capturedBy: req.auth!.id,
+          createdAt: new Date().toISOString(),
+        };
+        const evidenceChecklist = await loadEvidenceChecklistForCase(
+          caseRow.id as number,
+        );
+        const response: CreateEvidenceResponse = {
+          evidence: item,
+          evidenceChecklist,
+        };
+        return res.status(201).json(response);
+      } catch (err) {
+        apiLogger.error("evidence create failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.delete(
+    "/api/cases/:publicUuid/evidence/:evidenceUuid",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canMutateCaseSection(req.auth?.role, "evidence")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        const evidenceUuid = String(req.params.evidenceUuid || "").trim();
+        if (!evidenceUuid) {
+          return res.status(400).json({ error: "evidenceUuid required" });
+        }
+        const db = getPool();
+        const [result] = await db.query<ResultSetHeader>(
+          `UPDATE evidence_items
+           SET deleted_at = NOW()
+           WHERE public_uuid = ? AND case_id = ? AND deleted_at IS NULL`,
+          [evidenceUuid, caseRow.id],
+        );
+        if (result.affectedRows === 0) {
+          return res.status(404).json({ error: "Evidence not found" });
+        }
+        const evidenceChecklist = await loadEvidenceChecklistForCase(
+          caseRow.id as number,
+        );
+        const response: DeleteEvidenceResponse = {
+          ok: true,
+          evidenceChecklist,
+        };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("evidence delete failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
   // ---- Logistics ----
 
   app.post(
@@ -2892,8 +11057,13 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canMutateCaseSection(req.auth?.role, "logistics")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateLogisticsTripRequest;
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const publicUuid = generatePublicUuid();
         const status = body.status || "planned";
@@ -2938,11 +11108,29 @@ export function createServer() {
           departureAt: body.departureAt
             ? new Date(body.departureAt).toISOString()
             : null,
-          returnAt: body.returnAt ? new Date(body.returnAt).toISOString() : null,
+          returnAt: body.returnAt
+            ? new Date(body.returnAt).toISOString()
+            : null,
           originCity: body.originCity?.trim() || null,
           destinationCity: body.destinationCity?.trim() || null,
           notes: body.notes?.trim() || null,
         };
+        if (status === "booked" || body.departureAt) {
+          const tripRecipient =
+            (await resolveCoordinatorOrAdmin(caseRow)) ?? req.auth!.id;
+          await createNotification({
+            recipientActor: "staff",
+            recipientId: tripRecipient,
+            caseId: caseRow.id as number,
+            type: "travel_confirmed",
+            title: `Travel confirmed · ${caseRow.case_number}`,
+            body: body.destinationCity
+              ? `Trip toward ${body.destinationCity.trim()} recorded.`
+              : "Logistics trip recorded.",
+            caseNumber: String(caseRow.case_number),
+            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          });
+        }
         return res.status(201).json({ trip: item });
       } catch (err) {
         apiLogger.error("trip create failed", err);
@@ -2959,6 +11147,9 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canMutateCaseSection(req.auth?.role, "logistics")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateLogisticsExpenseRequest;
         const tripId = Number(body?.tripId);
         const amount = Number(body?.amount);
@@ -2970,12 +11161,18 @@ export function createServer() {
           "meals",
           "other",
         ];
-        if (!tripId || !Number.isFinite(amount) || !types.includes(body.expenseType)) {
+        if (
+          !tripId ||
+          !Number.isFinite(amount) ||
+          !types.includes(body.expenseType)
+        ) {
           return res
             .status(400)
             .json({ error: "tripId, expenseType and amount required" });
         }
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const db = getPool();
         const [trips] = await db.query<RowDataPacket[]>(
@@ -3025,8 +11222,13 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canMutateCaseSection(req.auth?.role, "reports")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const body = req.body as CreateTechnicalReportRequest;
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const submit = Boolean(body.submit);
         const publicUuid = generatePublicUuid();
@@ -3048,6 +11250,13 @@ export function createServer() {
           ],
         );
         if (submit) {
+          await openReviewRequest({
+            caseId: caseRow.id as number,
+            entityType: "technical_report",
+            entityId: result.insertId,
+            stage: "grammar_qa",
+            requestedBy: req.auth!.id,
+          });
           await createNotification({
             recipientActor: "staff",
             recipientId: req.auth!.id,
@@ -3055,6 +11264,8 @@ export function createServer() {
             type: "qa_requested",
             title: `Report QA · ${caseRow.case_number}`,
             body: "Technical report submitted for grammar QA.",
+            caseNumber: String(caseRow.case_number),
+            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
           });
         }
         return res.status(201).json({
@@ -3089,7 +11300,9 @@ export function createServer() {
         if (!toStatus) {
           return res.status(400).json({ error: "status is required" });
         }
-        const caseRow = await findCaseByPublicUuid(String(req.params.publicUuid));
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const db = getPool();
         const [rows] = await db.query<RowDataPacket[]>(
@@ -3102,27 +11315,124 @@ export function createServer() {
           return res.status(404).json({ error: "Report not found" });
         }
         const fromStatus = rows[0].status as TechnicalReportStatus;
+        if (
+          fromStatus === "external_review" &&
+          !canStaffApproveExternalReview(req.auth?.role)
+        ) {
+          return res.status(403).json({
+            error:
+              "External review outcomes must be submitted by the law firm (admin override only)",
+          });
+        }
+        if (!canMutateCaseSection(req.auth?.role, "reports")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         const check = canTransitionReport(fromStatus, toStatus);
         if (check.ok === false) {
           return res.status(400).json({ error: check.reason });
         }
-        await db.query<ResultSetHeader>(
-          `UPDATE technical_reports
-           SET status = ?,
-               approved_at = ?,
-               delivered_at = ?,
-               submitted_at = COALESCE(submitted_at, ?)
-           WHERE id = ?`,
-          [
-            toStatus,
-            toStatus === "approved" || toStatus === "approved_internal"
-              ? new Date()
-              : rows[0].approved_at,
-            toStatus === "delivered" ? new Date() : rows[0].delivered_at,
-            toStatus === "grammar_qa" ? new Date() : null,
-            rows[0].id,
-          ],
-        );
+
+        const fromCaseStatus = caseRow.status as CaseStatus;
+        let looped: CaseStatus | null = null;
+        const conn = await db.getConnection();
+        try {
+          await conn.beginTransaction();
+          await conn.query<ResultSetHeader>(
+            `UPDATE technical_reports
+             SET status = ?,
+                 approved_at = ?,
+                 delivered_at = ?,
+                 submitted_at = COALESCE(submitted_at, ?)
+             WHERE id = ?`,
+            [
+              toStatus,
+              toStatus === "approved" || toStatus === "approved_internal"
+                ? new Date()
+                : rows[0].approved_at,
+              toStatus === "delivered" ? new Date() : rows[0].delivered_at,
+              toStatus === "grammar_qa" ? new Date() : null,
+              rows[0].id,
+            ],
+          );
+
+          const leavingStage = reviewStageForReportStatus(fromStatus);
+          if (leavingStage) {
+            const outcome: ReviewOutcome =
+              toStatus === "changes_requested"
+                ? "changes_requested"
+                : toStatus === "rejected"
+                  ? "rejected"
+                  : "approved";
+            await completePendingReviewsForEntity({
+              entityType: "technical_report",
+              entityId: rows[0].id as number,
+              outcome,
+              stage: leavingStage,
+              conn,
+            });
+          }
+
+          looped = await applyArtifactRejectLoop({
+            caseRow,
+            artifact: "technical_report",
+            outcome: toStatus,
+            actorId: req.auth!.id,
+            conn,
+            auditActorType: "staff",
+            auditActorId: req.auth!.id,
+          });
+          await conn.commit();
+        } catch (err) {
+          await conn.rollback();
+          throw err;
+        } finally {
+          conn.release();
+        }
+
+        const enterStage = reviewStageForReportStatus(toStatus);
+        if (enterStage) {
+          await openReviewRequest({
+            caseId: caseRow.id as number,
+            entityType: "technical_report",
+            entityId: rows[0].id as number,
+            stage: enterStage,
+            requestedBy: req.auth!.id,
+          });
+        }
+
+        if (toStatus === "external_review") {
+          await runAutomationActions(automationOnReportEnterExternalReview(), {
+            caseId: caseRow.id as number,
+            lawFirmId:
+              caseRow.law_firm_id != null ? Number(caseRow.law_firm_id) : null,
+            actorId: req.auth!.id,
+            caseNumber: String(caseRow.case_number),
+            entityType: "technical_report",
+            entityId: rows[0].id as number,
+          });
+        }
+
+        if (toStatus === "approved") {
+          await runAutomationActions(automationOnReportApproved(), {
+            caseId: caseRow.id as number,
+            lawFirmId:
+              caseRow.law_firm_id != null ? Number(caseRow.law_firm_id) : null,
+            actorId: req.auth!.id,
+            caseNumber: String(caseRow.case_number),
+            fallbackRecipientId: req.auth!.id,
+          });
+        }
+
+        if (looped) {
+          await afterArtifactRejectLoop({
+            caseRow,
+            fromStatus: fromCaseStatus,
+            toStatus: looped,
+            actorId: req.auth!.id,
+            auditActorType: "staff",
+          });
+        }
+
         if (toStatus === "approved" || toStatus === "delivered") {
           await createNotification({
             recipientActor: "staff",
@@ -3131,6 +11441,8 @@ export function createServer() {
             type: "report_approved",
             title: `Report ${toStatus} · ${caseRow.case_number}`,
             body: `Technical report moved to ${toStatus}.`,
+            caseNumber: String(caseRow.case_number),
+            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
           });
         }
 
@@ -3146,10 +11458,10 @@ export function createServer() {
               type: "report_approved",
               title: `Report delivered · ${caseRow.case_number}`,
               body: "A technical report is available in your portal.",
-            });
-            await safeSendEmail(
-              contact.email,
-              buildReportDeliveredEmail({
+              emailTo: contact.email,
+              caseNumber: String(caseRow.case_number),
+              caseUrl: `${APP_URL}/client/cases/${caseRow.public_uuid}`,
+              email: buildReportDeliveredEmail({
                 locale: contact.locale,
                 firstName: contact.firstName,
                 caseNumber: String(caseRow.case_number),
@@ -3157,8 +11469,7 @@ export function createServer() {
                 caseUrl: `${APP_URL}/client/cases/${caseRow.public_uuid}`,
                 appUrl: APP_URL,
               }),
-              "report-delivered",
-            );
+            });
           }
         }
 
@@ -3338,7 +11649,8 @@ export function createServer() {
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT id, public_uuid, case_number, title, status, priority,
                   court_name, property_city, property_state, law_firm_id,
-                  assigned_expert_id, inspection_deadline_at, created_at, updated_at
+                  assigned_expert_id, inspection_deadline_at, involves_fatality,
+                  created_at, updated_at
            FROM cases
            WHERE law_firm_id = ? AND deleted_at IS NULL
            ORDER BY created_at DESC
@@ -3377,8 +11689,9 @@ export function createServer() {
              court_name, external_reference, priority, status,
              plaintiff_name, defendant_name, property_address, property_city,
              property_state, property_postal_code, property_country,
+             involves_fatality,
              intake_received_at, created_by
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
           [
             publicUuid,
             caseNumber,
@@ -3395,6 +11708,7 @@ export function createServer() {
             body.propertyState?.trim() || null,
             body.propertyPostalCode?.trim() || null,
             body.propertyCountry?.trim() || "MX",
+            body.involvesFatality ? 1 : 0,
             null,
           ],
         );
@@ -3417,10 +11731,10 @@ export function createServer() {
             type: "general",
             title: `New case ${caseNumber}`,
             body: `Law firm submitted: ${title}`,
-          });
-          await safeSendEmail(
-            String(admin.email),
-            buildNewCaseIntakeEmail({
+            emailTo: String(admin.email),
+            caseNumber,
+            caseUrl: `${APP_URL}/portal/cases/${publicUuid}`,
+            email: buildNewCaseIntakeEmail({
               locale: normalizeLocale(admin.preferred_language as string),
               firstName: String(admin.first_name || "Admin"),
               caseNumber,
@@ -3428,8 +11742,7 @@ export function createServer() {
               caseUrl: `${APP_URL}/portal/cases/${publicUuid}`,
               appUrl: APP_URL,
             }),
-            "new-case-intake",
-          );
+          });
         }
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT * FROM cases WHERE id = ? LIMIT 1`,
@@ -3475,7 +11788,8 @@ export function createServer() {
         );
         const [docRows] = await db.query<RowDataPacket[]>(
           `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
-                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes
+                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
+                  v.ocr_status, v.ocr_text, v.ocr_processed_at
            FROM documents d
            LEFT JOIN document_versions v
              ON v.document_id = d.id AND v.version_number = d.current_version
@@ -3493,6 +11807,17 @@ export function createServer() {
            LIMIT 20`,
           [caseId],
         );
+        const clientDocs = await Promise.all(
+          docRows.map(async (row) => {
+            const document = mapCaseDocumentItem(row);
+            return {
+              ...document,
+              storageKey: document.storageKey
+                ? await signBlobUrlForClient(document.storageKey)
+                : null,
+            };
+          }),
+        );
         return res.json({
           case: mapCaseDetail(rows[0]),
           notes: noteRows.map((n) => ({
@@ -3502,24 +11827,216 @@ export function createServer() {
             authorId: (n.author_id as number | null) ?? null,
             createdAt: toIso(n.created_at) || new Date().toISOString(),
           })),
-          documents: docRows.map((d) => ({
-            id: d.id as number,
-            publicUuid: d.public_uuid as string,
-            category: d.category as DocumentCategory,
-            title: d.title as string,
-            status: d.status as string,
-            currentVersion: Number(d.current_version) || 1,
-            fileName: (d.file_name as string | null) ?? null,
-            mimeType: (d.mime_type as string | null) ?? null,
-            storageKey: (d.storage_key as string | null) ?? null,
-            fileSizeBytes:
-              d.file_size_bytes != null ? Number(d.file_size_bytes) : null,
-            createdAt: toIso(d.created_at) || new Date().toISOString(),
-          })),
+          documents: clientDocs,
           technicalReports: reportRows.map(mapTechnicalReport),
+          documentCompleteness: buildDocumentCompleteness(
+            clientDocs
+              .filter((d) => isActiveDocumentStatus(d.status))
+              .map((d) => d.category),
+            Boolean(rows[0].involves_fatality),
+          ),
         });
       } catch (err) {
         apiLogger.error("client case get failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/client/cases/:publicUuid",
+    dbUnavailable,
+    requireLawFirm,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
+        if (!lawFirmId) {
+          return res.status(403).json({ error: "No law firm linked to user" });
+        }
+        const parsed = parseUpdateCaseFlags(req.body as UpdateCaseFlagsRequest);
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM cases
+           WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [req.params.publicUuid, lawFirmId],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Case not found" });
+        }
+        await db.query<ResultSetHeader>(
+          `UPDATE cases SET involves_fatality = ? WHERE id = ?`,
+          [parsed.value.involvesFatality ? 1 : 0, rows[0].id],
+        );
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM cases WHERE id = ? LIMIT 1`,
+          [rows[0].id],
+        );
+        await notifyMissingDocumentsIfNeeded(updated[0]);
+        const response: CaseResponse = { case: mapCaseDetail(updated[0]) };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("client case flags patch failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/client/cases/:publicUuid/technical-reports/:reportUuid/review",
+    dbUnavailable,
+    requireLawFirm,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
+        if (!lawFirmId) {
+          return res.status(403).json({ error: "No law firm linked to user" });
+        }
+        const body = req.body as ClientReviewReportRequest;
+        const caseRow = await findCaseByPublicUuid(
+          String(req.params.publicUuid),
+        );
+        if (!caseRow || Number(caseRow.law_firm_id) !== lawFirmId) {
+          return res.status(404).json({ error: "Case not found" });
+        }
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM technical_reports
+           WHERE public_uuid = ? AND case_id = ?
+           LIMIT 1`,
+          [req.params.reportUuid, caseRow.id],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Report not found" });
+        }
+        if (rows[0].status !== "external_review") {
+          return res
+            .status(400)
+            .json({ error: "Report is not in external_review" });
+        }
+        const resolved = resolveReviewCompletion("pending", body?.outcome);
+        if (resolved.ok === false) {
+          return res.status(400).json({ error: resolved.error });
+        }
+        const nextStatus = reportStatusFromReview(
+          "external_law_firm",
+          resolved.nextStatus,
+        ) as TechnicalReportStatus | null;
+        if (!nextStatus) {
+          return res.status(400).json({ error: "Invalid review outcome" });
+        }
+        const check = canTransitionReport("external_review", nextStatus);
+        if (check.ok === false) {
+          return res.status(400).json({ error: check.reason });
+        }
+
+        const fromStatus = caseRow.status as CaseStatus;
+        let looped: CaseStatus | null = null;
+        const conn = await db.getConnection();
+        try {
+          await conn.beginTransaction();
+          const [reportUpdate] = await conn.query<ResultSetHeader>(
+            `UPDATE technical_reports
+             SET status = ?,
+                 approved_at = ?
+             WHERE id = ? AND status = 'external_review'`,
+            [
+              nextStatus,
+              nextStatus === "approved" ? new Date() : rows[0].approved_at,
+              rows[0].id,
+            ],
+          );
+          if (reportUpdate.affectedRows === 0) {
+            await conn.rollback();
+            return res.status(409).json({
+              error: "Report is no longer in external_review",
+            });
+          }
+          await completePendingReviewsForEntity({
+            entityType: "technical_report",
+            entityId: rows[0].id as number,
+            outcome: resolved.nextStatus,
+            notes: body.notes?.trim() || null,
+            stage: "external_law_firm",
+            conn,
+          });
+          looped = await applyArtifactRejectLoop({
+            caseRow,
+            artifact: "technical_report",
+            outcome: resolved.nextStatus,
+            actorId: null,
+            reason: body.notes?.trim() || null,
+            conn,
+            auditActorType: "law_firm",
+            auditActorId: req.auth!.id,
+          });
+          await conn.commit();
+        } catch (err) {
+          await conn.rollback();
+          throw err;
+        } finally {
+          conn.release();
+        }
+        if (looped) {
+          await afterArtifactRejectLoop({
+            caseRow,
+            fromStatus,
+            toStatus: looped,
+            actorId: null,
+            auditActorType: "law_firm",
+          });
+        }
+
+        if (nextStatus === "approved") {
+          const staffActor =
+            caseRow.assigned_coordinator_id != null
+              ? Number(caseRow.assigned_coordinator_id)
+              : ((await findStaffIdsByRoles(["admin"]))[0] ?? null);
+          if (staffActor != null) {
+            await runAutomationActions(automationOnReportApproved(), {
+              caseId: caseRow.id as number,
+              lawFirmId,
+              actorId: staffActor,
+              caseNumber: String(caseRow.case_number),
+              fallbackRecipientId: staffActor,
+            });
+          }
+        }
+
+        const staffRecipients = await findStaffIdsByRoles([
+          "admin",
+          "case_coordinator",
+          "legal",
+        ]);
+        const notifyIds =
+          staffRecipients.length > 0
+            ? staffRecipients
+            : caseRow.assigned_coordinator_id != null
+              ? [Number(caseRow.assigned_coordinator_id)]
+              : [];
+        for (const recipientId of notifyIds) {
+          await createNotification({
+            recipientActor: "staff",
+            recipientId,
+            caseId: caseRow.id as number,
+            type: "report_approved",
+            title: `Client review · ${caseRow.case_number}`,
+            body: `Law firm marked report as ${resolved.nextStatus}.`,
+            caseNumber: String(caseRow.case_number),
+            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          });
+        }
+
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM technical_reports WHERE id = ? LIMIT 1`,
+          [rows[0].id],
+        );
+        return res.json({ report: mapTechnicalReport(updated[0]) });
+      } catch (err) {
+        apiLogger.error("client report review failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -3544,7 +12061,11 @@ export function createServer() {
         const title = String(body?.title || "").trim();
         const fileName = String(body?.fileName || "").trim();
         const base64 = String(body?.data || "");
-        const category = (body.category || "other") as DocumentCategory;
+        const categoryParsed = parseClientUploadCategory(body.category);
+        if (categoryParsed.ok === false) {
+          return res.status(400).json({ error: categoryParsed.error });
+        }
+        const category = categoryParsed.value;
         if (!title || !fileName || !base64) {
           return res
             .status(400)
@@ -3552,7 +12073,9 @@ export function createServer() {
         }
         const db = getPool();
         const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT id FROM cases
+          `SELECT id, case_number, public_uuid, status, law_firm_id, involves_fatality,
+                  assigned_coordinator_id, assigned_expert_id
+           FROM cases
            WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
            LIMIT 1`,
           [req.params.publicUuid, lawFirmId],
@@ -3560,24 +12083,25 @@ export function createServer() {
         if (rows.length === 0) {
           return res.status(404).json({ error: "Case not found" });
         }
+        const caseRow = rows[0];
         const buffer = Buffer.from(base64, "base64");
         if (buffer.length === 0 || buffer.length > 15 * 1024 * 1024) {
           return res.status(400).json({ error: "Invalid file size" });
         }
         const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const pathname = `client-cases/${rows[0].id}/${Date.now()}-${safeName}`;
-        const blob = await put(pathname, buffer, {
-          access: "public",
-          contentType: body.contentType || undefined,
-          token: process.env.BLOB_READ_WRITE_TOKEN,
-        });
+        const pathname = `client-cases/${caseRow.id}/${Date.now()}-${safeName}`;
+        const blob = await putPrivateBlob(
+          pathname,
+          buffer,
+          body.contentType || undefined,
+        );
         const docUuid = generatePublicUuid();
         const [docResult] = await db.query<ResultSetHeader>(
           `INSERT INTO documents
              (public_uuid, case_id, category, title, current_version, status,
               uploaded_by, uploaded_by_law_firm_user_id)
            VALUES (?, ?, ?, ?, 1, 'uploaded', NULL, ?)`,
-          [docUuid, rows[0].id, category, title, req.auth!.id],
+          [docUuid, caseRow.id, category, title, req.auth!.id],
         );
         await db.query<ResultSetHeader>(
           `INSERT INTO document_versions
@@ -3591,6 +12115,29 @@ export function createServer() {
             buffer.length,
           ],
         );
+
+        const staffRecipients = new Set<number>();
+        const coordinator = await resolveCoordinatorOrAdmin(caseRow);
+        if (coordinator != null) staffRecipients.add(coordinator);
+        if (caseRow.assigned_expert_id != null) {
+          staffRecipients.add(Number(caseRow.assigned_expert_id));
+        }
+        for (const recipientId of staffRecipients) {
+          await createNotification({
+            recipientActor: "staff",
+            recipientId,
+            caseId: Number(caseRow.id),
+            type: "general",
+            title: `Client document · ${caseRow.case_number}`,
+            body: `Law firm uploaded "${title}" (${category}).`,
+            caseNumber: String(caseRow.case_number),
+            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          });
+        }
+
+        await maybeStartTenDayClock(caseRow, coordinator);
+        await notifyMissingDocumentsIfNeeded(caseRow);
+
         return res.status(201).json({
           document: {
             id: docResult.insertId,
@@ -3601,13 +12148,81 @@ export function createServer() {
             currentVersion: 1,
             fileName,
             mimeType: body.contentType || null,
-            storageKey: blob.url,
+            storageKey: await signBlobUrlForClient(blob.url),
             fileSizeBytes: buffer.length,
             createdAt: new Date().toISOString(),
           } satisfies CaseDocumentItem,
         });
       } catch (err) {
         apiLogger.error("client document upload failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/client/cases/:publicUuid/documents/:documentUuid",
+    dbUnavailable,
+    requireLawFirm,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
+        if (!lawFirmId) {
+          return res.status(403).json({ error: "No law firm linked to user" });
+        }
+        const db = getPool();
+        const [cases] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM cases
+           WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [req.params.publicUuid, lawFirmId],
+        );
+        if (cases.length === 0) {
+          return res.status(404).json({ error: "Case not found" });
+        }
+        const [docs] = await db.query<RowDataPacket[]>(
+          `SELECT id, category FROM documents
+           WHERE public_uuid = ? AND case_id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [req.params.documentUuid, cases[0].id],
+        );
+        if (docs.length === 0) {
+          return res.status(404).json({ error: "Document not found" });
+        }
+        const parsed = parseUpdateDocumentCategory(req.body, {
+          clientPortal: true,
+          currentCategory: docs[0].category,
+        });
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
+        await db.query<ResultSetHeader>(
+          `UPDATE documents SET category = ? WHERE id = ?`,
+          [parsed.value.category, docs[0].id],
+        );
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
+                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
+                  v.ocr_status, v.ocr_text, v.ocr_processed_at
+           FROM documents d
+           LEFT JOIN document_versions v
+             ON v.document_id = d.id AND v.version_number = d.current_version
+           WHERE d.id = ?
+           LIMIT 1`,
+          [docs[0].id],
+        );
+        await notifyMissingDocumentsIfNeeded(cases[0]);
+        const document = mapCaseDocumentItem(updated[0]);
+        return res.json({
+          document: {
+            ...document,
+            storageKey: document.storageKey
+              ? await signBlobUrlForClient(document.storageKey)
+              : null,
+          },
+        });
+      } catch (err) {
+        apiLogger.error("client document category patch failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -3621,6 +12236,9 @@ export function createServer() {
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canUploadBlobs(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
         if (!process.env.BLOB_READ_WRITE_TOKEN) {
           return res.status(503).json({
             error: "BLOB_READ_WRITE_TOKEN not configured",
@@ -3646,14 +12264,14 @@ export function createServer() {
 
         const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
         const pathname = `uploads/${req.auth!.id}/${Date.now()}-${safeName}`;
-        const blob = await put(pathname, buffer, {
-          access: "public",
-          contentType: contentType || undefined,
-          token: process.env.BLOB_READ_WRITE_TOKEN,
-        });
+        const blob = await putPrivateBlob(
+          pathname,
+          buffer,
+          contentType || undefined,
+        );
 
         const response: UploadBlobResponse = {
-          url: blob.url,
+          url: await signBlobUrlForClient(blob.url),
           pathname: blob.pathname,
           contentType: contentType || null,
           size: buffer.length,

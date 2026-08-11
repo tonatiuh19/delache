@@ -1,0 +1,28 @@
+---
+description: DELACHE critical project rules from AGENTS.md — always apply
+alwaysApply: true
+---
+
+# DELACHE critical rules
+
+Source of truth: `AGENTS.md`. **NO EXCEPTIONS.**
+
+## Must follow
+
+- Verify every SQL column/table against `database/schema.sql` — never assume names
+- DB changes: create `database/migrations/YYYYMMDD_HHMMSS_*.sql` (TiDB/MySQL 8). Do not edit schema by hand as the change vehicle; after apply, update `database/schema.sql` to match
+- Components never call axios/fetch — only dispatch Redux thunks and select state
+- Fix root causes of type/bugs immediately — no patches
+- API handlers stay in `api/index.ts` (Vercel serverless). Update `swagger.yaml` with API changes
+- `api/index.ts` must not import runtime values from `shared/` or `lib/` (Vercel ESM 500). `import type` only; keep inlined copies in sync with `shared/` / `lib/`
+- Update `DESIGN_SYSTEM.md` when design-relevant UI changes land
+- i18n: new user-visible strings → both `client/locales/en/translation.json` and `es/translation.json` via `t()` — never hardcode
+- Prefer reusable components/utilities over one-offs; avoid breaking changes
+- Mobile-responsive, engaging UI for frontend work
+- Review chat history before changing code — do not reintroduce fixed issues
+- If requirements are unclear, **ask the user first**
+- Package manager: **npm only** (never pnpm/yarn)
+
+## Testing (mandatory)
+
+New/changed product behavior needs Vitest coverage (happy path + edges). Extract non-trivial rules to `shared/`. Run `npm run test` and `npm run typecheck` before done. Pure styling may skip tests; ask if unsure.

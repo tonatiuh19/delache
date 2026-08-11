@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
-import { ListCardSkeleton } from "@/components/portal/PortalSkeletons";
+import { ContentPageSkeleton } from "@/components/portal/PortalSkeletons";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   fetchNotifications,
@@ -20,6 +20,15 @@ export default function NotificationsPage() {
   useEffect(() => {
     void dispatch(fetchNotifications());
   }, [dispatch]);
+
+  if (loadingNotifications && notifications.length === 0) {
+    return (
+      <div className="mx-auto max-w-5xl">
+        <MetaHelmet title={t("portal.notifications")} noindex />
+        <ContentPageSkeleton variant="inbox" withActions />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -48,9 +57,7 @@ export default function NotificationsPage() {
         }
       />
       <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-        {loadingNotifications ? (
-          <ListCardSkeleton rows={6} className="border-0 shadow-none" />
-        ) : notifications.length === 0 ? (
+        {notifications.length === 0 ? (
           <p className="p-6 text-sm text-muted-foreground">
             {t("notifications.empty")}
           </p>

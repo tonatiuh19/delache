@@ -143,6 +143,35 @@ Capabilities:
 
 # Complete Workflow
 
+Canonical operational SOP (roles, RACI, gates, nested SLAs, reject loops, single listado):
+
+[docs/Proceso_Peritaje_Electrico_12_Puntos.md](./Proceso_Peritaje_Electrico_12_Puntos.md)
+
+Executable rules: `shared/processGates.ts` (aligned to `CASE_STATUS_FLOW`).
+
+| Point | Status | Accountable | SLA |
+|------:|--------|-------------|-----|
+| 1 | `intake` | Coordinator | — |
+| 2 | `assignment` | Coordinator | — (starts P3 3-day clock on exit) |
+| 3 | `questionnaire` | Assigned expert | **3 business days** |
+| 4 | `legal_review_questionnaire` | Internal legal | **2 business days** (changes → P3; fondo reject → `on_hold`) |
+| 5 | `additional_docs` | Coordinator | Plaintiff Q requested same day; death certificate only if fatality |
+| 6 | `court_acceptance` | Assigned expert | **10 business days start when protesta is filed** (not when the status is entered) |
+| 7 | `logistics` | Logistics | Inside the 10-day clock |
+| 8 | `inspection` | Assigned expert | Inside the 10-day clock; mandatory evidence checklist |
+| 9 | `technical_report` | Technical director | Inside the 10-day clock (reject stays P9) |
+| 10 | `legal_validation` | Law firm | **3 business days nested inside the 10** (changes → P9 + report `changes_requested`; fondo reject → `on_hold`) |
+| 11 | `court_delivery` | Assigned expert | Filing + ratification; releases final invoice flag |
+| 12 | `accounting` | Accountant | Collect advance (P3) and final (P11); unpaid issued invoices block `completed` |
+
+Hold resume: coordinator returns to the paused status; admin may jump. Fatality is an explicit `involves_fatality` flag (death certificate is not inferred).
+
+There is **one** listado (staff case grid): avance + cobro flags from `GET /api/cases` (`listado`) — not three spreadsheets.
+
+Documents must be tagged with `category` on upload (or recategorized). Omitted category is rejected. Gates ignore `other`. Missing-doc alerts: intake (P1/P2), additional docs (P5), court filing (P11 only). Despacho cannot retag staff-only files (protesta, ratification…).
+
+Business days = Mon–Fri excluding official Mexican holidays (LFT art. 74). Day 0 = trigger day (not counted). P3 questionnaire GPS (`propertyGps`) writes case coordinates.
+
 ---
 
 # Phase 1
@@ -206,7 +235,7 @@ When completed:
 
 Deadline:
 
-3 Business Days
+3 Business Days (QA reject stays in this phase; advance invoice only after questionnaire **approved**)
 
 ---
 
@@ -257,7 +286,7 @@ Tasks:
 
 Platform activates:
 
-10 Business Day countdown
+10 Business Day countdown (starts when protesta evidence is filed, not merely on status change)
 
 Visual deadline indicators:
 
@@ -335,8 +364,6 @@ Timestamp
 
 Digital signatures
 
-Offline mode
-
 ---
 
 # Phase 9
@@ -385,7 +412,7 @@ Rejected
 
 Maximum:
 
-3 Business Days
+3 Business Days **inside the 10-day protesta clock**. Changes requested → return to technical report.
 
 ---
 
@@ -640,32 +667,6 @@ Metadata
 
 ---
 
-# Mobile Application
-
-Experts need mobile-first functionality.
-
-Capabilities:
-
-GPS navigation
-
-Offline inspections
-
-Photo capture
-
-Video capture
-
-Voice notes
-
-Measurements
-
-Digital signatures
-
-Evidence upload
-
-Sync when online
-
----
-
 # Automation
 
 Examples:
@@ -736,15 +737,15 @@ Comments
 
 Role-based permissions
 
-Encrypted storage
+Encrypted storage (platform/ops: TiDB + Blob encryption at rest — not an in-app feature)
 
-Daily backups
+Daily backups (platform/ops: provider backups — not an in-app feature)
 
 Activity logs
 
 Document versioning
 
-Two-factor authentication
+Passwordless email OTP authentication
 
 Session management
 

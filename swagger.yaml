@@ -23,7 +23,13 @@ paths:
       summary: Request staff portal login OTP
       responses:
         "200":
-          description: Generic success
+          description: Code emailed (sent=true)
+        "404":
+          description: Account not found, inactive, or login not allowed
+        "429":
+          description: Too many OTP requests (durable email+IP rate limits)
+        "502":
+          description: Email provider failed
   /api/auth/staff/verify-otp:
     post:
       summary: Verify staff OTP and create session (actor=staff)
@@ -38,6 +44,27 @@ paths:
       responses:
         "200":
           description: Profile
+  /api/auth/staff/preferences:
+    patch:
+      summary: Update current staff user preferences (form helpers toggle)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [showFormHelpers]
+              properties:
+                showFormHelpers:
+                  type: boolean
+                  description: Show inline form field helpers (default true)
+      responses:
+        "200":
+          description: Updated user profile
+        "400":
+          description: Invalid body
   /api/auth/staff/logout:
     post:
       summary: Revoke staff session
@@ -49,7 +76,13 @@ paths:
       summary: Request law-firm client portal login OTP
       responses:
         "200":
-          description: Generic success
+          description: Code emailed (sent=true)
+        "404":
+          description: Account not found or inactive
+        "429":
+          description: Too many OTP requests (rate limited)
+        "502":
+          description: Email provider failed
   /api/auth/client/verify-otp:
     post:
       summary: Verify client OTP and create session (actor=law_firm)
@@ -64,6 +97,27 @@ paths:
       responses:
         "200":
           description: Profile
+  /api/auth/client/preferences:
+    patch:
+      summary: Update current law-firm user preferences (form helpers toggle)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [showFormHelpers]
+              properties:
+                showFormHelpers:
+                  type: boolean
+                  description: Show inline form field helpers (default true)
+      responses:
+        "200":
+          description: Updated user profile
+        "400":
+          description: Invalid body
   /api/auth/client/logout:
     post:
       summary: Revoke client session
@@ -140,7 +194,7 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Cases + pagination
+          description: Cases + pagination. Each case includes listado progress flags, lawFirmName, and primaryExpertName. Search (q) matches number, title, court, city, firm, or primary expert.
     post:
       summary: Create case
       security:
@@ -150,7 +204,7 @@ paths:
           description: Created
   /api/cases/{publicUuid}:
     get:
-      summary: Case detail with history, notes, documents
+      summary: Case detail with history, notes, documents, reviews, completeness, audit
       security:
         - bearerAuth: []
       parameters:
@@ -161,7 +215,92 @@ paths:
             type: string
       responses:
         "200":
-          description: Detail payload
+          description: Detail payload (includes hasUnpaidInvoices and processGate snapshot for the current 12-point step)
+    patch:
+      summary: Update case flags (involvesFatality)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [involvesFatality]
+              properties:
+                involvesFatality:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated case
+        "400":
+          description: Invalid body
+  /api/cases/{publicUuid}/location:
+    patch:
+      summary: Update case property address and GPS coordinates
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                propertyAddress: { type: string, nullable: true }
+                propertyCity: { type: string, nullable: true }
+                propertyState: { type: string, nullable: true }
+                propertyPostalCode: { type: string, nullable: true }
+                propertyCountry: { type: string, nullable: true }
+                propertyLat: { type: number, nullable: true }
+                propertyLng: { type: number, nullable: true }
+      responses:
+        "200":
+          description: Updated case
+        "400":
+          description: Invalid coordinates
+        "403":
+          description: Insufficient permissions
+        "404":
+          description: Case not found
+  /api/geo/geocode:
+    post:
+      summary: Geocode an address or lat,lng text (Nominatim / coordinate parse)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  minLength: 3
+                  description: Address text or "lat,lng"
+      responses:
+        "200":
+          description: lat/lng and displayName
+        "400":
+          description: Query too short
+        "404":
+          description: No results
+        "502":
+          description: Upstream geocoder failure
   /api/cases/{publicUuid}/status:
     patch:
       summary: Transition case status
@@ -178,6 +317,19 @@ paths:
           description: Updated case
         "400":
           description: Invalid transition
+        "409":
+          description: Process gates not satisfied (missing artifacts / approvals)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  missing:
+                    type: array
+                    items:
+                      type: string
   /api/cases/{publicUuid}/notes:
     post:
       summary: Add case note
@@ -188,14 +340,105 @@ paths:
           description: Note created
   /api/cases/{publicUuid}/documents:
     post:
-      summary: Upload case document to Vercel Blob
+      summary: Upload case document to Vercel Blob (runs PDF OCR when possible)
       security:
         - bearerAuth: []
       responses:
         "201":
-          description: Document created
+          description: Document created (includes ocrStatus/ocrText when extracted). category is required (lawsuit, protesta, …).
+        "400":
+          description: Missing or invalid category
         "503":
           description: Blob token missing
+  /api/cases/{publicUuid}/documents/{documentUuid}:
+    patch:
+      summary: Recategorize a case document
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+        - in: path
+          name: documentUuid
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category]
+              properties:
+                category: { type: string }
+      responses:
+        "200":
+          description: Document with updated category
+        "400":
+          description: Invalid category
+  /api/cases/{publicUuid}/documents/bulk:
+    post:
+      summary: Bulk upload case documents (max 20; PDF OCR on upload)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    required: [fileName, data]
+                    properties:
+                      title: { type: string }
+                      fileName: { type: string }
+                      contentType: { type: string }
+                      data: { type: string, description: Base64 file bytes }
+                      category: { type: string }
+      responses:
+        "201":
+          description: Documents created
+        "400":
+          description: Validation failed
+        "503":
+          description: Blob token missing
+  /api/cases/{publicUuid}/documents/{documentUuid}/ocr:
+    post:
+      summary: Run or save OCR for a document version (client ocrText or server PDF extract)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+        - in: path
+          name: documentUuid
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ocrText: { type: string, description: Client Tesseract text }
+                ocrStatus: { type: string, enum: [pending, processing, completed, failed, skipped] }
+      responses:
+        "200":
+          description: Document with updated OCR fields
+        "400":
+          description: Image OCR requires ocrText body, or type not eligible
+        "404":
+          description: Document not found
   /api/cases/{publicUuid}/assignments:
     post:
       summary: Assign team member to case
@@ -220,6 +463,46 @@ paths:
       responses:
         "201":
           description: Questionnaire created
+        "409":
+          description: Questionnaire is in legal_review or another non-editable status
+  /api/cases/{publicUuid}/questionnaires/{questionnaireUuid}/status:
+    patch:
+      summary: Transition questionnaire status (opens legal review / advance invoice automation)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+        - in: path
+          name: questionnaireUuid
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Questionnaire updated
+        "400":
+          description: Invalid transition
+  /api/cases/{publicUuid}/reviews/{reviewId}/complete:
+    post:
+      summary: Complete a pending review request
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Review completed with entity side effects
+        "400":
+          description: Not pending or invalid outcome
   /api/cases/{publicUuid}/inspections:
     post:
       summary: Schedule inspection
@@ -228,6 +511,25 @@ paths:
       responses:
         "201":
           description: Inspection created
+  /api/cases/{publicUuid}/inspections/{inspectionUuid}/status:
+    patch:
+      summary: Update inspection status (completed triggers QA notify)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+        - in: path
+          name: inspectionUuid
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Inspection updated
+        "400":
+          description: Invalid status
   /api/cases/{publicUuid}/measurements:
     post:
       summary: Record field measurement
@@ -236,6 +538,26 @@ paths:
       responses:
         "201":
           description: Measurement created
+  /api/cases/{publicUuid}/evidence:
+    post:
+      summary: Capture field evidence (photo, video, GPS, observation, etc.)
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Evidence created with updated checklist coverage
+        "400":
+          description: Validation error
+  /api/cases/{publicUuid}/evidence/{evidenceUuid}:
+    delete:
+      summary: Soft-delete field evidence
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Evidence deleted with updated checklist coverage
+        "404":
+          description: Evidence or case not found
   /api/cases/{publicUuid}/trips:
     post:
       summary: Create logistics trip
@@ -329,23 +651,136 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Case + shared notes/docs/reports
+          description: Case + shared notes/docs/reports + documentCompleteness (P1/P5)
+    patch:
+      summary: Law firm portal — update case flags (involvesFatality)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [involvesFatality]
+              properties:
+                involvesFatality:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated case
+        "400":
+          description: Invalid body
   /api/client/cases/{publicUuid}/documents:
     post:
-      summary: Law firm portal — upload document
+      summary: Law firm portal — upload intake/additional-doc (category required)
       security:
         - bearerAuth: []
       responses:
         "201":
           description: Document uploaded
+        "400":
+          description: Invalid category (P1/P5 types only)
+  /api/client/cases/{publicUuid}/documents/{documentUuid}:
+    patch:
+      summary: Law firm portal — recategorize an intake/additional document
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+        - in: path
+          name: documentUuid
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category]
+              properties:
+                category: { type: string }
+      responses:
+        "200":
+          description: Document with updated category
+        "400":
+          description: Category not allowed, or document is a staff-only type (protesta, ratification, …)
+  /api/client/cases/{publicUuid}/technical-reports/{reportUuid}/review:
+    post:
+      summary: Law firm portal — complete external technical report review
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+        - in: path
+          name: reportUuid
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Report updated. changes_requested returns the case to P9; rejected holds the case.
+        "400":
+          description: Report not in external_review or invalid outcome
   /api/dashboard/stats:
     get:
-      summary: Dashboard counters
+      summary: Dashboard counters (incl. pending reviews/invoices/deadlines)
       security:
         - bearerAuth: []
       responses:
         "200":
           description: Stats
+  /api/documents:
+    get:
+      summary: Documents index across cases (filter, pagination)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: limit
+          schema: { type: integer }
+        - in: query
+          name: q
+          schema: { type: string }
+      responses:
+        "200":
+          description: Documents + pagination
+  /api/search:
+    get:
+      summary: Global search across cases, documents, invoices, team
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Search hits
+  /api/reports/kpis:
+    get:
+      summary: Reporting KPIs (status mix, experts, delays, invoices)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: KPI payload
   /api/calendar/events:
     get:
       summary: Calendar events
@@ -455,6 +890,70 @@ paths:
           description: Member invited
         "409":
           description: Email already exists
+  /api/team/members/{publicUuid}/resend-invite:
+    post:
+      summary: Resend invite email for an invited member
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invite resent
+        "400":
+          description: Member is not in invited status
+        "404":
+          description: Not found
+  /api/team/members/{publicUuid}:
+    get:
+      summary: Team member detail with login sessions and audit log
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Member detail
+        "404":
+          description: Not found
+    patch:
+      summary: Update team member (name, role, status)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Member updated
+        "400":
+          description: Validation error
+        "404":
+          description: Not found
+    delete:
+      summary: Soft-delete team member
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Member removed
+        "400":
+          description: Cannot remove self
+        "404":
+          description: Not found
   /api/uploads:
     post:
       summary: Generic Blob upload

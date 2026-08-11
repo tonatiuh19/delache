@@ -7,6 +7,10 @@ import type {
   CreateLawFirmRequest,
   CreatePaymentRequest,
   DashboardStatsResponse,
+  DocumentsIndexItem,
+  DocumentsIndexResponse,
+  GlobalSearchHit,
+  GlobalSearchResponse,
   InviteTeamMemberRequest,
   InvoiceSummary,
   InvoicesListQuery,
@@ -14,9 +18,12 @@ import type {
   LawFirmSummary,
   NotificationItem,
   PaginationInfo,
+  ReportsKpiResponse,
   TeamListQuery,
   TeamListResponse,
+  TeamMemberDetailResponse,
   TeamMemberItem,
+  UpdateTeamMemberRequest,
 } from "@shared/api";
 import api from "@/lib/api";
 
@@ -27,18 +34,29 @@ interface PortalState {
   invoicesPagination: PaginationInfo | null;
   members: TeamMemberItem[];
   membersPagination: PaginationInfo | null;
+  selectedMemberDetail: TeamMemberDetailResponse | null;
   lawFirms: LawFirmSummary[];
   notifications: NotificationItem[];
   unreadCount: number;
   caseNumberSettings: CaseNumberSettings | null;
+  documentsIndex: DocumentsIndexItem[];
+  documentsPagination: PaginationInfo | null;
+  searchResults: GlobalSearchHit[];
+  searchQuery: string;
+  kpis: ReportsKpiResponse | null;
   loadingStats: boolean;
   loadingEvents: boolean;
   loadingInvoices: boolean;
   loadingMembers: boolean;
+  loadingMemberDetail: boolean;
   loadingSettings: boolean;
   loadingNotifications: boolean;
+  loadingDocuments: boolean;
+  loadingSearch: boolean;
+  loadingKpis: boolean;
   savingSettings: boolean;
   creating: boolean;
+  updatingMember: boolean;
   error: string | null;
 }
 
@@ -49,18 +67,29 @@ const initialState: PortalState = {
   invoicesPagination: null,
   members: [],
   membersPagination: null,
+  selectedMemberDetail: null,
   lawFirms: [],
   notifications: [],
   unreadCount: 0,
   caseNumberSettings: null,
+  documentsIndex: [],
+  documentsPagination: null,
+  searchResults: [],
+  searchQuery: "",
+  kpis: null,
   loadingStats: false,
   loadingEvents: false,
   loadingInvoices: false,
   loadingMembers: false,
+  loadingMemberDetail: false,
   loadingSettings: false,
   loadingNotifications: false,
+  loadingDocuments: false,
+  loadingSearch: false,
+  loadingKpis: false,
   savingSettings: false,
   creating: false,
+  updatingMember: false,
   error: null,
 };
 
@@ -243,6 +272,63 @@ export const inviteTeamMember = createAsyncThunk(
   },
 );
 
+export const resendTeamInvite = createAsyncThunk(
+  "portal/resendTeamInvite",
+  async (publicUuid: string, { rejectWithValue }) => {
+    try {
+      await api.post(`/api/team/members/${publicUuid}/resend-invite`);
+      return publicUuid;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "resend_invite_failed"));
+    }
+  },
+);
+
+export const fetchTeamMemberDetail = createAsyncThunk(
+  "portal/fetchTeamMemberDetail",
+  async (publicUuid: string, { rejectWithValue }) => {
+    try {
+      const { data } = await api.get<TeamMemberDetailResponse>(
+        `/api/team/members/${publicUuid}`,
+      );
+      return data;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "member_detail_failed"));
+    }
+  },
+);
+
+export const updateTeamMember = createAsyncThunk(
+  "portal/updateTeamMember",
+  async (
+    payload: { publicUuid: string } & UpdateTeamMemberRequest,
+    { rejectWithValue },
+  ) => {
+    try {
+      const { publicUuid, ...body } = payload;
+      const { data } = await api.patch<{ member: TeamMemberItem }>(
+        `/api/team/members/${publicUuid}`,
+        body,
+      );
+      return data.member;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "member_update_failed"));
+    }
+  },
+);
+
+export const removeTeamMember = createAsyncThunk(
+  "portal/removeTeamMember",
+  async (publicUuid: string, { rejectWithValue }) => {
+    try {
+      await api.delete(`/api/team/members/${publicUuid}`);
+      return publicUuid;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "member_remove_failed"));
+    }
+  },
+);
+
 export const fetchNotifications = createAsyncThunk(
   "portal/fetchNotifications",
   async (_, { rejectWithValue }) => {
@@ -311,12 +397,64 @@ export const createLawFirm = createAsyncThunk(
   },
 );
 
+export const fetchDocumentsIndex = createAsyncThunk(
+  "portal/fetchDocumentsIndex",
+  async (
+    params: { q?: string; page?: number; limit?: number } | undefined,
+    { rejectWithValue },
+  ) => {
+    try {
+      const { data } = await api.get<DocumentsIndexResponse>("/api/documents", {
+        params: params || undefined,
+      });
+      return data;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "documents_failed"));
+    }
+  },
+);
+
+export const globalSearch = createAsyncThunk(
+  "portal/globalSearch",
+  async (q: string, { rejectWithValue }) => {
+    try {
+      const { data } = await api.get<GlobalSearchResponse>("/api/search", {
+        params: { q },
+      });
+      return data;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "search_failed"));
+    }
+  },
+);
+
+export const fetchReportsKpis = createAsyncThunk(
+  "portal/fetchReportsKpis",
+  async (_, { rejectWithValue }) => {
+    try {
+      const { data } = await api.get<ReportsKpiResponse>("/api/reports/kpis");
+      return data;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "kpis_failed"));
+    }
+  },
+);
+
 const portalSlice = createSlice({
   name: "portal",
   initialState,
   reducers: {
     clearPortalError(state) {
       state.error = null;
+    },
+    clearSelectedMember(state) {
+      state.selectedMemberDetail = null;
+      state.loadingMemberDetail = false;
+    },
+    clearSearchResults(state) {
+      state.searchResults = [];
+      state.searchQuery = "";
+      state.loadingSearch = false;
     },
   },
   extraReducers: (builder) => {
@@ -408,6 +546,60 @@ const portalSlice = createSlice({
       .addCase(inviteTeamMember.fulfilled, (state, action) => {
         state.members = [action.payload, ...state.members];
       })
+      .addCase(fetchTeamMemberDetail.pending, (state) => {
+        state.loadingMemberDetail = true;
+        state.error = null;
+      })
+      .addCase(fetchTeamMemberDetail.fulfilled, (state, action) => {
+        state.loadingMemberDetail = false;
+        state.selectedMemberDetail = action.payload;
+      })
+      .addCase(fetchTeamMemberDetail.rejected, (state, action) => {
+        state.loadingMemberDetail = false;
+        state.error = (action.payload as string) || "member_detail_failed";
+      })
+      .addCase(updateTeamMember.pending, (state) => {
+        state.updatingMember = true;
+        state.error = null;
+      })
+      .addCase(updateTeamMember.fulfilled, (state, action) => {
+        state.updatingMember = false;
+        state.members = state.members.map((m) =>
+          m.publicUuid === action.payload.publicUuid ? action.payload : m,
+        );
+        if (
+          state.selectedMemberDetail?.member.publicUuid ===
+          action.payload.publicUuid
+        ) {
+          state.selectedMemberDetail = {
+            ...state.selectedMemberDetail,
+            member: action.payload,
+          };
+        }
+      })
+      .addCase(updateTeamMember.rejected, (state, action) => {
+        state.updatingMember = false;
+        state.error = (action.payload as string) || "member_update_failed";
+      })
+      .addCase(removeTeamMember.pending, (state) => {
+        state.updatingMember = true;
+        state.error = null;
+      })
+      .addCase(removeTeamMember.fulfilled, (state, action) => {
+        state.updatingMember = false;
+        state.members = state.members.filter(
+          (m) => m.publicUuid !== action.payload,
+        );
+        if (
+          state.selectedMemberDetail?.member.publicUuid === action.payload
+        ) {
+          state.selectedMemberDetail = null;
+        }
+      })
+      .addCase(removeTeamMember.rejected, (state, action) => {
+        state.updatingMember = false;
+        state.error = (action.payload as string) || "member_remove_failed";
+      })
       .addCase(fetchNotifications.pending, (state) => {
         state.loadingNotifications = true;
       })
@@ -443,9 +635,45 @@ const portalSlice = createSlice({
         state.lawFirms = [...state.lawFirms, action.payload].sort((a, b) =>
           a.name.localeCompare(b.name),
         );
+      })
+      .addCase(fetchDocumentsIndex.pending, (state) => {
+        state.loadingDocuments = true;
+      })
+      .addCase(fetchDocumentsIndex.fulfilled, (state, action) => {
+        state.loadingDocuments = false;
+        state.documentsIndex = action.payload.documents;
+        state.documentsPagination = action.payload.pagination;
+      })
+      .addCase(fetchDocumentsIndex.rejected, (state, action) => {
+        state.loadingDocuments = false;
+        state.error = (action.payload as string) || "documents_failed";
+      })
+      .addCase(globalSearch.pending, (state) => {
+        state.loadingSearch = true;
+      })
+      .addCase(globalSearch.fulfilled, (state, action) => {
+        state.loadingSearch = false;
+        state.searchQuery = action.payload.query;
+        state.searchResults = action.payload.results;
+      })
+      .addCase(globalSearch.rejected, (state, action) => {
+        state.loadingSearch = false;
+        state.error = (action.payload as string) || "search_failed";
+      })
+      .addCase(fetchReportsKpis.pending, (state) => {
+        state.loadingKpis = true;
+      })
+      .addCase(fetchReportsKpis.fulfilled, (state, action) => {
+        state.loadingKpis = false;
+        state.kpis = action.payload;
+      })
+      .addCase(fetchReportsKpis.rejected, (state, action) => {
+        state.loadingKpis = false;
+        state.error = (action.payload as string) || "kpis_failed";
       });
   },
 });
 
-export const { clearPortalError } = portalSlice.actions;
+export const { clearPortalError, clearSelectedMember, clearSearchResults } =
+  portalSlice.actions;
 export default portalSlice.reducer;

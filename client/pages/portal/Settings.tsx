@@ -4,7 +4,8 @@ import * as Yup from "yup";
 import { useTranslation } from "react-i18next";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
-import { FormCardSkeleton, PageHeaderSkeleton } from "@/components/portal/PortalSkeletons";
+import { SectionHelper } from "@/components/portal/FormHelpers";
+import { ContentPageSkeleton } from "@/components/portal/PortalSkeletons";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   createLawFirm,
@@ -55,11 +56,9 @@ export default function SettingsPage() {
 
   if (loadingSettings && !caseNumberSettings) {
     return (
-      <div className="mx-auto max-w-3xl space-y-6">
+      <div className="mx-auto max-w-3xl">
         <MetaHelmet title={t("portal.settings")} noindex />
-        <PageHeaderSkeleton />
-        <FormCardSkeleton fields={2} />
-        <FormCardSkeleton fields={4} />
+        <ContentPageSkeleton variant="form" className="max-w-3xl" />
       </div>
     );
   }
@@ -78,6 +77,7 @@ export default function SettingsPage() {
         className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6"
       >
         <h2 className="text-sm font-bold">{t("settings.caseNumberTitle")}</h2>
+        <SectionHelper className="mt-2">{t("help.settings.caseNumber")}</SectionHelper>
         <p className="mt-1 text-xs text-muted-foreground">
           {t("settings.caseNumberHint")}
         </p>
@@ -115,6 +115,7 @@ export default function SettingsPage() {
         className="space-y-3 rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6"
       >
         <h2 className="text-sm font-bold">{t("settings.lawFirmsTitle")}</h2>
+        <SectionHelper className="mt-2">{t("help.settings.lawFirm")}</SectionHelper>
         <p className="text-xs text-muted-foreground">
           {t("settings.lawFirmsHint")}
         </p>

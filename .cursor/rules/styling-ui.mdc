@@ -1,0 +1,17 @@
+---
+description: Tailwind design-system tokens — no arbitrary colors; mobile-first UX
+globs: client/**/*.{tsx,css}
+alwaysApply: false
+---
+
+# Styling & UI
+
+- TailwindCSS utilities; tokens from `client/global.css` / `tailwind.config.ts`
+- **NEVER** arbitrary palette classes (`text-emerald-500`, `bg-amber-400`, `border-red-500`, etc.)
+- Use semantic tokens: `primary`, `accent`, `destructive`, `muted`, `secondary`, `foreground`, `background`, `border`, `card`, `input`, `ring`
+- Brand: `primary` ≈ `#0B4EA2`, `accent` ≈ `#2979FF`. Dark sidebar `bg-[#0b0f1a]` is an intentional exception
+- Prefer existing `client/components/ui/` (Radix) before inventing new primitives
+- Icons: Lucide first (`lucide-react`); `react-icons` only if needed
+- Mobile-responsive; simple, cool, engaging UX with purposeful motion
+- Reuse `PortalPageHeader` and shared portal patterns for admin pages
+- Design-system docs: update `DESIGN_SYSTEM.md` when relevant

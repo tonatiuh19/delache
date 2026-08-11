@@ -1,10 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Briefcase, LogOut, Menu, X } from "lucide-react";
+import { Briefcase, Bell, LogOut, Menu, UserRound, X } from "lucide-react";
+import MetaHelmet from "@/components/MetaHelmet";
+import { ClientShellSkeleton } from "@/components/portal/PortalSkeletons";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchMe, logout } from "@/store/slices/authSlice";
-import MetaHelmet from "@/components/MetaHelmet";
+import { fetchClientNotifications } from "@/store/slices/clientSlice";
 import AppVersionLabel from "@/components/AppVersionLabel";
 import { cn } from "@/lib/utils";
 
@@ -13,10 +15,17 @@ export default function ClientLayout() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const { user, token, loading } = useAppSelector((s) => s.auth);
+  const unreadCount = useAppSelector((s) => s.client.unreadCount);
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
     if (token && !user) void dispatch(fetchMe());
+  }, [token, user, dispatch]);
+
+  useEffect(() => {
+    if (token && user?.actor === "law_firm") {
+      void dispatch(fetchClientNotifications());
+    }
   }, [token, user, dispatch]);
 
   useEffect(() => {
@@ -35,11 +44,7 @@ export default function ClientLayout() {
   };
 
   if (loading || (!user && token)) {
-    return (
-      <div className="grid min-h-screen place-items-center bg-background text-muted-foreground">
-        {t("common.loading")}
-      </div>
-    );
+    return <ClientShellSkeleton />;
   }
   if (!user) return null;
 
@@ -60,6 +65,41 @@ export default function ClientLayout() {
       >
         <Briefcase size={16} />
         {t("client.cases")}
+      </NavLink>
+      <NavLink
+        to="/client/notifications"
+        onClick={onNavigate}
+        className={({ isActive }) =>
+          cn(
+            "flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition",
+            isActive
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )
+        }
+      >
+        <Bell size={16} />
+        <span className="flex-1">{t("client.notifications")}</span>
+        {unreadCount > 0 ? (
+          <span className="rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-bold text-accent-foreground">
+            {unreadCount}
+          </span>
+        ) : null}
+      </NavLink>
+      <NavLink
+        to="/client/profile"
+        onClick={onNavigate}
+        className={({ isActive }) =>
+          cn(
+            "flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition",
+            isActive
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )
+        }
+      >
+        <UserRound size={16} />
+        {t("client.profile")}
       </NavLink>
     </nav>
   );

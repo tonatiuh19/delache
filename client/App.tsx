@@ -26,9 +26,12 @@ import FinancePage from "./pages/portal/Finance";
 import TeamPage from "./pages/portal/Team";
 import SettingsPage from "./pages/portal/Settings";
 import NotificationsPage from "./pages/portal/Notifications";
+import PortalProfilePage from "./pages/portal/Profile";
 import ClientLayout from "./components/client/ClientLayout";
 import ClientCasesPage from "./pages/client/Cases";
 import ClientCaseDetailPage from "./pages/client/CaseDetail";
+import ClientNotificationsPage from "./pages/client/Notifications";
+import ClientProfilePage from "./pages/client/Profile";
 
 const queryClient = new QueryClient();
 /** Prod: Coming Soon ON unless explicitly false. Dev: OFF unless explicitly true. */
@@ -67,6 +70,7 @@ const App = () => (
                   <Route path="team" element={<TeamPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                   <Route path="notifications" element={<NotificationsPage />} />
+                  <Route path="profile" element={<PortalProfilePage />} />
                 </Route>
                 <Route path="/client" element={<ClientLayout />}>
                   <Route index element={<ClientCasesPage />} />
@@ -74,6 +78,11 @@ const App = () => (
                     path="cases/:publicUuid"
                     element={<ClientCaseDetailPage />}
                   />
+                  <Route
+                    path="notifications"
+                    element={<ClientNotificationsPage />}
+                  />
+                  <Route path="profile" element={<ClientProfilePage />} />
                 </Route>
                 <Route path="/app" element={<Navigate to="/portal" replace />} />
                 <Route path="*" element={<NotFound />} />

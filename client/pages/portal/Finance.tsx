@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFormik } from "formik";
 import * as Yup from "yup";
-import { Search } from "lucide-react";
+import { Info, Search } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
+import PortalListPanel from "@/components/portal/PortalListPanel";
+import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import { DataGrid, type DataGridColumn } from "@/components/ui/data-grid";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -170,50 +172,82 @@ export default function FinancePage() {
         description={t("finance.subtitle")}
       />
 
+      <div
+        role="note"
+        className="flex gap-3 rounded-2xl border border-border bg-secondary/60 px-4 py-3 text-sm text-foreground"
+      >
+        <Info
+          size={18}
+          className="mt-0.5 shrink-0 text-primary"
+          aria-hidden
+        />
+        <p className="leading-relaxed text-muted-foreground">
+          <span className="font-semibold text-foreground">
+            {t("finance.captureOnlyTitle")}
+          </span>{" "}
+          {t("finance.captureOnlyBody")}
+        </p>
+      </div>
+
       <form
         onSubmit={form.handleSubmit}
         className="grid gap-3 rounded-2xl border border-border bg-card p-5 shadow-sm sm:grid-cols-2"
       >
-        <select
-          name="caseId"
-          value={form.values.caseId}
-          onChange={form.handleChange}
-          className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
-        >
-          <option value="">{t("finance.selectCase")}</option>
-          {cases.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.caseNumber} — {c.title}
-            </option>
-          ))}
-        </select>
-        <select
-          name="invoiceType"
-          value={form.values.invoiceType}
-          onChange={form.handleChange}
-          className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-        >
-          {(["advance", "final", "expense", "other"] as const).map((type) => (
-            <option key={type} value={type}>
-              {t(`finance.type.${type}`, { defaultValue: type })}
-            </option>
-          ))}
-        </select>
-        <input
-          name="totalAmount"
-          value={form.values.totalAmount}
-          onChange={form.handleChange}
-          placeholder={t("finance.amountPlaceholder")}
-          className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-        />
-        <label className="flex items-center gap-2 text-xs text-muted-foreground sm:col-span-2">
-          <input
-            type="checkbox"
-            name="issue"
-            checked={form.values.issue}
+        <div className="sm:col-span-2">
+          <SectionHelper>{t("help.finance.section")}</SectionHelper>
+        </div>
+        <div className="sm:col-span-2">
+          <select
+            name="caseId"
+            value={form.values.caseId}
             onChange={form.handleChange}
+            className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+          >
+            <option value="">{t("finance.selectCase")}</option>
+            {cases.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.caseNumber} — {c.title}
+              </option>
+            ))}
+          </select>
+          <FieldHelper>{t("help.finance.case")}</FieldHelper>
+        </div>
+        <div>
+          <select
+            name="invoiceType"
+            value={form.values.invoiceType}
+            onChange={form.handleChange}
+            className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+          >
+            {(["advance", "final", "expense", "other"] as const).map((type) => (
+              <option key={type} value={type}>
+                {t(`finance.type.${type}`, { defaultValue: type })}
+              </option>
+            ))}
+          </select>
+          <FieldHelper>{t("help.finance.type")}</FieldHelper>
+        </div>
+        <div>
+          <input
+            name="totalAmount"
+            value={form.values.totalAmount}
+            onChange={form.handleChange}
+            placeholder={t("finance.amountPlaceholder")}
+            className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
           />
-          {t("finance.issueNow")}
+          <FieldHelper>{t("help.finance.amount")}</FieldHelper>
+        </div>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
+          <span className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              name="issue"
+              checked={form.values.issue}
+              onChange={form.handleChange}
+            />
+            {t("finance.issueNow")}
+          </span>
+          <FieldHelper className="mt-0">{t("help.finance.issue")}</FieldHelper>
         </label>
         <button
           type="submit"
@@ -225,23 +259,28 @@ export default function FinancePage() {
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
-      <div className="relative">
-        <Search
-          size={16}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-        />
-        <input
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setPage(1);
-          }}
-          placeholder={t("finance.searchPlaceholder")}
-          className="h-11 w-full rounded-xl border border-input bg-card pl-10 pr-3 text-sm"
-        />
-      </div>
-
-      <div className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5">
+      <PortalListPanel
+        toolbar={
+          <div>
+            <div className="relative">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              />
+              <input
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setPage(1);
+                }}
+                placeholder={t("finance.searchPlaceholder")}
+                className="h-11 w-full rounded-xl border border-input bg-background pl-10 pr-3 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
+              />
+            </div>
+            <FieldHelper className="mt-2">{t("help.finance.search")}</FieldHelper>
+          </div>
+        }
+      >
         <DataGrid<InvoiceSummary>
           data={invoices}
           columns={columns}
@@ -261,7 +300,7 @@ export default function FinancePage() {
             t("grid.pageOf", { page: p, totalPages })
           }
         />
-      </div>
+      </PortalListPanel>
     </div>
   );
 }

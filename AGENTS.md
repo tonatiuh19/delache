@@ -18,6 +18,8 @@
 - **i18n: When making any UI change that introduces new user-visible strings, ALWAYS add the corresponding key to BOTH `client/locales/en/translation.json` AND `client/locales/es/translation.json`, and use `t('key')` via `useTranslation()` — NEVER hardcode user-facing strings in components**
 - **Always review the chat history before making changes to understand what has already been fixed or implemented, and avoid reintroducing previously resolved issues**
 - **All required API logic should remain inline within api/index.ts, as the application is deployed on Vercel using a serverless architecture**
+- **VERCEL / SHARED: `api/index.ts` must NOT import runtime values from `../shared/*` or `../lib/*` (Vercel ESM cannot resolve those files → 500). Keep `import type` only. Put testable rules in `shared/*.ts` (and email templates in `lib/`) for Vitest + the client, then copy the value implementations into `api/index.ts`. Changing `shared/` without updating the inlined copy will not change production.**
+- **TESTING (MANDATORY — NO EXCEPTIONS): Every new or changed product feature MUST ship with automated Vitest coverage that includes happy path AND edge scenarios (validation, auth/self-guards, invalid roles/statuses, empty/whitespace inputs, transition edges). Extract non-trivial rules into `shared/` so they are unit-testable. Run `npm run test` and `npm run typecheck` before considering the work done. UI-only styling without logic may skip tests; if unsure, ask first.**
 - **Never assume complex behavior or requirements. If you're unsure about anything, ask me first so we can build the most robust and issue-proof implementation possible**
 - **NO EXCEPTIONS to these rules**
 
@@ -90,8 +92,9 @@ mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" \
 
 ### Shared
 
-- `shared/` - Types and interfaces used by both client and server
+- `shared/` - Types and interfaces used by both client and server; also unit-tested business rules
 - `shared/api.ts` - Shared API interfaces
+- Runtime copies of `shared/` and `lib/` helpers are **inlined** in `api/index.ts` for Vercel. Keep them in sync. Never add `import { fn } from "../shared/..."` to the API file.
 
 ## Path Aliases
 

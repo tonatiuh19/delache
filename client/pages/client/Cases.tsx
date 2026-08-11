@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { useFormik } from "formik";
 import * as Yup from "yup";
 import MetaHelmet from "@/components/MetaHelmet";
+import { ContentPageSkeleton } from "@/components/portal/PortalSkeletons";
+import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   createClientCase,
@@ -26,6 +28,7 @@ export default function ClientCasesPage() {
       propertyCity: "",
       plaintiffName: "",
       defendantName: "",
+      involvesFatality: false,
     },
     validationSchema: Yup.object({
       title: Yup.string().trim().required(),
@@ -38,11 +41,16 @@ export default function ClientCasesPage() {
           propertyCity: values.propertyCity.trim() || undefined,
           plaintiffName: values.plaintiffName.trim() || undefined,
           defendantName: values.defendantName.trim() || undefined,
+          involvesFatality: values.involvesFatality,
         }),
       );
       helpers.resetForm();
     },
   });
+
+  if (loading && cases.length === 0) {
+    return <ContentPageSkeleton variant="form" withActions />;
+  }
 
   return (
     <div className="space-y-6">
@@ -57,41 +65,72 @@ export default function ClientCasesPage() {
         className="grid gap-3 rounded-2xl border border-border bg-card p-5 shadow-sm sm:grid-cols-2"
       >
         <h2 className="text-sm font-bold sm:col-span-2">{t("client.submitCase")}</h2>
-        <input
-          name="title"
-          value={form.values.title}
-          onChange={form.handleChange}
-          placeholder={t("cases.titleLabel")}
-          className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
-        />
-        <input
-          name="courtName"
-          value={form.values.courtName}
-          onChange={form.handleChange}
-          placeholder={t("cases.courtLabel")}
-          className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-        />
-        <input
-          name="propertyCity"
-          value={form.values.propertyCity}
-          onChange={form.handleChange}
-          placeholder={t("cases.cityLabel")}
-          className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-        />
-        <input
-          name="plaintiffName"
-          value={form.values.plaintiffName}
-          onChange={form.handleChange}
-          placeholder={t("client.plaintiff")}
-          className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-        />
-        <input
-          name="defendantName"
-          value={form.values.defendantName}
-          onChange={form.handleChange}
-          placeholder={t("client.defendant")}
-          className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-        />
+        <div className="sm:col-span-2">
+          <SectionHelper>{t("help.clientCases.section")}</SectionHelper>
+        </div>
+        <div className="sm:col-span-2">
+          <input
+            name="title"
+            value={form.values.title}
+            onChange={form.handleChange}
+            placeholder={t("cases.titleLabel")}
+            className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+          />
+          <FieldHelper>{t("help.clientCases.title")}</FieldHelper>
+        </div>
+        <div>
+          <input
+            name="courtName"
+            value={form.values.courtName}
+            onChange={form.handleChange}
+            placeholder={t("cases.courtLabel")}
+            className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+          />
+          <FieldHelper>{t("help.clientCases.court")}</FieldHelper>
+        </div>
+        <div>
+          <input
+            name="propertyCity"
+            value={form.values.propertyCity}
+            onChange={form.handleChange}
+            placeholder={t("cases.cityLabel")}
+            className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+          />
+          <FieldHelper>{t("help.clientCases.city")}</FieldHelper>
+        </div>
+        <div>
+          <input
+            name="plaintiffName"
+            value={form.values.plaintiffName}
+            onChange={form.handleChange}
+            placeholder={t("client.plaintiff")}
+            className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+          />
+          <FieldHelper>{t("help.clientCases.plaintiff")}</FieldHelper>
+        </div>
+        <div>
+          <input
+            name="defendantName"
+            value={form.values.defendantName}
+            onChange={form.handleChange}
+            placeholder={t("client.defendant")}
+            className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+          />
+          <FieldHelper>{t("help.clientCases.defendant")}</FieldHelper>
+        </div>
+        <label className="inline-flex items-center gap-2 text-xs font-semibold text-foreground sm:col-span-2">
+          <input
+            type="checkbox"
+            name="involvesFatality"
+            checked={form.values.involvesFatality}
+            onChange={form.handleChange}
+            className="h-4 w-4 rounded border-input"
+          />
+          {t("cases.involvesFatality")}
+        </label>
+        <div className="sm:col-span-2">
+          <FieldHelper>{t("help.clientCases.fatality")}</FieldHelper>
+        </div>
         <button
           type="submit"
           disabled={creating}
@@ -104,9 +143,7 @@ export default function ClientCasesPage() {
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
       <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-        {loading ? (
-          <p className="p-6 text-sm text-muted-foreground">{t("common.loading")}</p>
-        ) : cases.length === 0 ? (
+        {cases.length === 0 ? (
           <p className="p-6 text-sm text-muted-foreground">{t("client.empty")}</p>
         ) : (
           <ul className="divide-y divide-border">

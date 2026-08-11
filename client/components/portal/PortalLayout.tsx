@@ -13,6 +13,7 @@ import {
   LogOut,
   Menu,
   Settings,
+  UserRound,
   Users,
   Wallet,
   X,
@@ -28,6 +29,7 @@ import MetaHelmet from "@/components/MetaHelmet";
 import AppVersionLabel from "@/components/AppVersionLabel";
 import { cn } from "@/lib/utils";
 import { PortalShellSkeleton } from "@/components/portal/PortalSkeletons";
+import GlobalSearchBar from "@/components/portal/GlobalSearchBar";
 
 const SIDEBAR_COLLAPSED_KEY = "delache_sidebar_collapsed";
 
@@ -139,6 +141,12 @@ export default function PortalLayout() {
         )}
       </div>
 
+      {!opts.compact ? (
+        <div className="px-3 pb-3">
+          <GlobalSearchBar variant="sidebar" />
+        </div>
+      ) : null}
+
       <nav className="flex-1 space-y-1 px-2">
         {visibleNav.map(({ to, end, icon: Icon, labelKey }) => (
           <NavLink
@@ -177,6 +185,23 @@ export default function PortalLayout() {
       </nav>
 
       <div className="border-t border-sidebar-border p-3">
+        <NavLink
+          to="/portal/profile"
+          onClick={opts.onNavigate}
+          className={({ isActive }) =>
+            cn(
+              "mb-2 flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition",
+              isActive
+                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                : "text-white/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              opts.compact && "justify-center px-2",
+            )
+          }
+          title={t("portal.profile")}
+        >
+          <UserRound size={16} />
+          {!opts.compact ? t("portal.profile") : null}
+        </NavLink>
         <div
           className={cn(
             "mb-3 rounded-xl bg-white/5 px-3 py-2",
@@ -231,16 +256,19 @@ export default function PortalLayout() {
       />
 
       {/* Mobile top bar */}
-      <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-card/90 px-4 backdrop-blur lg:hidden">
+      <header className="sticky top-0 z-40 flex h-14 items-center justify-between gap-3 border-b border-border bg-card/90 px-4 backdrop-blur lg:hidden">
         <BrandMark />
-        <button
-          type="button"
-          className="rounded-lg p-2 text-foreground"
-          onClick={() => setMobileOpen(true)}
-          aria-label={t("portal.expandSidebar")}
-        >
-          <Menu size={20} />
-        </button>
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+          <GlobalSearchBar className="max-w-[min(100%,16rem)]" />
+          <button
+            type="button"
+            className="shrink-0 rounded-lg p-2 text-foreground"
+            onClick={() => setMobileOpen(true)}
+            aria-label={t("portal.expandSidebar")}
+          >
+            <Menu size={20} />
+          </button>
+        </div>
       </header>
 
       <div className="lg:flex">

@@ -1,0 +1,25 @@
+---
+description: Formik + Yup required for all forms
+globs: client/**/*.{tsx,ts}
+alwaysApply: false
+---
+
+# Forms
+
+- Always Formik + Yup for forms
+- Define reusable Yup schemas (not inline one-offs when shared)
+- Use `useFormik` or `<Formik>`
+- Submit via Redux thunks — not direct API calls in the form component
+
+```ts
+const validationSchema = Yup.object({
+  email: Yup.string().email().required(),
+  name: Yup.string().required(),
+});
+
+const formik = useFormik({
+  initialValues: { email: "", name: "" },
+  validationSchema,
+  onSubmit: (values) => dispatch(submitForm(values)),
+});
+```

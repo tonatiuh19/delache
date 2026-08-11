@@ -1,0 +1,14 @@
+---
+description: Database schema, migrations, and SQL conventions for DELACHE
+globs: database/**/*.{sql},api/**/*.ts,scripts/**/*.ts
+alwaysApply: false
+---
+
+# Database & SQL
+
+- **ALWAYS** read `database/schema.sql` before writing queries — never invent column/table names
+- Schema changes only via `database/migrations/YYYYMMDD_HHMMSS_description.sql` (TiDB Cloud Serverless / MySQL 8 compatible)
+- After applying a migration, **update `database/schema.sql`** to reflect the new structure
+- Connection: `.env` (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
+- mysql CLI must use `--ssl-mode=REQUIRED --protocol=TCP`
+- Keep TypeScript types in `shared/`, `api/index.ts`, and client in sync with schema

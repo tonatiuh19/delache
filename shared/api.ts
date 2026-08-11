@@ -3,6 +3,7 @@
  */
 
 import type { AppLocale } from "./i18n";
+import type { CaseProcessGateSnapshot, ListadoProgress } from "./processGates";
 
 export interface DemoResponse {
   message: string;
@@ -57,7 +58,17 @@ export interface AuthUser {
   avatarUrl: string | null;
   preferredLanguage: AppLocale;
   preferredTheme: "light" | "dark" | "system";
+  /** Inline form field helpers; defaults ON when unset */
+  showFormHelpers: boolean;
   lastLoginAt: string | null;
+}
+
+export interface UpdatePreferencesRequest {
+  showFormHelpers: boolean;
+}
+
+export interface UpdatePreferencesResponse {
+  user: AuthUser;
 }
 
 export interface RequestOtpRequest {
@@ -68,6 +79,8 @@ export interface RequestOtpRequest {
 export interface RequestOtpResponse {
   ok: true;
   message: string;
+  /** True when a code was actually emailed. */
+  sent: true;
 }
 
 export interface VerifyOtpRequest {
@@ -102,6 +115,10 @@ export interface CaseSummary {
   lawFirmId: number | null;
   assignedExpertId: number | null;
   inspectionDeadlineAt: string | null;
+  involvesFatality: boolean;
+  lawFirmName?: string | null;
+  primaryExpertName?: string | null;
+  listado?: ListadoProgress | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +137,7 @@ export interface CaseDetail extends CaseSummary {
   assignedCoordinatorId: number | null;
   intakeReceivedAt: string | null;
   completedAt: string | null;
+  streetViewValidatedAt: string | null;
 }
 
 export interface CasesListResponse {
@@ -219,7 +237,30 @@ export interface CaseDocumentItem {
   mimeType: string | null;
   storageKey: string | null;
   fileSizeBytes: number | null;
+  ocrStatus?: OcrStatus | null;
+  ocrText?: string | null;
+  ocrProcessedAt?: string | null;
   createdAt: string;
+}
+
+export type OcrStatus =
+  "pending" | "processing" | "completed" | "failed" | "skipped";
+
+export interface BulkUploadDocumentsRequest {
+  files: CreateCaseDocumentRequest[];
+}
+
+export interface BulkUploadDocumentsResponse {
+  documents: CaseDocumentItem[];
+}
+
+export interface SaveDocumentOcrRequest {
+  ocrText: string;
+  ocrStatus?: OcrStatus;
+}
+
+export interface RunDocumentOcrResponse {
+  document: CaseDocumentItem;
 }
 
 export type AssignmentRole =
@@ -283,13 +324,110 @@ export interface QuestionnaireItem {
   technicalObservations: string | null;
   submittedAt: string | null;
   createdAt: string;
+  allowedNextStatuses?: QuestionnaireStatus[];
+}
+
+export type ReviewEntityType =
+  "questionnaire" | "technical_report" | "document" | "inspection";
+
+export type ReviewStage =
+  "grammar_qa" | "technical_director" | "internal_legal" | "external_law_firm";
+
+export type ReviewStatus =
+  "pending" | "approved" | "changes_requested" | "rejected";
+
+export interface ReviewRequestItem {
+  id: number;
+  caseId: number;
+  entityType: ReviewEntityType;
+  entityId: number;
+  reviewStage: ReviewStage;
+  status: ReviewStatus;
+  requestedBy: number | null;
+  assignedTo: number | null;
+  dueAt: string | null;
+  completedAt: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface CompleteReviewRequest {
+  outcome: "approved" | "changes_requested" | "rejected";
+  notes?: string;
+}
+
+export interface UpdateQuestionnaireStatusRequest {
+  status: QuestionnaireStatus;
+  notes?: string;
+}
+
+export interface DocumentCompletenessInfo {
+  phase: "intake" | "additional_docs" | "court_filing";
+  required: string[];
+  present: string[];
+  missing: string[];
+  complete: boolean;
+}
+
+export interface CaseAuditLogItem {
+  id: number;
+  publicUuid: string;
+  actorType: "staff" | "law_firm" | "system";
+  actorId: number | null;
+  entityType: string;
+  entityId: string | null;
+  action: string;
+  comment: string | null;
+  createdAt: string;
+}
+
+export interface GlobalSearchHit {
+  kind: "case" | "document" | "invoice" | "member";
+  id: number;
+  publicUuid: string;
+  title: string;
+  subtitle: string | null;
+  href: string;
+}
+
+export interface GlobalSearchResponse {
+  query: string;
+  results: GlobalSearchHit[];
+}
+
+export interface DocumentsIndexItem {
+  id: number;
+  publicUuid: string;
+  casePublicUuid: string;
+  caseNumber: string;
+  category: string;
+  title: string;
+  status: string;
+  mimeType: string | null;
+  storageKey: string | null;
+  fileName: string | null;
+  ocrStatus: OcrStatus | null;
+  ocrTextPreview: string | null;
+  createdAt: string;
+}
+
+export interface DocumentsIndexResponse {
+  documents: DocumentsIndexItem[];
+  pagination: PaginationInfo;
+}
+
+export interface ReportsKpiResponse {
+  casesByStatus: Record<string, number>;
+  casesByExpert: Array<{ userId: number; name: string; count: number }>;
+  completedCount: number;
+  delayedCount: number;
+  pendingInvoices: number;
+  pendingReviews: number;
+  averageCompletionDays: number | null;
 }
 
 export type InspectionStatus =
-  | "scheduled"
-  | "in_progress"
-  | "completed"
-  | "cancelled";
+  "scheduled" | "in_progress" | "completed" | "cancelled";
 
 export interface InspectionItem {
   id: number;
@@ -302,10 +440,7 @@ export interface InspectionItem {
 }
 
 export type MeasurementType =
-  | "horizontal_distance"
-  | "vertical_distance"
-  | "pole_distance"
-  | "other";
+  "horizontal_distance" | "vertical_distance" | "pole_distance" | "other";
 
 export interface MeasurementItem {
   id: number;
@@ -318,12 +453,75 @@ export interface MeasurementItem {
   recordedAt: string;
 }
 
+export type EvidenceType =
+  | "photo"
+  | "video"
+  | "voice_note"
+  | "measurement"
+  | "signature"
+  | "gps_point"
+  | "observation"
+  | "court_filing"
+  | "other";
+
+export type EvidenceCategory =
+  | "horizontal_distance"
+  | "vertical_distance"
+  | "pole_distance"
+  | "pole_id"
+  | "electrical_structure"
+  | "conductor"
+  | "facade"
+  | "sidewalk"
+  | "construction"
+  | "property_invasion"
+  | "oversized_construction"
+  | "safety"
+  | "general";
+
+export interface EvidenceItem {
+  id: number;
+  publicUuid: string;
+  inspectionId: number | null;
+  evidenceType: EvidenceType;
+  category: EvidenceCategory;
+  title: string | null;
+  caption: string | null;
+  storageKey: string | null;
+  mimeType: string | null;
+  fileSizeBytes: number | null;
+  capturedAt: string | null;
+  lat: number | null;
+  lng: number | null;
+  capturedBy: number | null;
+  createdAt: string;
+}
+
+export interface EvidenceChecklistStatus {
+  covered: EvidenceCategory[];
+  missing: EvidenceCategory[];
+  coveredCount: number;
+  totalCount: number;
+  complete: boolean;
+}
+
+export interface CreateEvidenceRequest {
+  evidenceType: EvidenceType;
+  category?: EvidenceCategory;
+  title?: string;
+  caption?: string;
+  inspectionId?: number | null;
+  lat?: number | null;
+  lng?: number | null;
+  capturedAt?: string;
+  fileName?: string;
+  contentType?: string;
+  /** Base64 file payload (required for photo/video/voice_note/signature/court_filing). */
+  data?: string;
+}
+
 export type LogisticsTripStatus =
-  | "planned"
-  | "booked"
-  | "in_progress"
-  | "completed"
-  | "cancelled";
+  "planned" | "booked" | "in_progress" | "completed" | "cancelled";
 
 export interface LogisticsTripItem {
   id: number;
@@ -337,12 +535,7 @@ export interface LogisticsTripItem {
 }
 
 export type ExpenseType =
-  | "flight"
-  | "hotel"
-  | "rental_car"
-  | "fuel"
-  | "meals"
-  | "other";
+  "flight" | "hotel" | "rental_car" | "fuel" | "meals" | "other";
 
 export interface LogisticsExpenseItem {
   id: number;
@@ -425,10 +618,21 @@ export interface CaseDetailResponse {
   questionnaires: QuestionnaireItem[];
   inspections: InspectionItem[];
   measurements: MeasurementItem[];
+  evidence: EvidenceItem[];
+  evidenceChecklist: EvidenceChecklistStatus;
+  reviewRequests: ReviewRequestItem[];
+  documentCompleteness: {
+    intake: DocumentCompletenessInfo;
+    additionalDocs: DocumentCompletenessInfo;
+    courtFiling: DocumentCompletenessInfo;
+  };
+  auditLogs: CaseAuditLogItem[];
   trips: LogisticsTripItem[];
   expenses: LogisticsExpenseItem[];
   technicalReports: TechnicalReportItem[];
   allowedNextStatuses: CaseStatus[];
+  hasUnpaidInvoices: boolean;
+  processGate: CaseProcessGateSnapshot;
 }
 
 export interface CreateAssignmentRequest {
@@ -460,6 +664,16 @@ export interface CreateMeasurementRequest {
   notes?: string;
 }
 
+export interface CreateEvidenceResponse {
+  evidence: EvidenceItem;
+  evidenceChecklist: EvidenceChecklistStatus;
+}
+
+export interface DeleteEvidenceResponse {
+  ok: true;
+  evidenceChecklist: EvidenceChecklistStatus;
+}
+
 export interface CreateLogisticsTripRequest {
   originCity?: string;
   destinationCity?: string;
@@ -487,6 +701,11 @@ export interface CreateTechnicalReportRequest {
 
 export interface UpdateTechnicalReportStatusRequest {
   status: TechnicalReportStatus;
+}
+
+export interface ClientReviewReportRequest {
+  outcome: "approved" | "changes_requested" | "rejected";
+  notes?: string;
 }
 
 export interface CreateLawFirmRequest {
@@ -540,6 +759,40 @@ export interface InviteTeamMemberRequest {
   role: UserRole | "law_firm_user";
   phone?: string;
   lawFirmId?: number | null;
+  preferredLanguage?: string | null;
+}
+
+export interface UpdateTeamMemberRequest {
+  firstName?: string;
+  lastName?: string;
+  role?: UserRole;
+  status?: UserStatus;
+  phone?: string | null;
+}
+
+export interface TeamMemberSessionItem {
+  id: number;
+  ipAddress: string | null;
+  userAgent: string | null;
+  isActive: boolean;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+}
+
+export interface TeamMemberAuditItem {
+  id: number;
+  action: string;
+  comment: string | null;
+  previousValueJson: string | null;
+  newValueJson: string | null;
+  createdAt: string;
+}
+
+export interface TeamMemberDetailResponse {
+  member: TeamMemberItem;
+  sessions: TeamMemberSessionItem[];
+  audit: TeamMemberAuditItem[];
 }
 
 export interface UpdateCaseStatusRequest {
@@ -560,12 +813,20 @@ export interface CreateCaseDocumentRequest {
   data: string;
 }
 
+export interface UpdateDocumentCategoryRequest {
+  category: DocumentCategory;
+}
+
 export interface DashboardStatsResponse {
   totalCases: number;
   byStatus: Partial<Record<CaseStatus, number>>;
   urgentOpen: number;
   completed: number;
   onHold: number;
+  pendingReviews: number;
+  pendingInvoices: number;
+  delayedDeadlines: number;
+  missingDocsCases: number;
 }
 
 export interface CalendarEventItem {
@@ -616,6 +877,34 @@ export interface CreateCaseRequest {
   propertyState?: string;
   propertyPostalCode?: string;
   propertyCountry?: string;
+  propertyLat?: number | null;
+  propertyLng?: number | null;
+  involvesFatality?: boolean;
+}
+
+export interface UpdateCaseFlagsRequest {
+  involvesFatality: boolean;
+}
+
+export interface UpdateCaseLocationRequest {
+  propertyAddress?: string | null;
+  propertyCity?: string | null;
+  propertyState?: string | null;
+  propertyPostalCode?: string | null;
+  propertyCountry?: string | null;
+  /** Pass null to clear both coordinates. */
+  propertyLat?: number | null;
+  propertyLng?: number | null;
+}
+
+export interface GeocodeRequest {
+  query: string;
+}
+
+export interface GeocodeResponse {
+  lat: number;
+  lng: number;
+  displayName: string;
 }
 
 export interface CaseNumberSettings {
@@ -630,4 +919,3 @@ export interface UploadBlobResponse {
   contentType: string | null;
   size: number | null;
 }
-

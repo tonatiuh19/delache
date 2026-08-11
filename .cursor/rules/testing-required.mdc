@@ -1,0 +1,28 @@
+---
+description: Require Vitest coverage (happy path + edges) for every product feature
+alwaysApply: true
+---
+
+# Testing required for new features
+
+## Mandatory
+
+When adding or changing product behavior (API, Redux thunks, shared rules, auth, team, cases, calendar, finance, etc.):
+
+1. Extract non-trivial business rules into `shared/` (or existing shared modules)
+2. Add/extend Vitest in colocated `*.spec.ts` covering:
+   - Happy path
+   - Validation failures
+   - Auth / self-action guards
+   - Empty/whitespace and boundary inputs
+   - Status/role transition edges
+3. Run `npm run test` and `npm run typecheck` before claiming done
+4. Do not ship UI that introduces untested server rules
+
+## Definition of done
+
+A feature is **not done** if new behavior could regress without a failing test.
+
+## Exceptions
+
+Pure presentational styling with no logic may skip new tests. Ask the user if unsure.

@@ -52,6 +52,10 @@
     "privacyTerms": "Privacy · Terms",
     "invalidEmail": "Enter a valid email",
     "invalidCode": "Code must be 6 digits",
+    "accountNotFound": "No account found for this email. Ask an admin to invite you.",
+    "accountInactive": "This account is inactive. Contact an administrator.",
+    "loginNotAllowed": "Login is not allowed for this account.",
+    "rateLimited": "Too many verification requests. Please wait a few minutes and try again.",
     "requestFailed": "Could not send the code. Please try again.",
     "verifyFailed": "Invalid or expired code.",
     "visualHeadline": "Precision also needs protection.",
@@ -77,7 +81,8 @@
     "expandSidebar": "Expand menu",
     "logout": "Log out",
     "comingSoonTitle": "Portal under construction",
-    "comingSoonBody": "We’re preparing your operations center."
+    "comingSoonBody": "We’re preparing your operations center.",
+    "profile": "Profile"
   },
   "cases": {
     "eyebrow": "Case management",
@@ -87,8 +92,10 @@
     "courtLabel": "Court",
     "cityLabel": "City",
     "priorityLabel": "Priority",
+    "involvesFatality": "This matter involves a fatality",
+    "involvesFatalityBadge": "Fatality matter",
     "create": "Create case",
-    "searchPlaceholder": "Search by number, title, court, or city…",
+    "searchPlaceholder": "Search by number, title, court, city, firm, or expert…",
     "empty": "No cases yet. Create the first one.",
     "noLocation": "No location",
     "filterAllStatuses": "All statuses",
@@ -99,7 +106,15 @@
     "colPriority": "Priority",
     "colCourt": "Court",
     "colCity": "City",
+    "colPoint": "Point",
+    "colExpert": "Expert",
+    "colFirm": "Firm",
+    "colClock": "10-day clock",
+    "colListado": "Avance",
     "colCreated": "Created",
+    "flagsFailed": "Could not update the fatality flag. Try again.",
+    "documentCategory": "Document category",
+    "categoryFailed": "Could not update the document category. Try again.",
     "priority": {
       "low": "Low",
       "normal": "Normal",
@@ -129,6 +144,7 @@
     "workflowHint": "Move to the next phase, pause, or cancel.",
     "reasonPlaceholder": "Reason for change (optional)",
     "noTransitions": "No transitions available",
+    "statusReadOnly": "Only coordinators and admins can change case status.",
     "timeline": "Timeline",
     "notes": "Notes",
     "notePlaceholder": "Write an internal note…",
@@ -150,12 +166,52 @@
     "powerLinePlaceholder": "Power line verification",
     "observationsPlaceholder": "Technical observations",
     "saveQuestionnaire": "Save questionnaire",
+    "questionnaireLocked": "This questionnaire is in legal review or closed. Request changes before editing.",
     "inspections": "Inspections",
     "inspectionNotes": "Inspection notes",
     "scheduleInspection": "Schedule inspection",
     "value": "Value",
     "poleId": "Pole ID",
     "addMeasurement": "Add measurement",
+    "evidence": "Evidence",
+    "evidenceChecklistProgress": "Checklist {{covered}}/{{total}}",
+    "evidenceChecklistComplete": "complete",
+    "evidenceChecklistMissing": "Still missing",
+    "evidenceTitle": "Title",
+    "evidenceCaption": "Caption / observation",
+    "evidenceLat": "Latitude",
+    "evidenceLng": "Longitude",
+    "evidencePickFile": "Choose photo, video, audio, or PDF",
+    "evidenceFileRequired": "A file is required for this evidence type",
+    "addEvidence": "Add evidence",
+    "noEvidence": "No evidence captured yet",
+    "removeEvidence": "Remove evidence",
+    "evidenceType": {
+      "photo": "Photo",
+      "video": "Video",
+      "voice_note": "Voice note",
+      "measurement": "Measurement",
+      "signature": "Signature",
+      "gps_point": "GPS point",
+      "observation": "Observation",
+      "court_filing": "Court filing",
+      "other": "Other"
+    },
+    "evidenceCategory": {
+      "horizontal_distance": "Horizontal distance",
+      "vertical_distance": "Vertical distance",
+      "pole_distance": "Pole distance",
+      "pole_id": "Pole ID",
+      "electrical_structure": "Electrical structure",
+      "conductor": "Conductor",
+      "facade": "Facade",
+      "sidewalk": "Sidewalk",
+      "construction": "Construction",
+      "property_invasion": "Property invasion",
+      "oversized_construction": "Oversized construction",
+      "safety": "Safety",
+      "general": "General"
+    },
     "logistics": "Logistics",
     "origin": "Origin",
     "destination": "Destination",
@@ -195,7 +251,76 @@
       "vertical_distance": "Vertical distance",
       "pole_distance": "Pole distance",
       "other": "Other"
-    }
+    },
+    "documentCompleteness": "Document completeness",
+    "docPhase": {
+      "intake": "Intake",
+      "additionalDocs": "Additional documents",
+      "courtFiling": "Court filing"
+    },
+    "completenessPhase": {
+      "intake": "Intake",
+      "additionalDocs": "Additional documents",
+      "courtFiling": "Court filing"
+    },
+    "docComplete": "Complete",
+    "docIncomplete": "Incomplete",
+    "docMissing": "Missing",
+    "docNoneMissing": "No missing documents",
+    "docCategory": {
+      "lawsuit": "Lawsuit",
+      "medical_record": "Medical record",
+      "cfe_report": "CFE report",
+      "preliminary_photo": "Preliminary photo",
+      "defendant_response": "Defendant response",
+      "death_certificate": "Death certificate",
+      "sketch": "Sketch",
+      "plaintiff_questionnaire": "Plaintiff questionnaire",
+      "questionnaire": "Questionnaire",
+      "technical_report": "Technical report",
+      "court_filing": "Court filing",
+      "protesta": "Protesta",
+      "ratification": "Ratification",
+      "invoice": "Invoice",
+      "receipt": "Receipt",
+      "logistics": "Logistics",
+      "other": "Other"
+    },
+    "questionnaireStatus": {
+      "draft": "Draft",
+      "submitted": "Submitted",
+      "legal_review": "Legal review",
+      "changes_requested": "Changes requested",
+      "approved": "Approved",
+      "rejected": "Rejected"
+    },
+    "reviewRequests": "Review requests",
+    "noPendingReviews": "No pending reviews",
+    "reviewDue": "Due",
+    "reviewApprove": "Approve",
+    "reviewChanges": "Request changes",
+    "reviewReject": "Reject",
+    "reviewEntity": {
+      "questionnaire": "Questionnaire",
+      "technical_report": "Technical report",
+      "document": "Document",
+      "inspection": "Inspection"
+    },
+    "reviewStage": {
+      "grammar_qa": "Grammar QA",
+      "technical_director": "Technical director",
+      "internal_legal": "Internal legal",
+      "external_law_firm": "External law firm"
+    },
+    "inspectionStatus": {
+      "scheduled": "Scheduled",
+      "in_progress": "In progress",
+      "completed": "Completed",
+      "cancelled": "Cancelled"
+    },
+    "markInspectionCompleted": "Mark completed",
+    "auditLogs": "Audit log",
+    "noAuditLogs": "No audit entries yet"
   },
   "dashboard": {
     "eyebrow": "Operations overview",
@@ -204,8 +329,28 @@
     "urgent": "Urgent open",
     "completed": "Completed",
     "onHold": "On hold",
+    "pendingReviews": "Pending reviews",
+    "pendingInvoices": "Pending invoices",
+    "delayedDeadlines": "Delayed deadlines",
+    "missingDocsCases": "Missing documents",
+    "kpiTitle": "KPI summary",
+    "kpiHint": "Workload and completion metrics across the portfolio.",
+    "kpiDelayed": "Delayed cases",
+    "kpiAvgCompletion": "Avg. completion",
+    "kpiAvgDays": "{{days}} days",
+    "kpiCompleted": "Completed (KPI)",
     "recentCases": "Recent",
     "viewAll": "View all"
+  },
+  "search": {
+    "placeholder": "Search cases, documents, invoices…",
+    "empty": "No results",
+    "kind": {
+      "case": "Case",
+      "document": "Document",
+      "invoice": "Invoice",
+      "member": "Member"
+    }
   },
   "settings": {
     "eyebrow": "Administration",
@@ -248,6 +393,8 @@
   "finance": {
     "eyebrow": "Billing",
     "subtitle": "Invoices, advances, and payment status by case.",
+    "captureOnlyTitle": "Internal capture only.",
+    "captureOnlyBody": "Records here track advances and payments for case operations. They do not generate official tax invoices (CFDI / fiscal facturas).",
     "empty": "No invoices yet.",
     "selectCase": "Select case",
     "amountPlaceholder": "Amount",
@@ -270,16 +417,41 @@
   "team": {
     "eyebrow": "People & access",
     "subtitle": "Invite staff and law-firm users, and manage roles.",
+    "newMember": "New member",
     "emailPlaceholder": "email@company.com",
     "firstName": "First name",
     "lastName": "Last name",
     "invite": "Invite member",
+    "resendInvite": "Resend invite email",
     "selectLawFirm": "Select law firm",
     "searchPlaceholder": "Search by name or email…",
     "empty": "No members yet.",
     "colRole": "Role",
     "colStatus": "Status",
     "colLastLogin": "Last login",
+    "memberPanel": "Team member",
+    "memberPanelHint": "Manage access and account actions",
+    "tabOverview": "Overview",
+    "tabEdit": "Edit",
+    "tabHistory": "History",
+    "quickActions": "Quick actions",
+    "deactivate": "Deactivate",
+    "activate": "Activate",
+    "remove": "Remove member",
+    "confirmRemove": "Remove this member? They will lose portal access.",
+    "saveChanges": "Save changes",
+    "loginHistory": "Login history",
+    "auditHistory": "Change log",
+    "noSessions": "No login sessions yet.",
+    "noAudit": "No changes recorded yet.",
+    "sessionActive": "Active",
+    "selfActionHint": "You can’t deactivate or remove your own account.",
+    "status": {
+      "active": "Active",
+      "inactive": "Inactive",
+      "suspended": "Suspended",
+      "invited": "Invited"
+    },
     "role": {
       "admin": "Admin",
       "case_coordinator": "Coordinator",
@@ -300,6 +472,8 @@
   "client": {
     "portalTitle": "Law firm portal",
     "cases": "My cases",
+    "notifications": "Notifications",
+    "notificationsSubtitle": "Case status updates, delivered reports, and shared alerts.",
     "subtitle": "Submit new matters and track status.",
     "submitCase": "Submit new case",
     "submit": "Submit",
@@ -309,16 +483,325 @@
     "sharedNotes": "Shared notes",
     "noNotes": "No shared notes",
     "reports": "Reports",
-    "noReports": "No reports available yet"
+    "noReports": "No reports available yet",
+    "approveReport": "Approve",
+    "requestChanges": "Request changes",
+    "rejectReport": "Reject",
+    "reportStatus": {
+      "draft": "Draft",
+      "grammar_qa": "Grammar QA",
+      "technical_director": "Technical director",
+      "approved_internal": "Approved internally",
+      "external_review": "External review",
+      "changes_requested": "Changes requested",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "delivered": "Delivered"
+    },
+    "profile": "Profile"
   },
   "documents": {
     "eyebrow": "Evidence & files",
-    "hint": "Documents are managed inside each case."
+    "hint": "Search, preview, and OCR documents across all cases. Drag and drop on a case to bulk upload.",
+    "searchPlaceholder": "Search by title, case number, or OCR text…",
+    "search": "Search",
+    "empty": "No documents found.",
+    "preview": "Preview",
+    "dropHint": "Drag & drop files here, or click to browse",
+    "dropNow": "Drop files to upload",
+    "dropLimits": "Up to {{max}} files · PDF, images, Word · 15MB each",
+    "uploading": "Uploading…",
+    "openExternal": "Open original",
+    "previewFailed": "Could not render this PDF in-app.",
+    "noPreview": "No in-app preview for this file type.",
+    "unknownType": "Unknown type",
+    "ocrTitle": "OCR / extracted text",
+    "ocrEmpty": "No OCR text yet. Run OCR to extract searchable text.",
+    "runOcr": "Run OCR",
+    "prevPage": "Previous page",
+    "nextPage": "Next page",
+    "pageOf": "Page {{page}} of {{total}}",
+    "ocrStatus": {
+      "pending": "OCR pending",
+      "processing": "OCR processing",
+      "completed": "OCR ready",
+      "failed": "OCR failed",
+      "skipped": "OCR skipped"
+    }
   },
   "meta": {
     "loginTitle": "Sign in",
     "loginDescription": "Access the DELACHE operations center. Secure sign-in with a one-time code.",
     "clientLoginTitle": "Law firm sign in",
     "clientLoginDescription": "DELACHE external portal for law firms. Secure sign-in with a one-time code."
+  },
+  "signature": {
+    "signHere": "Sign here",
+    "undo": "Undo",
+    "redo": "Redo",
+    "clear": "Clear",
+    "hint": "Draw with your finger or stylus",
+    "required": "A signature is required"
+  },
+  "maps": {
+    "location": "Location",
+    "navigate": "Navigate",
+    "openMap": "Open map",
+    "streetView": "Street View",
+    "propertyLocation": "Property location",
+    "useMyLocation": "Use my location",
+    "geocodeAddress": "Geocode address",
+    "address": "Street address",
+    "city": "City",
+    "state": "State / province",
+    "postalCode": "Postal code",
+    "country": "Country",
+    "lat": "Latitude",
+    "lng": "Longitude",
+    "saveLocation": "Save location",
+    "locationSaved": "Property location saved",
+    "locationSaveFailed": "Could not save location",
+    "permissionDenied": "Location permission denied",
+    "unsupported": "Device location is not available in this browser",
+    "locationFailed": "Could not get device location",
+    "coordsFilled": "Coordinates filled from device / GPS",
+    "geocodeNeedAddress": "Enter at least a short address to geocode",
+    "geocodeOk": "Coordinates filled from address",
+    "geocodeFailed": "Geocoding failed — try a fuller address or paste lat,lng",
+    "invalidGpsText": "Enter GPS as lat,lng (e.g. 19.43, -99.13)",
+    "applyGpsToProperty": "Apply GPS to property fields"
+  },
+  "profile": {
+    "eyebrow": "Your account",
+    "title": "Profile",
+    "subtitle": "Manage how DELACHE guides you while you work.",
+    "helpersIntro": "Field helpers explain what to enter in each form. They stay on by default and can be turned off anytime.",
+    "showHelpers": "Show form helpers",
+    "showHelpersHint": "When enabled, short tips appear under inputs across cases, finance, team, calendar, and client forms.",
+    "saveFailed": "Couldn’t save preferences. Try again."
+  },
+  "help": {
+    "auth": {
+      "email": "Use the work email invited to DELACHE. OTP codes expire quickly — request a new one if needed.",
+      "code": "Enter the 6-digit code from your email. Digits only, no spaces."
+    },
+    "cases": {
+      "createSection": "Create the matter with a clear court-facing title. City and priority help routing and deadlines.",
+      "title": "Short descriptive title of the dispute or property (e.g. “Cortocircuito — Calle Reforma 120”).",
+      "court": "Official court or juzgado name if known; leave blank if not assigned yet.",
+      "city": "City where the property or incident is located — used for logistics and maps.",
+      "priority": "Urgent for imminent hearings or safety risk; High for tight deadlines; Normal otherwise.",
+      "search": "Filter the grid by case number, title, court, city, firm, or expert.",
+      "fatality": "Check only when the lawsuit involves a death. This unlocks the death-certificate requirement — do not infer it from uploaded files."
+    },
+    "clientCases": {
+      "section": "Submit intake details your law firm already has. Staff will complete technical fields later.",
+      "title": "Matter title as the firm refers to it internally and with the court.",
+      "court": "Court or juzgado handling the filing, if known.",
+      "city": "Property or incident city.",
+      "plaintiff": "Full name of the plaintiff (actor) as on the lawsuit.",
+      "defendant": "Full name of the defendant (demandado) as on the lawsuit.",
+      "fatality": "Check only when the matter involves a death. Staff will then require the death certificate."
+    },
+    "finance": {
+      "section": "Internal payment tracking only — not fiscal CFDI invoices. Link every record to a case.",
+      "case": "Pick the expediente this advance or charge belongs to.",
+      "type": "Advance = depósito; Final = closing fee; Expense = reimbursable cost; Other = misc.",
+      "amount": "Total in the case currency (usually MXN). Use decimals if needed.",
+      "issue": "Check to mark the record as issued immediately; uncheck to keep it as draft.",
+      "search": "Search by invoice number or amount."
+    },
+    "team": {
+      "section": "Invite staff or law-firm users. Law-firm invites require selecting their firm.",
+      "email": "Must be unique. Invitation OTP is emailed to this address.",
+      "firstName": "Given name as it should appear in the portal and emails.",
+      "lastName": "Family name as it should appear in the portal and emails.",
+      "role": "Admin manages team/settings; coordinator runs cases; expert does field work; legal/logistics/accountant have scoped access. Law firm user accesses the client portal.",
+      "lawFirm": "Required for law-firm users — picks which firm they belong to."
+    },
+    "calendar": {
+      "section": "Schedule inspections, meetings, or deadlines. Link a case when the event is case-specific.",
+      "title": "Short label shown on the calendar (e.g. “Inspección ocular”).",
+      "type": "Choose the event category so the calendar colors stay consistent.",
+      "startsAt": "Local date and time when the event begins.",
+      "location": "Address or meeting place — optional but helpful for field visits.",
+      "case": "Optional link to an expediente for quick navigation."
+    },
+    "documents": {
+      "search": "Search titles, case numbers, or OCR text across the document index."
+    },
+    "settings": {
+      "caseNumber": "Tokens like {YYYY} and {SEQ} control how new case numbers are generated.",
+      "lawFirm": "Register firms before inviting their portal users."
+    },
+    "caseDetail": {
+      "location": "Fill address fields for logistics; use GPS or geocode so maps and Street View work.",
+      "workflow": "Advance status only when the previous stage is complete. Add a reason for audits.",
+      "notes": "Internal notes stay with staff. Keep facts short and dated.",
+      "assignments": "Assign the right role. Mark one primary owner for accountability.",
+      "questionnaire": "Capture site GPS, Street View link, power-line context, and observations before inspection.",
+      "reviewRequests": "Open review stages with a clear due date and assignee.",
+      "inspections": "Schedule the visit; add notes the field team will see on-site.",
+      "measurements": "Record numeric readings with units and pole IDs when applicable.",
+      "evidence": "Title photos clearly; GPS tags strengthen chain of custody.",
+      "logistics": "Log trips and expenses against the case for reimbursement tracking.",
+      "report": "Summarize findings and conclusions for legal delivery — be precise and neutral.",
+      "documentCategory": "Tag each file with the process category the 12-point gates check (lawsuit, protesta, ratification…).",
+      "documentCategoryClient": "Choose the intake or additional-doc type this file satisfies (lawsuit, medical record, croquis…)."
+    },
+    "maps": {
+      "address": "Street and number of the property under review.",
+      "city": "Municipality / city for routing and jurisdiction context.",
+      "state": "State or entity (e.g. CDMX, Jalisco).",
+      "postal": "Postal code when known.",
+      "country": "Default México unless the matter is abroad.",
+      "lat": "Latitude in decimal degrees (e.g. 19.4326).",
+      "lng": "Longitude in decimal degrees (e.g. -99.1332).",
+      "gpsText": "Paste coordinates as “lat, lng” from Maps or a GPS device."
+    }
+  },
+  "process": {
+    "eyebrow": "12-point process",
+    "title": "Electrical expert-witness workflow",
+    "helper": "Each point has one accountable role, required artifacts, and (where noted) a business-day clock. The 3-day law-firm review sits inside the 10-day clock that starts when protesta is filed.",
+    "current": "Current: point {{point}} — {{name}}",
+    "pointLabel": "Pt {{point}}",
+    "slaDays": "{{days}} business days",
+    "nestedSla": "inside the 10-day clock",
+    "insideClock": "Inside point {{point}} clock",
+    "blockedTitle": "Cannot leave this point yet",
+    "gatesBlocked": "Cannot advance: required process artifacts or approvals are missing.",
+    "point": {
+      "1": {
+        "name": "Intake"
+      },
+      "2": {
+        "name": "Assignment"
+      },
+      "3": {
+        "name": "Questionnaire & advance"
+      },
+      "4": {
+        "name": "Internal legal review"
+      },
+      "5": {
+        "name": "Law-firm documents"
+      },
+      "6": {
+        "name": "Protesta & 10-day clock"
+      },
+      "7": {
+        "name": "Logistics"
+      },
+      "8": {
+        "name": "Field inspection"
+      },
+      "9": {
+        "name": "Technical report"
+      },
+      "10": {
+        "name": "Law-firm validation"
+      },
+      "11": {
+        "name": "Filing & ratification"
+      },
+      "12": {
+        "name": "Collections"
+      }
+    },
+    "gate": {
+      "doc": {
+        "lawsuit": "Initial lawsuit (demanda)",
+        "medical_record": "Medical record",
+        "cfe_report": "CFE report",
+        "preliminary_photo": "Preliminary photos",
+        "questionnaire": "Defendant questionnaire on file",
+        "defendant_response": "Defendant response",
+        "sketch": "Site sketch (croquis)",
+        "plaintiff_questionnaire": "Plaintiff questionnaire",
+        "death_certificate": "Death certificate (fatality matters)",
+        "protesta": "Protesta del cargo filing",
+        "technical_report": "Technical report document",
+        "court_filing": "Court submission evidence",
+        "ratification": "Ratification / appearance evidence"
+      },
+      "assignment": {
+        "primary_expert": "Assign a primary expert"
+      },
+      "location": {
+        "gps": "Property GPS coordinates",
+        "street_view": "Street View / preexistence check"
+      },
+      "questionnaire": {
+        "approved": "Questionnaire approved by QA",
+        "ready": "Questionnaire submitted for internal legal review",
+        "legal_approved": "Questionnaire approved by internal legal"
+      },
+      "logistics": {
+        "ready": "Travel / per-diem logistics recorded"
+      },
+      "inspection": {
+        "complete": "Inspection marked complete"
+      },
+      "evidence": {
+        "horizontal_distance": "Horizontal distance evidence",
+        "vertical_distance": "Vertical distance evidence",
+        "pole_distance": "Distance between poles",
+        "pole_id": "Pole plate / ID",
+        "electrical_structure": "Electrical structures",
+        "conductor": "Conductor condition",
+        "facade": "Facade",
+        "sidewalk": "Sidewalk / surroundings",
+        "construction": "Property / construction",
+        "property_invasion": "Line invasion / encroachment",
+        "oversized_construction": "Oversized construction",
+        "safety": "Urban safety observations"
+      },
+      "report": {
+        "internal_approved": "Internal technical approval",
+        "firm_approved": "External law-firm approval"
+      },
+      "finance": {
+        "unpaid_invoices": "Issued invoices, and draft advance/final invoices, must be paid or voided before completing the case"
+      }
+    }
+  },
+  "listado": {
+    "flag": {
+      "intakeComplete": "Intake complete",
+      "primaryExpert": "Primary expert assigned",
+      "questionnaireApproved": "Questionnaire approved",
+      "streetViewDone": "Street View done",
+      "advanceReleased": "Advance released",
+      "advancePaid": "Advance paid",
+      "plaintiffQuestionnaire": "Plaintiff questionnaire",
+      "protestaFiled": "Protesta filed",
+      "logisticsReady": "Logistics ready",
+      "inspectionComplete": "Inspection complete",
+      "reportInternalOk": "Report internally approved",
+      "reportFirmOk": "Report approved by firm",
+      "ratified": "Ratified",
+      "attendedWithReport": "Attended with report",
+      "finalReleased": "Final released",
+      "finalPaid": "Final paid"
+    },
+    "short": {
+      "intakeComplete": "Intake",
+      "primaryExpert": "Expert",
+      "questionnaireApproved": "Q. OK",
+      "streetViewDone": "SV",
+      "advanceReleased": "Adv. out",
+      "advancePaid": "Adv. paid",
+      "plaintiffQuestionnaire": "Actor Q",
+      "protestaFiled": "Protesta",
+      "logisticsReady": "Logistics",
+      "inspectionComplete": "Inspect",
+      "reportInternalOk": "R. int",
+      "reportFirmOk": "R. firm",
+      "ratified": "Ratified",
+      "attendedWithReport": "Attended",
+      "finalReleased": "Final out",
+      "finalPaid": "Final paid"
+    }
   }
 }
