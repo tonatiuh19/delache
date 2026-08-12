@@ -4465,9 +4465,117 @@ function buildOpsNotificationEmail(opts: {
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const OTP_TTL_MIN = Number(process.env.OTP_TTL_MINUTES || 10);
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
-const APP_URL = (
-  process.env.VITE_PUBLIC_APP_URL || "http://localhost:8080"
-).replace(/\/$/, "");
+
+// ---- inlined from shared/appUrlRules.ts ----
+function normalizeAppOrigin(raw: string): string {
+  return raw.trim().replace(/\/$/, "");
+}
+
+function isLocalhostAppUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return /localhost|127\.0\.0\.1/i.test(url);
+  }
+}
+
+function withHttpsAppOrigin(hostOrUrl: string): string {
+  const trimmed = hostOrUrl.trim().replace(/\/$/, "");
+  if (/^https?:\/\//i.test(trimmed)) return normalizeAppOrigin(trimmed);
+  return normalizeAppOrigin(`https://${trimmed}`);
+}
+
+function isProductionRuntime(env: {
+  VERCEL_ENV?: string | null;
+  NODE_ENV?: string | null;
+}): boolean {
+  return (
+    env.VERCEL_ENV === "production" ||
+    (env.NODE_ENV === "production" &&
+      env.VERCEL_ENV !== "preview" &&
+      env.VERCEL_ENV !== "development")
+  );
+}
+
+function resolvePublicAppUrl(env: {
+  APP_URL?: string | null;
+  PUBLIC_APP_URL?: string | null;
+  VITE_PUBLIC_APP_URL?: string | null;
+  VERCEL_PROJECT_PRODUCTION_URL?: string | null;
+  VERCEL_URL?: string | null;
+  VERCEL_ENV?: string | null;
+  NODE_ENV?: string | null;
+}): string {
+  for (const candidate of [
+    env.APP_URL,
+    env.PUBLIC_APP_URL,
+    env.VITE_PUBLIC_APP_URL,
+  ]) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return withHttpsAppOrigin(candidate);
+    }
+  }
+  if (
+    typeof env.VERCEL_PROJECT_PRODUCTION_URL === "string" &&
+    env.VERCEL_PROJECT_PRODUCTION_URL.trim()
+  ) {
+    return withHttpsAppOrigin(env.VERCEL_PROJECT_PRODUCTION_URL);
+  }
+  if (typeof env.VERCEL_URL === "string" && env.VERCEL_URL.trim()) {
+    return withHttpsAppOrigin(env.VERCEL_URL);
+  }
+  return normalizeAppOrigin("http://localhost:8080");
+}
+
+function isUnsafePublicAppUrlForEmail(
+  url: string,
+  env: { VERCEL_ENV?: string | null; NODE_ENV?: string | null },
+): boolean {
+  if (!isLocalhostAppUrl(url)) return false;
+  return isProductionRuntime(env) || env.VERCEL_ENV === "preview";
+}
+
+const APP_URL = resolvePublicAppUrl({
+  APP_URL: process.env.APP_URL,
+  PUBLIC_APP_URL: process.env.PUBLIC_APP_URL,
+  VITE_PUBLIC_APP_URL: process.env.VITE_PUBLIC_APP_URL,
+  VERCEL_PROJECT_PRODUCTION_URL: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+  VERCEL_URL: process.env.VERCEL_URL,
+  VERCEL_ENV: process.env.VERCEL_ENV,
+  NODE_ENV: process.env.NODE_ENV,
+});
+
+if (
+  isUnsafePublicAppUrlForEmail(APP_URL, {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    NODE_ENV: process.env.NODE_ENV,
+  })
+) {
+  apiLogger.error(
+    "Public APP_URL resolves to localhost on a deployed environment. Set APP_URL or VITE_PUBLIC_APP_URL in Vercel to your production domain (e.g. https://app.delache.mx). Invite/OTP emails will refuse to send until fixed.",
+    { APP_URL },
+  );
+}
+
+function assertSafeAppUrlForOutboundEmail():
+  | { ok: true }
+  | { ok: false; error: string } {
+  if (
+    !isUnsafePublicAppUrlForEmail(APP_URL, {
+      VERCEL_ENV: process.env.VERCEL_ENV,
+      NODE_ENV: process.env.NODE_ENV,
+    })
+  ) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error:
+      "App URL is localhost — set APP_URL (or VITE_PUBLIC_APP_URL) in Vercel to your public https domain before sending emails",
+  };
+}
+
 const FROM_EMAIL =
   process.env.SMTP_FROM || "DELACHE <no-reply@disruptinglabs.com>";
 
@@ -6496,6 +6604,16 @@ async function sendEmail(opts: {
   html: string;
   text: string;
 }): Promise<string | null> {
+  const urlCheck = assertSafeAppUrlForOutboundEmail();
+  if (urlCheck.ok === false) {
+    apiLogger.error("Blocked outbound email with localhost APP_URL", {
+      to: opts.to,
+      subject: opts.subject,
+      APP_URL,
+      error: urlCheck.error,
+    });
+    throw new Error(urlCheck.error);
+  }
   if (!resendClient) {
     apiLogger.info("[email:dev-fallback]", {
       to: opts.to,
