@@ -32,8 +32,8 @@ export function PortalShellSkeleton({
       <div className="lg:flex">
         <aside
           className={cn(
-            "sticky top-0 hidden h-screen shrink-0 border-r border-sidebar-border bg-[#0b0f1a] lg:block",
-            collapsed ? "w-[84px]" : "w-[268px]",
+            "sticky top-0 hidden h-screen shrink-0 border-r border-sidebar-border bg-delache-950 lg:block",
+            collapsed ? "w-[88px]" : "w-[280px]",
           )}
         >
           <PortalSidebarSkeleton compact={collapsed} />

@@ -325,7 +325,8 @@ CREATE TABLE IF NOT EXISTS `case_deadlines` (
     'external_legal_validation',
     'court_delivery',
     'payment',
-    'custom'
+    'custom',
+    'expert_delivery'
   ) COLLATE utf8mb4_unicode_ci NOT NULL,
   `title` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `due_at` datetime NOT NULL,
@@ -766,6 +767,7 @@ CREATE TABLE IF NOT EXISTS `calendar_events` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `public_uuid` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
   `case_id` int unsigned DEFAULT NULL,
+  `case_deadline_id` int unsigned DEFAULT NULL,
   `event_type` enum(
     'court_date',
     'inspection',
@@ -787,10 +789,12 @@ CREATE TABLE IF NOT EXISTS `calendar_events` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_calendar_events_public_uuid` (`public_uuid`),
   KEY `idx_calendar_events_case` (`case_id`),
+  KEY `idx_calendar_events_deadline` (`case_deadline_id`),
   KEY `idx_calendar_events_starts` (`starts_at`),
   KEY `idx_calendar_events_type` (`event_type`),
   CONSTRAINT `fk_calendar_events_case` FOREIGN KEY (`case_id`) REFERENCES `cases` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `fk_calendar_events_created_by` FOREIGN KEY (`created_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL
+  CONSTRAINT `fk_calendar_events_created_by` FOREIGN KEY (`created_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_calendar_events_deadline` FOREIGN KEY (`case_deadline_id`) REFERENCES `case_deadlines` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `notifications` (

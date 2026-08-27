@@ -1,4 +1,5 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
+import { logout } from "./authSlice";
 import type {
   CaseDetail,
   CaseDocumentItem,
@@ -9,6 +10,7 @@ import type {
   ClientReviewReportRequest,
   CreateCaseDocumentRequest,
   CreateCaseRequest,
+  DocumentCategory,
   DocumentCompletenessInfo,
   NotificationItem,
   UpdateCaseFlagsRequest,
@@ -16,6 +18,7 @@ import type {
   TechnicalReportItem,
 } from "@shared/api";
 import api from "@/lib/api";
+import { uploadCaseDocumentsBatch } from "@/utils/caseDocumentUpload";
 
 interface ClientState {
   cases: CaseSummary[];
@@ -166,6 +169,35 @@ export const uploadClientDocument = createAsyncThunk(
   },
 );
 
+export const uploadClientDocumentsSmart = createAsyncThunk(
+  "client/uploadDocumentsSmart",
+  async (
+    payload: {
+      publicUuid: string;
+      files: File[];
+      category: DocumentCategory;
+    },
+    { rejectWithValue },
+  ) => {
+    try {
+      const result = await uploadCaseDocumentsBatch({
+        publicUuid: payload.publicUuid,
+        files: payload.files,
+        category: payload.category,
+        actor: "law_firm",
+      });
+      if (result.documents.length === 0) {
+        return rejectWithValue(
+          result.failures[0]?.error || "upload_failed",
+        );
+      }
+      return result;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "upload_failed"));
+    }
+  },
+);
+
 export const reviewClientReport = createAsyncThunk(
   "client/reviewClientReport",
   async (
@@ -295,6 +327,18 @@ const clientSlice = createSlice({
       .addCase(uploadClientDocument.fulfilled, (state, action) => {
         state.documents = [action.payload, ...state.documents];
       })
+      .addCase(uploadClientDocument.rejected, (state, action) => {
+        state.error = (action.payload as string) || "upload_failed";
+      })
+      .addCase(uploadClientDocumentsSmart.fulfilled, (state, action) => {
+        state.documents = [...action.payload.documents, ...state.documents];
+        if (action.payload.failures.length > 0) {
+          state.error = action.payload.failures[0].error;
+        }
+      })
+      .addCase(uploadClientDocumentsSmart.rejected, (state, action) => {
+        state.error = (action.payload as string) || "upload_failed";
+      })
       .addCase(updateClientDocumentCategory.fulfilled, (state, action) => {
         state.documents = state.documents.map((d) =>
           d.publicUuid === action.payload.publicUuid ? action.payload : d,
@@ -343,7 +387,8 @@ const clientSlice = createSlice({
           readAt: n.readAt || new Date().toISOString(),
         }));
         state.unreadCount = 0;
-      });
+      })
+      .addCase(logout.fulfilled, () => initialState);
   },
 });
 

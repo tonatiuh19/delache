@@ -526,6 +526,10 @@ export function hasBlockingFinanceForCompletion(
 
 export type ListadoProgress = {
   processPoint: ProcessPointId | null;
+  /** True when the case can advance to the next workflow status (current point gates). */
+  gatesOk: boolean;
+  /** When status is on_hold, workflow resume target for kanban drag rules. */
+  holdResumeStatus?: CaseStatus | null;
   primaryExpert: boolean;
   intakeComplete: boolean;
   questionnaireApproved: boolean;
@@ -566,6 +570,7 @@ export function buildListadoProgress(opts: {
   inspectionDeadlineAt?: string | null;
   input: ProcessGateInput;
   invoices?: readonly FinanceInvoiceInput[];
+  holdResumeStatus?: CaseStatus | null;
 }): ListadoProgress {
   const input = opts.input;
   const invoices = opts.invoices ?? [];
@@ -579,6 +584,10 @@ export function buildListadoProgress(opts: {
     (i) => i.invoiceType === "final" && i.status === "paid",
   );
   const intake = evaluateProcessGates(1, input).ok;
+  const currentPoint = processPointForStatus(opts.status);
+  const gatesOk = currentPoint
+    ? evaluateProcessGates(currentPoint, input).ok
+    : true;
   const reportInternal =
     input.reportStatus === "approved_internal" ||
     input.reportStatus === "external_review" ||
@@ -594,7 +603,9 @@ export function buildListadoProgress(opts: {
     input.courtFilingPresent || input.documentCategories.includes("court_filing"),
   );
   return {
-    processPoint: processPointForStatus(opts.status),
+    processPoint: currentPoint,
+    gatesOk,
+    holdResumeStatus: opts.holdResumeStatus ?? null,
     primaryExpert: Boolean(input.hasPrimaryExpert),
     intakeComplete: intake,
     questionnaireApproved: qApproved,

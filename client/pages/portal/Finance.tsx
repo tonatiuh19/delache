@@ -17,6 +17,7 @@ import {
 import { fetchCases } from "@/store/slices/casesSlice";
 import type { InvoiceSummary } from "@shared/api";
 import { useGridListState } from "@/hooks/useGridListState";
+import { notifyThunkSave } from "@/utils/formSave";
 
 export default function FinancePage() {
   const { t } = useTranslation();
@@ -55,7 +56,7 @@ export default function FinancePage() {
       totalAmount: Yup.number().typeError("n").min(0).required(),
     }),
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         createInvoice({
           caseId: Number(values.caseId),
           invoiceType: values.invoiceType as
@@ -67,20 +68,28 @@ export default function FinancePage() {
           issue: values.issue,
         }),
       );
-      helpers.resetForm({
-        values: {
-          caseId: "",
-          invoiceType: "advance",
-          totalAmount: "",
-          issue: true,
-        },
-      });
-      void dispatch(
-        fetchInvoices({
-          ...gridParams,
-          q: query.trim() || undefined,
-        }),
-      );
+      if (
+        notifyThunkSave(result, {
+          failureTitle: t("finance.invoiceSaveFailed"),
+          fallbackError: "invoice_create_failed",
+          silentSuccess: true,
+        })
+      ) {
+        helpers.resetForm({
+          values: {
+            caseId: "",
+            invoiceType: "advance",
+            totalAmount: "",
+            issue: true,
+          },
+        });
+        void dispatch(
+          fetchInvoices({
+            ...gridParams,
+            q: query.trim() || undefined,
+          }),
+        );
+      }
     },
   });
 
@@ -138,20 +147,29 @@ export default function FinancePage() {
               className="rounded-full border border-border px-3 py-1 text-[10px] font-bold uppercase"
               onClick={(e) => {
                 e.stopPropagation();
-                void dispatch(
-                  recordPayment({
-                    publicUuid: inv.publicUuid,
-                    amount: inv.totalAmount,
-                    method: "transfer",
-                  }),
-                ).then(() =>
-                  dispatch(
-                    fetchInvoices({
-                      ...gridParams,
-                      q: query.trim() || undefined,
+                void (async () => {
+                  const result = await dispatch(
+                    recordPayment({
+                      publicUuid: inv.publicUuid,
+                      amount: inv.totalAmount,
+                      method: "transfer",
                     }),
-                  ),
-                );
+                  );
+                  if (
+                    notifyThunkSave(result, {
+                      failureTitle: t("finance.paymentSaveFailed"),
+                      fallbackError: "payment_failed",
+                      silentSuccess: true,
+                    })
+                  ) {
+                    void dispatch(
+                      fetchInvoices({
+                        ...gridParams,
+                        q: query.trim() || undefined,
+                      }),
+                    );
+                  }
+                })();
               }}
             >
               {t("finance.markPaid")}

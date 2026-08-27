@@ -2,9 +2,9 @@ import { ExternalLink, Eye, MapPin, Navigation } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   googleMapsDirectionsUrl,
+  googleMapsEmbedUrl,
   googleMapsSearchUrl,
   googleStreetViewUrl,
-  osmEmbedUrl,
 } from "@shared/locationRules";
 
 type Props = {
@@ -18,6 +18,11 @@ type Props = {
   showStreetView?: boolean;
 };
 
+function mapsEmbedApiKey(): string | undefined {
+  const key = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+  return typeof key === "string" && key.trim() ? key.trim() : undefined;
+}
+
 /** Map preview + GPS navigation links for inspections, evidence pins, and trips. */
 export default function LocationMapPanel({
   lat,
@@ -29,7 +34,12 @@ export default function LocationMapPanel({
   showStreetView = true,
 }: Props) {
   const { t } = useTranslation();
-  const embed = osmEmbedUrl({ lat, lng });
+  const embed = googleMapsEmbedUrl({
+    lat,
+    lng,
+    query,
+    apiKey: mapsEmbedApiKey(),
+  });
   const search = googleMapsSearchUrl({ lat, lng, query });
   const directions = googleMapsDirectionsUrl({ lat, lng, query });
   const streetView =
@@ -103,6 +113,7 @@ export default function LocationMapPanel({
           className="h-48 w-full border-0"
           loading="lazy"
           referrerPolicy="no-referrer-when-downgrade"
+          allowFullScreen
         />
       ) : null}
     </div>

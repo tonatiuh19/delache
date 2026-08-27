@@ -13,6 +13,7 @@ import {
   fetchLawFirms,
   saveCaseNumberSettings,
 } from "@/store/slices/portalSlice";
+import { notifyThunkSave } from "@/utils/formSave";
 
 export default function SettingsPage() {
   const { t } = useTranslation();
@@ -34,7 +35,14 @@ export default function SettingsPage() {
       format: Yup.string().trim().required(),
     }),
     onSubmit: async (values) => {
-      await dispatch(saveCaseNumberSettings(values.format.trim()));
+      const result = await dispatch(
+        saveCaseNumberSettings(values.format.trim()),
+      );
+      notifyThunkSave(result, {
+        successTitle: t("settings.caseNumberSaved"),
+        failureTitle: t("settings.caseNumberSaveFailed"),
+        fallbackError: "settings_save_failed",
+      });
     },
   });
 
@@ -42,7 +50,7 @@ export default function SettingsPage() {
     initialValues: { name: "", email: "", city: "", state: "" },
     validationSchema: Yup.object({ name: Yup.string().trim().required() }),
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         createLawFirm({
           name: values.name.trim(),
           email: values.email.trim() || undefined,
@@ -50,7 +58,16 @@ export default function SettingsPage() {
           state: values.state.trim() || undefined,
         }),
       );
-      helpers.resetForm();
+      if (
+        notifyThunkSave(result, {
+          failureTitle: t("settings.lawFirmSaveFailed"),
+          fallbackError: "law_firm_create_failed",
+          silentSuccess: true,
+        })
+      ) {
+        helpers.resetForm();
+        void dispatch(fetchLawFirms());
+      }
     },
   });
 

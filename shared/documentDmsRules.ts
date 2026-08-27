@@ -10,6 +10,21 @@ export const DMS_MAX_BULK_TOTAL_BYTES = 20 * 1024 * 1024;
 export const DMS_JSON_BODY_LIMIT = "25mb";
 /** Default JSON body limit for non-upload routes. */
 export const JSON_BODY_LIMIT_DEFAULT = "1mb";
+/**
+ * Vercel serverless JSON body is ~4.5MB. Base64 expands ~4/3, so keep
+ * in-request file bytes under this and use client→Blob for anything larger.
+ */
+export const VERCEL_SAFE_JSON_UPLOAD_BYTES = 3 * 1024 * 1024;
+
+/**
+ * Temporary UI legend while the product ships with a conservative per-file cap.
+ * Set to `false` when raising `DMS_MAX_FILE_BYTES` after full production rollout.
+ */
+export const DMS_SHOW_SIZE_STABILIZATION_LEGEND = true;
+
+export function dmsMaxFileSizeMb(): number {
+  return Math.round(DMS_MAX_FILE_BYTES / (1024 * 1024));
+}
 
 export function estimateBase64DecodedBytes(dataBase64: string): number {
   const cleaned = dataBase64.replace(/\s/g, "");
@@ -171,4 +186,70 @@ export function truncateOcrText(text: string, maxChars = 200_000): string {
   const trimmed = text.replace(/\u0000/g, "").trim();
   if (trimmed.length <= maxChars) return trimmed;
   return trimmed.slice(0, maxChars);
+}
+
+export function shouldUseDirectBlobUpload(fileSizeBytes: number): boolean {
+  return Number.isFinite(fileSizeBytes) && fileSizeBytes > VERCEL_SAFE_JSON_UPLOAD_BYTES;
+}
+
+/** JSON body stays under Vercel’s ~4.5MB limit only when the whole batch is small. */
+export function shouldUseJsonDocumentUpload(
+  files: Array<{ size: number }>,
+): boolean {
+  if (!Array.isArray(files) || files.length === 0) return false;
+  const total = files.reduce((sum, file) => sum + (file.size || 0), 0);
+  return (
+    total <= VERCEL_SAFE_JSON_UPLOAD_BYTES &&
+    files.every((file) => !shouldUseDirectBlobUpload(file.size))
+  );
+}
+
+export function isBlobTokenMissingError(
+  message: string | null | undefined,
+): boolean {
+  return String(message || "").includes("BLOB_READ_WRITE_TOKEN");
+}
+
+export type DmsFileRejectReason =
+  | "empty"
+  | "too_large"
+  | "unsupported_type"
+  | "too_many";
+
+export type DmsFileLike = {
+  name: string;
+  size: number;
+  type?: string | null;
+};
+
+export function classifyDmsFile(
+  file: DmsFileLike,
+): { ok: true } | { ok: false; reason: Exclude<DmsFileRejectReason, "too_many"> } {
+  if (!file.size || file.size <= 0) return { ok: false, reason: "empty" };
+  if (file.size > DMS_MAX_FILE_BYTES) return { ok: false, reason: "too_large" };
+  const mime = file.type || "application/octet-stream";
+  if (!isAllowedDmsMime(mime)) return { ok: false, reason: "unsupported_type" };
+  return { ok: true };
+}
+
+export function classifyDmsFiles(files: DmsFileLike[]): {
+  accepted: DmsFileLike[];
+  rejected: Array<{ name: string; reason: DmsFileRejectReason }>;
+} {
+  const list = Array.isArray(files) ? files : [];
+  const accepted: DmsFileLike[] = [];
+  const rejected: Array<{ name: string; reason: DmsFileRejectReason }> = [];
+  for (const file of list) {
+    if (accepted.length >= DMS_MAX_BULK_FILES) {
+      rejected.push({ name: file.name, reason: "too_many" });
+      continue;
+    }
+    const classified = classifyDmsFile(file);
+    if (classified.ok === false) {
+      rejected.push({ name: file.name, reason: classified.reason });
+      continue;
+    }
+    accepted.push(file);
+  }
+  return { accepted, rejected };
 }

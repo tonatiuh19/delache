@@ -167,7 +167,7 @@ paths:
           description: Updated
   /api/cases:
     get:
-      summary: List cases (server-side filter, sort, pagination)
+      summary: List cases (server-side filter, sort, pagination). Admin and case_coordinator see all; expert/legal/logistics/accountant only see cases they are assigned to.
       security:
         - bearerAuth: []
       parameters:
@@ -194,14 +194,47 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Cases + pagination. Each case includes listado progress flags, lawFirmName, and primaryExpertName. Search (q) matches number, title, court, city, firm, or primary expert.
+          description: Cases + pagination. Each case includes listado progress flags (including gatesOk for the current process point), lawFirmName, and primaryExpertName. Search (q) matches number, title, court, city, firm, or primary expert.
     post:
-      summary: Create case
+      summary: Create case (admin and case_coordinator only)
       security:
         - bearerAuth: []
       responses:
         "201":
           description: Created
+  /api/cases/pipeline:
+    get:
+      summary: Cases pipeline board (per-status columns with pagination)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string }
+          description: When set, only loads that status column
+        - in: query
+          name: priority
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20 }
+        - in: query
+          name: column
+          schema: { type: string }
+          description: Load-more target status
+        - in: query
+          name: offset
+          schema: { type: integer }
+      responses:
+        "200":
+          description: >
+            Column map or single-column page when column+offset provided.
+            Each case includes listado progress flags (including gatesOk and
+            holdResumeStatus for on_hold cases) used by the board to lock gated
+            forward drops.
   /api/cases/{publicUuid}:
     get:
       summary: Case detail with history, notes, documents, reviews, completeness, audit
@@ -216,6 +249,8 @@ paths:
       responses:
         "200":
           description: Detail payload (includes hasUnpaidInvoices and processGate snapshot for the current 12-point step)
+        "404":
+          description: Case not found
     patch:
       summary: Update case flags (involvesFatality)
       security:
@@ -241,6 +276,8 @@ paths:
           description: Updated case
         "400":
           description: Invalid body
+        "404":
+          description: Case not found
   /api/cases/{publicUuid}/location:
     patch:
       summary: Update case property address and GPS coordinates
@@ -350,6 +387,32 @@ paths:
           description: Missing or invalid category
         "503":
           description: Blob token missing
+  /api/cases/{publicUuid}/documents/from-blob:
+    post:
+      summary: Register a case document already uploaded to private Vercel Blob
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fileName, storageKey, fileSizeBytes]
+              properties:
+                title: { type: string }
+                category: { type: string }
+                fileName: { type: string }
+                contentType: { type: string }
+                storageKey: { type: string }
+                fileSizeBytes: { type: number }
+      responses:
+        "201":
+          description: Document created from an existing blob
+        "400":
+          description: Invalid blob metadata or pathname
+        "503":
+          description: Blob token missing
   /api/cases/{publicUuid}/documents/{documentUuid}:
     patch:
       summary: Recategorize a case document
@@ -444,12 +507,59 @@ paths:
       summary: Assign team member to case
       security:
         - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, assignmentRole]
+              properties:
+                userId:
+                  type: integer
+                assignmentRole:
+                  type: string
+                isPrimary:
+                  type: boolean
+                notes:
+                  type: string
+                deliveryDueAt:
+                  type: string
+                  description: Optional YYYY-MM-DD or ISO date for primary expert delivery (creates expert_delivery deadline + notifies expert)
       responses:
         "201":
           description: Assignment created/reactivated
+  /api/cases/{publicUuid}/expert-delivery-deadline:
+    patch:
+      summary: Set or clear primary expert delivery deadline (action item + notification)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: publicUuid
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deliveryDueAt:
+                  type: string
+                  nullable: true
+                  description: YYYY-MM-DD or ISO; null/omit to clear (notifies expert when cleared)
+      responses:
+        "200":
+          description: Updated deadline or cleared
+        "409":
+          description: No primary expert assigned
   /api/cases/{publicUuid}/assignments/{assignmentId}:
     delete:
       summary: Soft-unassign case member
+      description: >
+        Unassigning the primary expert also clears expert_delivery deadline,
+        linked calendar events, and notifies the expert when a delivery date existed.
       security:
         - bearerAuth: []
       responses:
@@ -687,6 +797,20 @@ paths:
           description: Document uploaded
         "400":
           description: Invalid category (P1/P5 types only)
+        "503":
+          description: Blob token missing
+  /api/client/cases/{publicUuid}/documents/from-blob:
+    post:
+      summary: Law firm portal — register a document already uploaded to private Blob
+      security:
+        - bearerAuth: []
+      responses:
+        "201":
+          description: Document uploaded
+        "400":
+          description: Invalid blob metadata or category
+        "503":
+          description: Blob token missing
   /api/client/cases/{publicUuid}/documents/{documentUuid}:
     patch:
       summary: Law firm portal — recategorize an intake/additional document
@@ -736,12 +860,34 @@ paths:
           description: Report not in external_review or invalid outcome
   /api/dashboard/stats:
     get:
-      summary: Dashboard counters (incl. pending reviews/invoices/deadlines)
+      summary: Dashboard counters scoped by staff case visibility (assigned-only for expert/legal/logistics/accountant)
       security:
         - bearerAuth: []
       responses:
         "200":
           description: Stats
+  /api/reviews/pending:
+    get:
+      summary: Pending review queue for dashboard CTA (scoped by case visibility + actionable stage)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 100 }
+      responses:
+        "200":
+          description: Pending review requests with case summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingReviewsResponse"
+        "401":
+          description: Unauthorized
+        "403":
+          description: Role cannot access reviews or has no actionable stages
+        "500":
+          description: Internal server error
   /api/documents:
     get:
       summary: Documents index across cases (filter, pagination)
@@ -775,7 +921,7 @@ paths:
           description: Search hits
   /api/reports/kpis:
     get:
-      summary: Reporting KPIs (status mix, experts, delays, invoices)
+      summary: Reporting KPIs scoped by staff case visibility (cases-by-expert only for admin/coordinator)
       security:
         - bearerAuth: []
       responses:
@@ -954,6 +1100,18 @@ paths:
           description: Cannot remove self
         "404":
           description: Not found
+  /api/blob/client-upload:
+    post:
+      summary: Issue a client token for direct private Blob uploads
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Client token for browser→Blob upload
+        "400":
+          description: Invalid pathname or payload
+        "503":
+          description: Blob token missing
   /api/uploads:
     post:
       summary: Generic Blob upload
@@ -968,3 +1126,24 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  schemas:
+    PendingReviewQueueItem:
+      type: object
+      properties:
+        id: { type: integer }
+        caseId: { type: integer }
+        reviewStage: { type: string }
+        entityType: { type: string }
+        status: { type: string }
+        casePublicUuid: { type: string }
+        caseNumber: { type: string }
+        caseTitle: { type: string }
+        dueAt: { type: string, format: date-time, nullable: true }
+    PendingReviewsResponse:
+      type: object
+      properties:
+        reviews:
+          type: array
+          items:
+            $ref: "#/components/schemas/PendingReviewQueueItem"
+        total: { type: integer }

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, FileUp } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import { ContentPageSkeleton } from "@/components/portal/PortalSkeletons";
 import DocumentCategorySelect from "@/components/portal/DocumentCategorySelect";
+import DocumentDropzone from "@/components/portal/DocumentDropzone";
 import { FieldHelper } from "@/components/portal/FormHelpers";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -12,21 +13,11 @@ import {
   reviewClientReport,
   updateClientCaseFlags,
   updateClientDocumentCategory,
-  uploadClientDocument,
+  uploadClientDocumentsSmart,
 } from "@/store/slices/clientSlice";
 import type { DocumentCategory } from "@shared/api";
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || "");
-      resolve(result.includes(",") ? result.split(",")[1] : result);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+import { isBlobTokenMissingError } from "@shared/documentDmsRules";
+import { toast } from "@/hooks/use-toast";
 
 export default function ClientCaseDetailPage() {
   const { publicUuid = "" } = useParams();
@@ -44,6 +35,7 @@ export default function ClientCaseDetailPage() {
   } = useAppSelector((s) => s.client);
   const [uploadCategory, setUploadCategory] =
     useState<DocumentCategory>("lawsuit");
+  const [docsUploading, setDocsUploading] = useState(false);
 
   useEffect(() => {
     if (publicUuid) void dispatch(fetchClientCaseDetail(publicUuid));
@@ -53,21 +45,45 @@ export default function ClientCaseDetailPage() {
     if (publicUuid) void dispatch(fetchClientCaseDetail(publicUuid));
   };
 
-  const onUpload = async (files: FileList | null) => {
-    const file = files?.[0];
-    if (!file) return;
-    const data = await fileToBase64(file);
-    await dispatch(
-      uploadClientDocument({
-        publicUuid,
-        title: file.name,
-        fileName: file.name,
-        contentType: file.type || "application/octet-stream",
-        category: uploadCategory,
-        data,
-      }),
-    );
-    refresh();
+  const onUpload = async (files: File[]) => {
+    if (files.length === 0) return;
+    setDocsUploading(true);
+    try {
+      const result = await dispatch(
+        uploadClientDocumentsSmart({
+          publicUuid,
+          files,
+          category: uploadCategory,
+        }),
+      );
+      if (uploadClientDocumentsSmart.fulfilled.match(result)) {
+        refresh();
+        if (result.payload.failures.length > 0) {
+          toast({
+            title: t("documents.partialUpload", {
+              ok: result.payload.documents.length,
+              failed: result.payload.failures.length,
+            }),
+            description: result.payload.failures
+              .slice(0, 3)
+              .map((f) => f.name)
+              .join(", "),
+            variant: "destructive",
+          });
+        }
+        return;
+      }
+      const message = String(result.payload || "upload_failed");
+      toast({
+        title: t("documents.uploadFailed"),
+        description: isBlobTokenMissingError(message)
+          ? t("documents.blobNotConfigured")
+          : message,
+        variant: "destructive",
+      });
+    } finally {
+      setDocsUploading(false);
+    }
   };
 
   const onReview = (
@@ -180,18 +196,6 @@ export default function ClientCaseDetailPage() {
       <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <h2 className="text-sm font-bold">{t("cases.documents")}</h2>
-          <label className="inline-flex cursor-pointer items-center gap-1 rounded-full bg-secondary px-3 py-1.5 text-xs font-semibold text-primary">
-            <FileUp size={14} />
-            {t("cases.upload")}
-            <input
-              type="file"
-              className="hidden"
-              onChange={(e) => {
-                void onUpload(e.target.files);
-                e.target.value = "";
-              }}
-            />
-          </label>
         </div>
         <div className="mt-3 max-w-xs">
           <DocumentCategorySelect
@@ -200,6 +204,13 @@ export default function ClientCaseDetailPage() {
             clientPortal
           />
           <FieldHelper>{t("help.caseDetail.documentCategoryClient")}</FieldHelper>
+        </div>
+        <div className="mt-3">
+          <DocumentDropzone
+            compact
+            uploading={docsUploading}
+            onFiles={onUpload}
+          />
         </div>
         <ul className="mt-3 space-y-2">
           {documents.map((d) => (

@@ -14,7 +14,8 @@ import mysql, {
   type RowDataPacket,
 } from "mysql2/promise";
 import { Resend } from "resend";
-import { put, del, get, issueSignedToken, presignUrl } from "@vercel/blob";
+import { put, del, get, head, issueSignedToken, presignUrl } from "@vercel/blob";
+import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import type {
   AssignmentRole,
   AuthActor,
@@ -29,17 +30,22 @@ import type {
   BulkUploadDocumentsRequest,
   BulkUploadDocumentsResponse,
   CaseDocumentItem,
+  CreateCaseDocumentFromBlobRequest,
   CaseNoteItem,
   CaseNumberSettings,
   CasePriority,
   CaseResponse,
   CasesListResponse,
+  CasesPipelineColumnMoreResponse,
+  CasesPipelineResponse,
   CaseStatus,
   CaseStatusHistoryItem,
   CaseSummary,
   ClientReviewReportRequest,
   CompleteReviewRequest,
   CreateAssignmentRequest,
+  ExpertDeliveryDeadlineResponse,
+  SetExpertDeliveryDeadlineRequest,
   CreateCalendarEventRequest,
   CreateCaseDocumentRequest,
   CreateCaseNoteRequest,
@@ -83,6 +89,7 @@ import type {
   NotificationItem,
   NotificationType,
   PaginationInfo,
+  PendingReviewsResponse,
   QuestionnaireItem,
   QuestionnaireStatus,
   ReportsKpiResponse,
@@ -1233,7 +1240,9 @@ function caseStatusCountsTowardMissingDocsKpi(caseStatus: string): boolean {
 function shouldNotifyLawFirmOfMissingDocs(completeness: {
   phase: string;
 }): boolean {
-  return completeness.phase === "intake" || completeness.phase === "additional_docs";
+  return (
+    completeness.phase === "intake" || completeness.phase === "additional_docs"
+  );
 }
 
 function shouldWriteLawFirmMissingDocsNote(completeness: {
@@ -1304,8 +1313,7 @@ function canClientSetDocumentCategory(category: DocumentCategory): boolean {
 function canClientRecategorizeDocument(currentCategory: unknown): boolean {
   if (!isDocumentCategory(currentCategory)) return false;
   return (
-    canClientSetDocumentCategory(currentCategory) ||
-    currentCategory === "other"
+    canClientSetDocumentCategory(currentCategory) || currentCategory === "other"
   );
 }
 
@@ -1358,7 +1366,8 @@ function parseClientUploadCategory(
   if (!canClientSetDocumentCategory(required.value)) {
     return {
       ok: false,
-      error: "Law firm users can only upload intake and additional-doc categories",
+      error:
+        "Law firm users can only upload intake and additional-doc categories",
     };
   }
   return required;
@@ -1377,6 +1386,7 @@ const DMS_MAX_BULK_TOTAL_BYTES = 20 * 1024 * 1024;
 const DMS_JSON_BODY_LIMIT = "25mb";
 /** Default JSON body limit for non-upload routes. */
 const JSON_BODY_LIMIT_DEFAULT = "1mb";
+const VERCEL_SAFE_JSON_UPLOAD_BYTES = 3 * 1024 * 1024;
 
 function estimateBase64DecodedBytes(dataBase64: string): number {
   const cleaned = dataBase64.replace(/\s/g, "");
@@ -1529,6 +1539,159 @@ function truncateOcrText(text: string, maxChars = 200_000): string {
   return trimmed.slice(0, maxChars);
 }
 
+function shouldUseDirectBlobUpload(fileSizeBytes: number): boolean {
+  return Number.isFinite(fileSizeBytes) && fileSizeBytes > VERCEL_SAFE_JSON_UPLOAD_BYTES;
+}
+
+// ---- inlined from shared/blobDirectUploadRules.ts ----
+type DirectUploadActor = "staff" | "law_firm";
+
+type DirectUploadClientPayload = {
+  casePublicUuid: string;
+  actor: DirectUploadActor;
+};
+
+type FromBlobDocumentInput = {
+  title?: unknown;
+  fileName?: unknown;
+  contentType?: unknown;
+  category?: unknown;
+  storageKey?: unknown;
+  fileSizeBytes?: unknown;
+};
+
+function blobUploadPathPrefix(
+  actor: DirectUploadActor,
+  casePublicUuid: string,
+): string {
+  const uuid = String(casePublicUuid || "").trim();
+  const base = actor === "law_firm" ? "client-cases" : "cases";
+  return `${base}/${uuid}`;
+}
+
+function isAllowedDirectUploadPathname(
+  pathname: string,
+  actor: DirectUploadActor,
+  casePublicUuid: string,
+): boolean {
+  const uuid = String(casePublicUuid || "").trim();
+  if (!uuid) return false;
+  const prefix = `${blobUploadPathPrefix(actor, uuid)}/`;
+  const path = String(pathname || "")
+    .trim()
+    .replace(/^\//, "");
+  return (
+    path.startsWith(prefix) &&
+    path.length > prefix.length &&
+    !path.includes("..")
+  );
+}
+
+function parseDirectUploadClientPayload(
+  raw: string | null | undefined,
+):
+  | { ok: true; value: DirectUploadClientPayload }
+  | { ok: false; error: string } {
+  if (raw == null || String(raw).trim() === "") {
+    return { ok: false, error: "clientPayload is required" };
+  }
+  try {
+    const parsed = JSON.parse(String(raw)) as {
+      casePublicUuid?: unknown;
+      actor?: unknown;
+    };
+    const casePublicUuid = String(parsed?.casePublicUuid || "").trim();
+    const actor = parsed?.actor;
+    if (!casePublicUuid) {
+      return { ok: false, error: "casePublicUuid is required" };
+    }
+    if (actor !== "staff" && actor !== "law_firm") {
+      return { ok: false, error: "actor must be staff or law_firm" };
+    }
+    return { ok: true, value: { casePublicUuid, actor } };
+  } catch {
+    return { ok: false, error: "clientPayload must be JSON" };
+  }
+}
+
+function validateFromBlobDocument(
+  body: FromBlobDocumentInput,
+  opts: {
+    actor: DirectUploadActor;
+    casePublicUuid: string;
+    maxFileBytes: number;
+    isAllowedMime: (mime: string) => boolean;
+    blobPathnameFromUrl: (storageKey: string) => string | null;
+    isPrivateBlobUrl: (storageKey: string) => boolean;
+  },
+):
+  | {
+      ok: true;
+      value: {
+        title: string;
+        fileName: string;
+        contentType: string;
+        storageKey: string;
+        fileSizeBytes: number;
+        pathname: string;
+      };
+    }
+  | { ok: false; error: string } {
+  const fileName = String(body?.fileName || "").trim();
+  const storageKey = String(body?.storageKey || "").trim();
+  const title =
+    String(body?.title || "").trim() ||
+    fileName.replace(/\.[^.]+$/, "") ||
+    "Document";
+  const contentType =
+    String(body?.contentType || "application/octet-stream").trim() ||
+    "application/octet-stream";
+  const fileSizeBytes = Number(body?.fileSizeBytes);
+  if (!fileName || !storageKey) {
+    return { ok: false, error: "fileName and storageKey are required" };
+  }
+  if (!opts.isPrivateBlobUrl(storageKey)) {
+    return { ok: false, error: "storageKey must be a private blob URL" };
+  }
+  if (!opts.isAllowedMime(contentType)) {
+    return { ok: false, error: `unsupported type ${contentType}` };
+  }
+  if (
+    !Number.isFinite(fileSizeBytes) ||
+    fileSizeBytes <= 0 ||
+    fileSizeBytes > opts.maxFileBytes
+  ) {
+    return { ok: false, error: "Invalid file size" };
+  }
+  const pathname = opts.blobPathnameFromUrl(storageKey);
+  if (
+    !pathname ||
+    !isAllowedDirectUploadPathname(pathname, opts.actor, opts.casePublicUuid)
+  ) {
+    return { ok: false, error: "Blob pathname does not belong to this case" };
+  }
+  return {
+    ok: true,
+    value: {
+      title,
+      fileName,
+      contentType,
+      storageKey,
+      fileSizeBytes,
+      pathname,
+    },
+  };
+}
+
+const DMS_CLIENT_UPLOAD_CONTENT_TYPES = [
+  "application/pdf",
+  "image/*",
+  "text/*",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+];
+
 // ---- inlined from shared/inspectionStatusRules.ts ----
 /**
  * Inspection status transition graph.
@@ -1652,43 +1815,191 @@ function isValidLatLng(lat: number, lng: number): boolean {
   return isValidLatitude(lat) && isValidLongitude(lng);
 }
 
-/** Parse numeric or string lat/lng independently. */
+type ParseSingleCoordResult =
+  | { ok: true; value: number }
+  | { ok: false; error: string; code: "invalid" | "out_of_range" | "empty" };
+
+function hemisphereFromToken(token: string | undefined): string | null {
+  if (!token) return null;
+  const h = token.trim().toUpperCase();
+  if (h === "N" || h === "S" || h === "E" || h === "W") return h;
+  if (h === "O") return "W";
+  return null;
+}
+
+function parseCoordinateValue(
+  raw: unknown,
+  axis: "lat" | "lng",
+): ParseSingleCoordResult {
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) {
+      return {
+        ok: false,
+        error: "Coordinate must be a valid number",
+        code: "invalid",
+      };
+    }
+    if (axis === "lat" && !isValidLatitude(raw)) {
+      return {
+        ok: false,
+        error: "lat must be [-90,90]",
+        code: "out_of_range",
+      };
+    }
+    if (axis === "lng" && !isValidLongitude(raw)) {
+      return {
+        ok: false,
+        error: "lng must be [-180,180]",
+        code: "out_of_range",
+      };
+    }
+    return { ok: true, value: raw };
+  }
+
+  const text = String(raw ?? "")
+    .trim()
+    .replace(/[′’]/g, "'")
+    .replace(/[″“”]/g, '"');
+  if (!text) {
+    return { ok: false, error: "Coordinate is empty", code: "empty" };
+  }
+
+  let hemi: string | null = null;
+  let body = text;
+  const hemiMatch = body.match(/([NnSsEeWwOo])\s*$/);
+  if (hemiMatch) {
+    hemi = hemisphereFromToken(hemiMatch[1]);
+    body = body.slice(0, hemiMatch.index).trim();
+  }
+
+  if (hemi) {
+    if (axis === "lat" && (hemi === "E" || hemi === "W")) {
+      return {
+        ok: false,
+        error: "Latitude hemisphere must be N or S",
+        code: "invalid",
+      };
+    }
+    if (axis === "lng" && (hemi === "N" || hemi === "S")) {
+      return {
+        ok: false,
+        error: "Longitude hemisphere must be E or W",
+        code: "invalid",
+      };
+    }
+  }
+
+  const nums = body.match(/[+-]?\d+(?:\.\d+)?/g);
+  if (!nums || nums.length === 0) {
+    return {
+      ok: false,
+      error: "Coordinate must be a valid number",
+      code: "invalid",
+    };
+  }
+
+  const hasDmsMarks = /[°'"″]/.test(body) || nums.length > 1 || hemi != null;
+  let decimal: number;
+  if (!hasDmsMarks) {
+    decimal = Number(nums[0]);
+  } else {
+    const deg = Number(nums[0]);
+    const minutes = nums[1] != null ? Number(nums[1]) : 0;
+    const seconds = nums[2] != null ? Number(nums[2]) : 0;
+    if (
+      !Number.isFinite(deg) ||
+      !Number.isFinite(minutes) ||
+      !Number.isFinite(seconds) ||
+      minutes < 0 ||
+      minutes >= 60 ||
+      seconds < 0 ||
+      seconds >= 60
+    ) {
+      return {
+        ok: false,
+        error: "Invalid degrees/minutes/seconds",
+        code: "invalid",
+      };
+    }
+    decimal = Math.abs(deg) + minutes / 60 + seconds / 3600;
+    if (deg < 0) decimal = -decimal;
+  }
+
+  if (!Number.isFinite(decimal)) {
+    return {
+      ok: false,
+      error: "Coordinate must be a valid number",
+      code: "invalid",
+    };
+  }
+
+  if (hemi === "S" || hemi === "W") decimal = -Math.abs(decimal);
+  if (hemi === "N" || hemi === "E") decimal = Math.abs(decimal);
+
+  if (axis === "lat" && !isValidLatitude(decimal)) {
+    return {
+      ok: false,
+      error: "lat must be [-90,90]",
+      code: "out_of_range",
+    };
+  }
+  if (axis === "lng" && !isValidLongitude(decimal)) {
+    return {
+      ok: false,
+      error: "lng must be [-180,180]",
+      code: "out_of_range",
+    };
+  }
+  return { ok: true, value: decimal };
+}
+
+/** Parse numeric, decimal-string, or DMS lat/lng independently. */
 function parseCoordinatePair(
   latRaw: unknown,
   lngRaw: unknown,
 ): ParseCoordsResult {
-  if ((latRaw == null || latRaw === "") && (lngRaw == null || lngRaw === "")) {
+  if (
+    (latRaw == null || String(latRaw).trim() === "") &&
+    (lngRaw == null || String(lngRaw).trim() === "")
+  ) {
     return { ok: false, error: "Coordinates are required", code: "empty" };
   }
-  const lat =
-    typeof latRaw === "number" ? latRaw : Number(String(latRaw ?? "").trim());
-  const lng =
-    typeof lngRaw === "number" ? lngRaw : Number(String(lngRaw ?? "").trim());
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return {
-      ok: false,
-      error: "lat and lng must be valid numbers",
-      code: "invalid",
-    };
+  const lat = parseCoordinateValue(latRaw, "lat");
+  if (lat.ok === false) {
+    return { ok: false, error: lat.error, code: lat.code };
   }
-  if (!isValidLatLng(lat, lng)) {
-    return {
-      ok: false,
-      error: "lat must be [-90,90] and lng must be [-180,180]",
-      code: "out_of_range",
-    };
+  const lng = parseCoordinateValue(lngRaw, "lng");
+  if (lng.ok === false) {
+    return { ok: false, error: lng.error, code: lng.code };
   }
-  return { ok: true, lat, lng };
+  return { ok: true, lat: lat.value, lng: lng.value };
 }
 
 /**
- * Parse free-text GPS like "19.4326, -99.1332" or "19.4326 -99.1332".
+ * Parse free-text GPS like "19.4326, -99.1332", DMS pairs, or whitespace decimals.
  */
 function parseGpsText(raw: unknown): ParseCoordsResult {
   const text = String(raw ?? "").trim();
   if (!text) {
     return { ok: false, error: "GPS text is empty", code: "empty" };
   }
+
+  if (/[,;]/.test(text)) {
+    const parts = text
+      .split(/[,;]/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      return parseCoordinatePair(parts[0], parts[1]);
+    }
+  }
+
+  const latHemi = text.match(/([+-]?\d[\d\s°'"″.]*[NnSs])/);
+  const lngHemi = text.match(/([+-]?\d[\d\s°'"″.]*[EeWwOo])/);
+  if (latHemi && lngHemi) {
+    return parseCoordinatePair(latHemi[1].trim(), lngHemi[1].trim());
+  }
+
   const cleaned = text.replace(/°/g, " ").replace(/\s+/g, " ").trim();
   const parts = cleaned.split(/[,;\s]+/).filter(Boolean);
   if (parts.length < 2) {
@@ -1718,7 +2029,8 @@ type QuestionnaireGpsWrite =
 function questionnaireGpsWrite(
   contentJson: Record<string, unknown> | null | undefined,
 ): QuestionnaireGpsWrite {
-  if (!contentJson || !("propertyGps" in contentJson)) return { action: "keep" };
+  if (!contentJson || !("propertyGps" in contentJson))
+    return { action: "keep" };
   const raw = contentJson.propertyGps;
   if (raw == null || String(raw).trim() === "") return { action: "clear" };
   const parsed = parseGpsText(raw);
@@ -2051,6 +2363,22 @@ const CASE_STATUS_FLOW: CaseStatus[] = [
   "completed",
 ];
 
+const CASE_PIPELINE_STATUSES: CaseStatus[] = [
+  ...CASE_STATUS_FLOW,
+  "on_hold",
+  "cancelled",
+];
+
+function casePipelineVisibleStatusesInline(
+  statusFilter?: string,
+): CaseStatus[] {
+  const raw = String(statusFilter || "").trim();
+  if (raw && (CASE_PIPELINE_STATUSES as readonly string[]).includes(raw)) {
+    return [raw as CaseStatus];
+  }
+  return [...CASE_PIPELINE_STATUSES];
+}
+
 function isTerminalStatus(status: CaseStatus): boolean {
   return status === "completed" || status === "cancelled";
 }
@@ -2081,6 +2409,49 @@ function resolveHoldResumeStatus(
     }
   }
   return "intake";
+}
+
+// ---- inlined from shared/holdResumeRules.ts ----
+function latestHoldFromStatusByCaseInline(
+  rows: Array<{ caseId: number; fromStatus: string }>,
+): Map<number, CaseStatus> {
+  const map = new Map<number, CaseStatus>();
+  for (const row of rows) {
+    if (!map.has(row.caseId)) {
+      map.set(row.caseId, row.fromStatus as CaseStatus);
+    }
+  }
+  return map;
+}
+
+function latestFlowToStatusByCaseInline(
+  rows: Array<{ caseId: number; toStatus: string }>,
+): Map<number, CaseStatus> {
+  const map = new Map<number, CaseStatus>();
+  for (const row of rows) {
+    if (!map.has(row.caseId)) {
+      map.set(row.caseId, row.toStatus as CaseStatus);
+    }
+  }
+  return map;
+}
+
+function buildHoldResumeStatusByCaseInline(
+  onHoldCaseIds: readonly number[],
+  holdFromByCase: ReadonlyMap<number, CaseStatus>,
+  flowToByCase: ReadonlyMap<number, CaseStatus>,
+): Map<number, CaseStatus> {
+  const result = new Map<number, CaseStatus>();
+  for (const cid of onHoldCaseIds) {
+    result.set(
+      cid,
+      resolveHoldResumeStatus(
+        holdFromByCase.get(cid) ?? null,
+        flowToByCase.get(cid) ?? null,
+      ),
+    );
+  }
+  return result;
 }
 
 /** Allowed next statuses from current. */
@@ -2702,6 +3073,44 @@ function canCompleteReviewStage(
   return allowed.includes(role as UserRole);
 }
 
+const ALL_REVIEW_STAGES_INLINE: ReviewStage[] = [
+  "grammar_qa",
+  "technical_director",
+  "internal_legal",
+  "external_law_firm",
+];
+
+function actionableReviewStagesForRoleInline(
+  role: string | null | undefined,
+): ReviewStage[] {
+  if (!canViewCaseSection(role, "reviews")) return [];
+  return ALL_REVIEW_STAGES_INLINE.filter((stage) =>
+    canCompleteReviewStage(role, stage),
+  );
+}
+
+// ---- inlined from shared/reviewQueueRules.ts ----
+function buildReviewStageFilterSql(
+  role: string | null | undefined,
+  rrAlias = "rr",
+): { sql: string; params: ReviewStage[] } {
+  const stages = actionableReviewStagesForRoleInline(role);
+  if (stages.length === 0) return { sql: " AND 1=0", params: [] };
+  return {
+    sql: ` AND ${rrAlias}.review_stage IN (${stages.map(() => "?").join(", ")})`,
+    params: stages,
+  };
+}
+
+function reviewCompleteNotificationTypeInline(
+  stage: string,
+): "qa_requested" | "general" {
+  if (stage === "grammar_qa" || stage === "technical_director") {
+    return "qa_requested";
+  }
+  return "general";
+}
+
 /**
  * Staff must not approve reports out of external_review — that is law-firm review.
  * Admin may override for operational recovery.
@@ -3304,6 +3713,68 @@ function mergeEvidenceCategories(
   return [...set];
 }
 
+function hasPropertyGpsFromCoordsInline(
+  lat: unknown,
+  lng: unknown,
+): boolean {
+  return (
+    lat != null &&
+    lng != null &&
+    String(lat).trim() !== "" &&
+    String(lng).trim() !== ""
+  );
+}
+
+type ProcessGateInputSourceInline = {
+  documentCategories: readonly string[];
+  evidenceCategories?: readonly string[];
+  measurementTypes?: readonly string[];
+  hasPrimaryExpert: boolean;
+  questionnaireStatus?: string | null;
+  questionnaireContentJson?: unknown;
+  streetViewValidatedAt?: unknown;
+  propertyLat?: unknown;
+  propertyLng?: unknown;
+  involvesFatality?: boolean;
+  inspectionComplete: boolean;
+  reportStatus?: string | null;
+  logisticsReady: boolean;
+  invoices: readonly FinanceInvoiceInput[];
+};
+
+function buildProcessGateInputFromSourceInline(
+  source: ProcessGateInputSourceInline,
+): ProcessGateInput {
+  const documentCategories = source.documentCategories;
+  return {
+    documentCategories,
+    evidenceCategories: mergeEvidenceCategories(
+      source.evidenceCategories ?? [],
+      source.measurementTypes ?? [],
+    ),
+    hasPrimaryExpert: source.hasPrimaryExpert,
+    questionnaireStatus: source.questionnaireStatus ?? null,
+    hasStreetView:
+      Boolean(source.streetViewValidatedAt) ||
+      questionnaireHasStreetView(source.questionnaireContentJson),
+    hasPropertyGps: hasPropertyGpsFromCoordsInline(
+      source.propertyLat,
+      source.propertyLng,
+    ),
+    plaintiffQuestionnairePresent: documentCategories.includes(
+      "plaintiff_questionnaire",
+    ),
+    protestaFiled: documentCategories.includes("protesta"),
+    inspectionComplete: source.inspectionComplete,
+    reportStatus: source.reportStatus ?? null,
+    ratificationPresent: documentCategories.includes("ratification"),
+    courtFilingPresent: documentCategories.includes("court_filing"),
+    involvesFatality: Boolean(source.involvesFatality),
+    logisticsReady: source.logisticsReady,
+    hasUnpaidInvoices: hasBlockingFinanceForCompletion(source.invoices),
+  };
+}
+
 const UNPAID_INVOICE_STATUSES = [
   "issued",
   "partially_paid",
@@ -3340,6 +3811,8 @@ function hasBlockingFinanceForCompletion(
 
 type ListadoProgress = {
   processPoint: ProcessPointId | null;
+  gatesOk: boolean;
+  holdResumeStatus?: CaseStatus | null;
   primaryExpert: boolean;
   intakeComplete: boolean;
   questionnaireApproved: boolean;
@@ -3380,6 +3853,7 @@ function buildListadoProgress(opts: {
   inspectionDeadlineAt?: string | null;
   input: ProcessGateInput;
   invoices?: readonly FinanceInvoiceInput[];
+  holdResumeStatus?: CaseStatus | null;
 }): ListadoProgress {
   const input = opts.input;
   const invoices = opts.invoices ?? [];
@@ -3393,6 +3867,10 @@ function buildListadoProgress(opts: {
     (i) => i.invoiceType === "final" && i.status === "paid",
   );
   const intake = evaluateProcessGates(1, input).ok;
+  const currentPoint = processPointForStatus(opts.status);
+  const gatesOk = currentPoint
+    ? evaluateProcessGates(currentPoint, input).ok
+    : true;
   const reportInternal =
     input.reportStatus === "approved_internal" ||
     input.reportStatus === "external_review" ||
@@ -3409,7 +3887,9 @@ function buildListadoProgress(opts: {
     input.documentCategories.includes("court_filing"),
   );
   return {
-    processPoint: processPointForStatus(opts.status),
+    processPoint: currentPoint,
+    gatesOk,
+    holdResumeStatus: opts.holdResumeStatus ?? null,
     primaryExpert: Boolean(input.hasPrimaryExpert),
     intakeComplete: intake,
     questionnaireApproved: qApproved,
@@ -3645,16 +4125,17 @@ function assertProcessAlignsWithCaseFlow(): {
  */
 
 const EMAIL_BRAND = {
-  bg: "#eef2f8",
+  bg: "#f7f4ee",
   surface: "#ffffff",
-  header: "#0b1b33",
-  primary: "#0b4ea2",
-  accent: "#2979ff",
+  header: "#1A1408",
+  primary: "#E6AB40",
+  accent: "#C9922A",
+  onPrimary: "#0F172A",
   text: "#0e1b31",
   muted: "#475569",
   dim: "#64748b",
-  border: "#dbe3f0",
-  codeBg: "#f1f5f9",
+  border: "#ebe4d6",
+  codeBg: "#fbf5e8",
   success: "#15803d",
   successBg: "#f0fdf4",
   warn: "#b45309",
@@ -3719,6 +4200,7 @@ type EmailStrings = {
     intro: string;
     caseLabel: string;
     roleLabel: string;
+    deliveryDueLabel: string;
     cta: string;
   };
   caseStatus: {
@@ -3811,6 +4293,7 @@ const EMAIL_STRINGS_ES: EmailStrings = {
       "Te asignaron al expediente siguiente. Entra al portal para revisar el detalle.",
     caseLabel: "Expediente",
     roleLabel: "Asignación",
+    deliveryDueLabel: "Entrega antes de",
     cta: "Ver expediente",
   },
   caseStatus: {
@@ -3904,6 +4387,7 @@ const EMAIL_STRINGS_EN: EmailStrings = {
       "You were assigned to the following case. Open the portal to review details.",
     caseLabel: "Case",
     roleLabel: "Assignment",
+    deliveryDueLabel: "Deliver by",
     cta: "View case",
   },
   caseStatus: {
@@ -3962,13 +4446,18 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function brandMarkHtml(): string {
-  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0">
+function brandMarkHtml(appUrl: string): string {
+  const assetBase = resolveEmailAssetBaseUrlInline(appUrl, {
+    publicAssetOrigin:
+      process.env.EMAIL_ASSET_BASE_URL || process.env.PUBLIC_APP_URL,
+  });
+  const logoSrc = `${assetBase}/brand/logo-full.png`;
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
   <tr>
-    <td width="36" height="36" align="center" valign="middle" bgcolor="${EMAIL_BRAND.accent}" style="width:36px;height:36px;border-radius:10px;background:${EMAIL_BRAND.accent};">
-      <span style="display:inline-block;width:12px;height:12px;border:2.5px solid #fff;transform:rotate(45deg);"></span>
+    <td align="center" style="text-align:center;">
+      <img src="${escapeHtml(logoSrc)}" width="140" height="140" alt="DELACHE" style="display:block;margin:0 auto;width:140px;max-width:56%;height:auto;border:0;outline:none;text-decoration:none;background:transparent;" />
+      <div style="margin-top:10px;font-size:18px;font-weight:800;letter-spacing:0.18em;color:${EMAIL_BRAND.primary};font-family:${EMAIL_BRAND.fontFamily};">DELACHE</div>
     </td>
-    <td style="padding-left:12px;font-size:18px;font-weight:800;letter-spacing:0.18em;color:#fff;font-family:${EMAIL_BRAND.fontFamily};">DELACHE</td>
   </tr>
 </table>`;
 }
@@ -3976,8 +4465,8 @@ function brandMarkHtml(): string {
 function emailButton(url: string, label: string): string {
   return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0 8px;">
   <tr>
-    <td align="center" bgcolor="${EMAIL_BRAND.accent}" style="border-radius:12px;background:linear-gradient(135deg,${EMAIL_BRAND.accent} 0%,${EMAIL_BRAND.primary} 100%);">
-      <a href="${escapeHtml(url)}" target="_blank" style="display:inline-block;padding:14px 28px;color:#ffffff;font-weight:700;font-size:15px;text-decoration:none;border-radius:12px;font-family:${EMAIL_BRAND.fontFamily};">${escapeHtml(label)}</a>
+    <td align="center" bgcolor="${EMAIL_BRAND.primary}" style="border-radius:12px;background:linear-gradient(135deg,${EMAIL_BRAND.primary} 0%,${EMAIL_BRAND.accent} 100%);">
+      <a href="${escapeHtml(url)}" target="_blank" style="display:inline-block;padding:14px 28px;color:${EMAIL_BRAND.onPrimary};font-weight:700;font-size:15px;text-decoration:none;border-radius:12px;font-family:${EMAIL_BRAND.fontFamily};">${escapeHtml(label)}</a>
     </td>
   </tr>
 </table>`;
@@ -4104,9 +4593,9 @@ function emailShell(opts: BaseEmailOptions): string {
       <td align="center" valign="top" style="padding:36px 16px;">
         <table role="presentation" class="email-container" width="560" cellspacing="0" cellpadding="0" border="0" bgcolor="${EMAIL_BRAND.surface}" style="width:560px;max-width:560px;border-radius:16px;border:1px solid ${EMAIL_BRAND.border};overflow:hidden;box-shadow:0 10px 30px rgba(11,30,61,0.06);">
           <tr>
-            <td class="email-header" bgcolor="${EMAIL_BRAND.header}" style="padding:28px 32px 22px;background:${EMAIL_BRAND.header};border-bottom:3px solid ${EMAIL_BRAND.accent};">
-              ${brandMarkHtml()}
-              <h1 style="margin:18px 0 0;font-size:24px;font-weight:800;color:#ffffff;line-height:1.3;">${escapeHtml(title)}</h1>
+            <td class="email-header" bgcolor="${EMAIL_BRAND.header}" style="padding:28px 32px 22px;background:${EMAIL_BRAND.header};border-bottom:3px solid ${EMAIL_BRAND.accent};text-align:center;">
+              ${brandMarkHtml(appUrl)}
+              <h1 style="margin:18px 0 0;font-size:24px;font-weight:800;color:#ffffff;line-height:1.3;text-align:center;">${escapeHtml(title)}</h1>
             </td>
           </tr>
           <tr>
@@ -4170,11 +4659,13 @@ function buildOtpEmail(opts: {
 function buildInviteStaffEmail(opts: {
   locale: AppLocale;
   firstName: string;
-  roleLabel: string;
+  /** Staff role key (e.g. expert) — localized for the email locale */
+  role: string;
   appUrl: string;
   resend?: boolean;
 }): EmailPayload {
   const s = emailStrings(opts.locale);
+  const roleLabel = emailStaffRoleLabelInline(opts.role, opts.locale);
   const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/portal/login`;
   const banner =
     opts.locale === "es"
@@ -4188,7 +4679,7 @@ function buildInviteStaffEmail(opts: {
     ${highlightBanner(banner, "accent")}
     <p style="margin:0 0 12px;font-size:17px;font-weight:600;">${escapeHtml(interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName }))}</p>
     <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.inviteStaff.intro)}</p>
-    ${metaCard([{ label: s.inviteStaff.roleLabel, value: opts.roleLabel }])}
+    ${metaCard([{ label: s.inviteStaff.roleLabel, value: roleLabel }])}
     ${stepsList([...s.inviteStaff.steps])}`;
 
   return {
@@ -4205,7 +4696,7 @@ function buildInviteStaffEmail(opts: {
       cta: { label: s.inviteStaff.cta, url: loginUrl },
       appUrl: opts.appUrl,
     }),
-    text: `${interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName })}\n\n${s.inviteStaff.intro}\n\n${s.inviteStaff.roleLabel}: ${opts.roleLabel}\n\n${loginUrl}`,
+    text: `${interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName })}\n\n${s.inviteStaff.intro}\n\n${s.inviteStaff.roleLabel}: ${roleLabel}\n\n${loginUrl}`,
   };
 }
 
@@ -4259,21 +4750,39 @@ function buildAssignmentEmail(opts: {
   firstName: string;
   caseNumber: string;
   caseTitle: string;
-  roleLabel: string;
+  /** Assignment role key (e.g. expert) — localized for the email locale */
+  role: string;
   caseUrl: string;
   appUrl: string;
+  deliveryDueAt?: Date | null;
 }): EmailPayload {
   const s = emailStrings(opts.locale);
+  const roleLabel = emailAssignmentRoleLabelInline(opts.role, opts.locale);
+  const meta: { label: string; value: string }[] = [
+    {
+      label: s.assignment.caseLabel,
+      value: `${opts.caseNumber} — ${opts.caseTitle}`,
+    },
+    { label: s.assignment.roleLabel, value: roleLabel },
+  ];
+  if (opts.deliveryDueAt && opts.role === "expert") {
+    meta.push({
+      label: s.assignment.deliveryDueLabel,
+      value: opts.deliveryDueAt.toLocaleDateString(
+        opts.locale === "en" ? "en-US" : "es-MX",
+        { weekday: "short", year: "numeric", month: "short", day: "numeric" },
+      ),
+    });
+  }
   const bodyHtml = `
     <p style="margin:0 0 12px;font-size:17px;">${escapeHtml(interpolateEmail(s.assignment.greeting, { name: opts.firstName }))}</p>
     <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.assignment.intro)}</p>
-    ${metaCard([
-      {
-        label: s.assignment.caseLabel,
-        value: `${opts.caseNumber} — ${opts.caseTitle}`,
-      },
-      { label: s.assignment.roleLabel, value: opts.roleLabel },
-    ])}`;
+    ${metaCard(meta)}`;
+
+  const dueText =
+    opts.deliveryDueAt && opts.role === "expert"
+      ? `\n${s.assignment.deliveryDueLabel}: ${meta[meta.length - 1]?.value ?? ""}`
+      : "";
 
   return {
     subject: interpolateEmail(s.subjects.assignment, {
@@ -4287,7 +4796,7 @@ function buildAssignmentEmail(opts: {
       cta: { label: s.assignment.cta, url: opts.caseUrl },
       appUrl: opts.appUrl,
     }),
-    text: `${interpolateEmail(s.assignment.greeting, { name: opts.firstName })}\n\n${s.assignment.intro}\n\n${opts.caseNumber} — ${opts.caseTitle}\n${opts.roleLabel}\n\n${opts.caseUrl}`,
+    text: `${interpolateEmail(s.assignment.greeting, { name: opts.firstName })}\n\n${s.assignment.intro}\n\n${opts.caseNumber} — ${opts.caseTitle}\n${roleLabel}${dueText}\n\n${opts.caseUrl}`,
   };
 }
 
@@ -4465,40 +4974,8 @@ function buildOpsNotificationEmail(opts: {
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const OTP_TTL_MIN = Number(process.env.OTP_TTL_MINUTES || 10);
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
-
-// ---- inlined from shared/appUrlRules.ts ----
-function normalizeAppOrigin(raw: string): string {
-  return raw.trim().replace(/\/$/, "");
-}
-
-function isLocalhostAppUrl(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host === "localhost" || host === "127.0.0.1" || host === "::1";
-  } catch {
-    return /localhost|127\.0\.0\.1/i.test(url);
-  }
-}
-
-function withHttpsAppOrigin(hostOrUrl: string): string {
-  const trimmed = hostOrUrl.trim().replace(/\/$/, "");
-  if (/^https?:\/\//i.test(trimmed)) return normalizeAppOrigin(trimmed);
-  return normalizeAppOrigin(`https://${trimmed}`);
-}
-
-function isProductionRuntime(env: {
-  VERCEL_ENV?: string | null;
-  NODE_ENV?: string | null;
-}): boolean {
-  return (
-    env.VERCEL_ENV === "production" ||
-    (env.NODE_ENV === "production" &&
-      env.VERCEL_ENV !== "preview" &&
-      env.VERCEL_ENV !== "development")
-  );
-}
-
-function resolvePublicAppUrl(env: {
+/** Inlined from shared/appUrlRules.ts — keep in sync (no runtime import from shared/). */
+function resolvePublicAppUrlInline(env: {
   APP_URL?: string | null;
   PUBLIC_APP_URL?: string | null;
   VITE_PUBLIC_APP_URL?: string | null;
@@ -4507,36 +4984,252 @@ function resolvePublicAppUrl(env: {
   VERCEL_ENV?: string | null;
   NODE_ENV?: string | null;
 }): string {
+  const normalize = (raw: string) => raw.trim().replace(/\/$/, "");
+  const withHttps = (hostOrUrl: string) => {
+    const trimmed = hostOrUrl.trim().replace(/\/$/, "");
+    if (/^https?:\/\//i.test(trimmed)) return normalize(trimmed);
+    return normalize(`https://${trimmed}`);
+  };
+  const isLocal = (url: string) => {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      return host === "localhost" || host === "127.0.0.1" || host === "::1";
+    } catch {
+      return /localhost|127\.0\.0\.1/i.test(url);
+    }
+  };
+  const skipLocal =
+    env.VERCEL_ENV === "production" ||
+    env.VERCEL_ENV === "preview" ||
+    (env.NODE_ENV === "production" &&
+      env.VERCEL_ENV !== "preview" &&
+      env.VERCEL_ENV !== "development");
   for (const candidate of [
     env.APP_URL,
     env.PUBLIC_APP_URL,
     env.VITE_PUBLIC_APP_URL,
   ]) {
     if (typeof candidate === "string" && candidate.trim()) {
-      return withHttpsAppOrigin(candidate);
+      const origin = withHttps(candidate);
+      if (skipLocal && isLocal(origin)) continue;
+      return origin;
     }
   }
-  if (
-    typeof env.VERCEL_PROJECT_PRODUCTION_URL === "string" &&
-    env.VERCEL_PROJECT_PRODUCTION_URL.trim()
-  ) {
-    return withHttpsAppOrigin(env.VERCEL_PROJECT_PRODUCTION_URL);
+  if (env.VERCEL_PROJECT_PRODUCTION_URL?.trim()) {
+    return withHttps(env.VERCEL_PROJECT_PRODUCTION_URL);
   }
-  if (typeof env.VERCEL_URL === "string" && env.VERCEL_URL.trim()) {
-    return withHttpsAppOrigin(env.VERCEL_URL);
+  if (env.VERCEL_URL?.trim()) {
+    return withHttps(env.VERCEL_URL);
   }
-  return normalizeAppOrigin("http://localhost:8080");
+  return normalize("http://localhost:8080");
 }
 
-function isUnsafePublicAppUrlForEmail(
-  url: string,
-  env: { VERCEL_ENV?: string | null; NODE_ENV?: string | null },
-): boolean {
-  if (!isLocalhostAppUrl(url)) return false;
-  return isProductionRuntime(env) || env.VERCEL_ENV === "preview";
+/** Inlined from shared/appUrlRules.ts — email logo/asset origin (no shared runtime import). */
+function resolveEmailAssetBaseUrlInline(
+  appUrl: string,
+  opts: { publicAssetOrigin?: string | null } = {},
+): string {
+  const normalize = (raw: string) => raw.trim().replace(/\/$/, "");
+  const withHttps = (hostOrUrl: string) => {
+    const trimmed = hostOrUrl.trim().replace(/\/$/, "");
+    if (/^https?:\/\//i.test(trimmed)) return normalize(trimmed);
+    return normalize(`https://${trimmed}`);
+  };
+  const isLocal = (url: string) => {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      return host === "localhost" || host === "127.0.0.1" || host === "::1";
+    } catch {
+      return /localhost|127\.0\.0\.1/i.test(url);
+    }
+  };
+  const origin = normalize(appUrl);
+  if (!isLocal(origin)) return origin;
+  const override =
+    typeof opts.publicAssetOrigin === "string"
+      ? opts.publicAssetOrigin.trim()
+      : "";
+  if (override) {
+    const resolved = withHttps(override);
+    if (!isLocal(resolved)) return resolved;
+  }
+  return "https://www.delache.mx";
 }
 
-const APP_URL = resolvePublicAppUrl({
+/** Inlined from shared/emailLabels.ts — keep in sync. */
+function emailStaffRoleLabelInline(
+  role: string,
+  locale: AppLocale = "es",
+): string {
+  if (!role?.trim()) return role;
+  const key = role.trim().toLowerCase();
+  const es: Record<string, string> = {
+    admin: "Admin",
+    case_coordinator: "Coordinador",
+    expert: "Perito",
+    legal: "Legal",
+    logistics: "Logística",
+    accountant: "Contador",
+    law_firm_user: "Despacho",
+  };
+  const en: Record<string, string> = {
+    admin: "Admin",
+    case_coordinator: "Coordinator",
+    expert: "Expert",
+    legal: "Legal",
+    logistics: "Logistics",
+    accountant: "Accountant",
+    law_firm_user: "Law firm",
+  };
+  const map = locale === "en" ? en : es;
+  return map[key] ?? es[key] ?? role.trim();
+}
+
+function emailAssignmentRoleLabelInline(
+  role: string,
+  locale: AppLocale = "es",
+): string {
+  if (!role?.trim()) return role;
+  const key = role.trim().toLowerCase();
+  const es: Record<string, string> = {
+    expert: "Perito",
+    coordinator: "Coordinador",
+    legal_reviewer: "Revisor legal",
+    logistics: "Logística",
+    accountant: "Contador",
+    qa: "QA",
+    technical_director: "Director técnico",
+    observer: "Observador",
+  };
+  const en: Record<string, string> = {
+    expert: "Expert",
+    coordinator: "Coordinator",
+    legal_reviewer: "Legal reviewer",
+    logistics: "Logistics",
+    accountant: "Accountant",
+    qa: "QA",
+    technical_director: "Technical director",
+    observer: "Observer",
+  };
+  const map = locale === "en" ? en : es;
+  return map[key] ?? es[key] ?? role.trim();
+}
+
+/** Inlined from shared/notificationCopy.ts — keep in sync. */
+function assignmentNotificationCopyInline(opts: {
+  locale: AppLocale;
+  caseNumber: string;
+  role: string;
+  deliveryDueAt?: Date | null;
+}): { title: string; body: string } {
+  const roleLabel = emailAssignmentRoleLabelInline(opts.role, opts.locale);
+  const dueLine =
+    opts.deliveryDueAt && opts.role === "expert"
+      ? opts.deliveryDueAt.toLocaleDateString(
+          opts.locale === "en" ? "en-US" : "es-MX",
+          {
+            weekday: "short",
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          },
+        )
+      : null;
+  if (opts.locale === "en") {
+    return {
+      title: `Assigned to ${opts.caseNumber}`,
+      body: dueLine
+        ? `You were assigned as ${roleLabel} on case ${opts.caseNumber}. Deliver by ${dueLine}.`
+        : `You were assigned as ${roleLabel} on case ${opts.caseNumber}.`,
+    };
+  }
+  return {
+    title: `Asignado a ${opts.caseNumber}`,
+    body: dueLine
+      ? `Te asignaron como ${roleLabel} en el expediente ${opts.caseNumber}. Entrega antes del ${dueLine}.`
+      : `Te asignaron como ${roleLabel} en el expediente ${opts.caseNumber}.`,
+  };
+}
+
+function expertDeliverySetNotificationCopyInline(opts: {
+  locale: AppLocale;
+  caseNumber: string;
+  dueAt: Date;
+}): { title: string; body: string } {
+  const due = opts.dueAt.toLocaleDateString(
+    opts.locale === "en" ? "en-US" : "es-MX",
+    {
+      weekday: "short",
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    },
+  );
+  if (opts.locale === "en") {
+    return {
+      title: `Delivery date · ${opts.caseNumber}`,
+      body: `Your delivery deadline for case ${opts.caseNumber} is ${due}.`,
+    };
+  }
+  return {
+    title: `Fecha de entrega · ${opts.caseNumber}`,
+    body: `Tu fecha de entrega para el expediente ${opts.caseNumber} es el ${due}.`,
+  };
+}
+
+function expertDeliveryClearNotificationCopyInline(opts: {
+  locale: AppLocale;
+  caseNumber: string;
+}): { title: string; body: string } {
+  if (opts.locale === "en") {
+    return {
+      title: `Delivery date cleared · ${opts.caseNumber}`,
+      body: `The delivery deadline for case ${opts.caseNumber} was removed.`,
+    };
+  }
+  return {
+    title: `Fecha de entrega eliminada · ${opts.caseNumber}`,
+    body: `Se eliminó la fecha de entrega del expediente ${opts.caseNumber}.`,
+  };
+}
+
+function parseExpertDeliveryDueDateInputInline(
+  raw: unknown,
+):
+  | { ok: true; dueAt: Date }
+  | { ok: false; error: string } {
+  if (raw == null || raw === "") {
+    return { ok: false, error: "deliveryDueAt is required" };
+  }
+  const text = String(raw).trim();
+  if (!text) {
+    return { ok: false, error: "deliveryDueAt is required" };
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const dueAt = new Date(`${text}T23:59:59`);
+    if (Number.isNaN(dueAt.getTime())) {
+      return { ok: false, error: "deliveryDueAt must be a valid date" };
+    }
+    return { ok: true, dueAt };
+  }
+  const dueAt = new Date(text);
+  if (Number.isNaN(dueAt.getTime())) {
+    return { ok: false, error: "deliveryDueAt must be a valid date" };
+  }
+  return { ok: true, dueAt };
+}
+
+const EXPERT_DELIVERY_DEADLINE_TYPE = "expert_delivery";
+const EXPERT_DELIVERY_DEADLINE_TITLE = "Expert case delivery";
+const EXPERT_DELIVERY_DEADLINE_TITLE_ES = "Entrega del expediente (perito)";
+
+function expertDeliveryDeadlineTitleInline(locale: AppLocale): string {
+  return locale === "en"
+    ? EXPERT_DELIVERY_DEADLINE_TITLE
+    : EXPERT_DELIVERY_DEADLINE_TITLE_ES;
+}
+
+const APP_URL = resolvePublicAppUrlInline({
   APP_URL: process.env.APP_URL,
   PUBLIC_APP_URL: process.env.PUBLIC_APP_URL,
   VITE_PUBLIC_APP_URL: process.env.VITE_PUBLIC_APP_URL,
@@ -4545,37 +5238,13 @@ const APP_URL = resolvePublicAppUrl({
   VERCEL_ENV: process.env.VERCEL_ENV,
   NODE_ENV: process.env.NODE_ENV,
 });
-
-if (
-  isUnsafePublicAppUrlForEmail(APP_URL, {
-    VERCEL_ENV: process.env.VERCEL_ENV,
-    NODE_ENV: process.env.NODE_ENV,
-  })
-) {
-  apiLogger.error(
-    "Public APP_URL resolves to localhost on a deployed environment. Set APP_URL or VITE_PUBLIC_APP_URL in Vercel to your production domain (e.g. https://app.delache.mx). Invite/OTP emails will refuse to send until fixed.",
-    { APP_URL },
-  );
-}
-
-function assertSafeAppUrlForOutboundEmail():
-  | { ok: true }
-  | { ok: false; error: string } {
-  if (
-    !isUnsafePublicAppUrlForEmail(APP_URL, {
-      VERCEL_ENV: process.env.VERCEL_ENV,
-      NODE_ENV: process.env.NODE_ENV,
-    })
-  ) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    error:
-      "App URL is localhost — set APP_URL (or VITE_PUBLIC_APP_URL) in Vercel to your public https domain before sending emails",
-  };
-}
-
+/** Public origin for email CTAs/links (never localhost — clients cannot open it). */
+const EMAIL_APP_URL = resolveEmailAssetBaseUrlInline(APP_URL, {
+  publicAssetOrigin:
+    process.env.EMAIL_ASSET_BASE_URL ||
+    process.env.PUBLIC_APP_URL ||
+    process.env.APP_URL,
+});
 const FROM_EMAIL =
   process.env.SMTP_FROM || "DELACHE <no-reply@disruptinglabs.com>";
 
@@ -5388,7 +6057,7 @@ async function createNotification(opts: {
       body: opts.body,
       caseNumber: opts.caseNumber,
       ctaUrl: opts.caseUrl,
-      appUrl: APP_URL,
+      appUrl: EMAIL_APP_URL,
     });
   }
 
@@ -5586,6 +6255,111 @@ async function insertCaseDocumentUpload(
   };
 }
 
+async function insertCaseDocumentFromExistingBlob(opts: {
+  caseId: number;
+  title: string;
+  fileName: string;
+  contentType: string;
+  storageKey: string;
+  fileSizeBytes: number;
+  category: DocumentCategory;
+  uploadedByStaffId: number | null;
+  uploadedByLawFirmUserId?: number | null;
+}): Promise<CaseDocumentItem> {
+  const mimeType = opts.contentType || "application/octet-stream";
+  let ocrStatus = initialOcrStatusForMime(mimeType);
+  let ocrText: string | null = null;
+  let ocrProcessedAt: Date | null = null;
+  if (
+    ocrStatus === "pending" &&
+    !shouldUseDirectBlobUpload(opts.fileSizeBytes)
+  ) {
+    const buffer = await fetchBlobBytes(opts.storageKey);
+    if (buffer) {
+      const ocr = await resolveUploadOcrFields(mimeType, buffer);
+      ocrStatus = ocr.ocrStatus;
+      ocrText = ocr.ocrText;
+      ocrProcessedAt = ocr.ocrProcessedAt;
+    }
+  }
+
+  const db = getPool();
+  const docUuid = generatePublicUuid();
+  const [docResult] = await db.query<ResultSetHeader>(
+    `INSERT INTO documents
+       (public_uuid, case_id, category, title, current_version, status,
+        uploaded_by, uploaded_by_law_firm_user_id)
+     VALUES (?, ?, ?, ?, 1, 'uploaded', ?, ?)`,
+    [
+      docUuid,
+      opts.caseId,
+      opts.category,
+      opts.title,
+      opts.uploadedByStaffId,
+      opts.uploadedByLawFirmUserId ?? null,
+    ],
+  );
+  await db.query<ResultSetHeader>(
+    `INSERT INTO document_versions
+       (document_id, version_number, storage_key, file_name, mime_type, file_size_bytes,
+        uploaded_by, ocr_text, ocr_status, ocr_processed_at)
+     VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      docResult.insertId,
+      opts.storageKey,
+      opts.fileName,
+      mimeType,
+      opts.fileSizeBytes,
+      opts.uploadedByStaffId,
+      ocrText,
+      ocrStatus,
+      ocrProcessedAt ? toMysqlDateTimeUtc(ocrProcessedAt) : null,
+    ],
+  );
+
+  return {
+    id: docResult.insertId,
+    publicUuid: docUuid,
+    category: opts.category,
+    title: opts.title,
+    status: "uploaded",
+    currentVersion: 1,
+    fileName: opts.fileName,
+    mimeType,
+    storageKey: await signBlobUrlForClient(opts.storageKey),
+    fileSizeBytes: opts.fileSizeBytes,
+    ocrStatus,
+    ocrText,
+    ocrProcessedAt: ocrProcessedAt ? ocrProcessedAt.toISOString() : null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function inspectPrivateBlob(
+  storageKey: string,
+  claimedSize: number,
+): Promise<
+  | { ok: true; size: number }
+  | { ok: false; status: number; error: string }
+> {
+  try {
+    const meta = await head(storageKey, {
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+    });
+    const size = Number(meta.size);
+    if (!Number.isFinite(size) || size <= 0 || size > DMS_MAX_FILE_BYTES) {
+      return { ok: false, status: 400, error: "Invalid blob size" };
+    }
+    if (claimedSize > 0 && Math.abs(size - claimedSize) > 512) {
+      return { ok: false, status: 400, error: "Blob size does not match" };
+    }
+    return { ok: true, size };
+  } catch (err) {
+    apiLogger.warn("blob head failed", err);
+    return { ok: false, status: 400, error: "Blob not found" };
+  }
+}
+
 async function loadEvidenceChecklistForCase(
   caseId: number,
 ): Promise<EvidenceChecklistStatus> {
@@ -5611,6 +6385,132 @@ async function findCaseByPublicUuid(
     [publicUuid],
   );
   return rows[0] || null;
+}
+
+/** Inlined from shared/caseVisibilityRules.ts — keep in sync. */
+function canListAllStaffCasesInline(
+  role: string | null | undefined,
+): boolean {
+  return role === "admin" || role === "case_coordinator";
+}
+
+function canCreateStaffCaseInline(role: string | null | undefined): boolean {
+  return role === "admin" || role === "case_coordinator";
+}
+
+function staffRoleToAssignmentRolesInline(
+  role: string | null | undefined,
+): readonly string[] {
+  switch (role) {
+    case "expert":
+      return ["expert"];
+    case "case_coordinator":
+      return ["coordinator"];
+    case "legal":
+      return ["legal_reviewer"];
+    case "logistics":
+      return ["logistics"];
+    case "accountant":
+      return ["accountant"];
+    default:
+      return [];
+  }
+}
+
+function buildStaffCaseVisibilityFilterInline(opts: {
+  role: string | null | undefined;
+  userId: number;
+  casesAlias?: string;
+}): { sql: string; params: unknown[] } {
+  if (canListAllStaffCasesInline(opts.role)) {
+    return { sql: "", params: [] };
+  }
+  const alias = opts.casesAlias || "cases";
+  const roles = staffRoleToAssignmentRolesInline(opts.role);
+  if (roles.length === 0 || !Number.isFinite(opts.userId) || opts.userId <= 0) {
+    return { sql: "1 = 0", params: [] };
+  }
+  const rolePlaceholders = roles.map(() => "?").join(", ");
+  const parts: string[] = [
+    `EXISTS (
+      SELECT 1 FROM case_assignments a
+      WHERE a.case_id = ${alias}.id
+        AND a.user_id = ?
+        AND a.unassigned_at IS NULL
+        AND a.assignment_role IN (${rolePlaceholders})
+    )`,
+  ];
+  const params: unknown[] = [opts.userId, ...roles];
+  if (roles.includes("expert")) {
+    parts.push(`${alias}.assigned_expert_id = ?`);
+    params.push(opts.userId);
+  }
+  if (roles.includes("coordinator")) {
+    parts.push(`${alias}.assigned_coordinator_id = ?`);
+    params.push(opts.userId);
+  }
+  return { sql: `(${parts.join(" OR ")})`, params };
+}
+
+function canAccessStaffCaseInline(opts: {
+  role: string | null | undefined;
+  userId: number;
+  assignedExpertId?: number | null;
+  assignedCoordinatorId?: number | null;
+  activeAssignmentRoles: readonly string[];
+}): boolean {
+  if (canListAllStaffCasesInline(opts.role)) return true;
+  const needed = staffRoleToAssignmentRolesInline(opts.role);
+  if (needed.length === 0) return false;
+  if (needed.some((r) => opts.activeAssignmentRoles.includes(r))) return true;
+  if (
+    needed.includes("expert") &&
+    opts.assignedExpertId != null &&
+    Number(opts.assignedExpertId) === opts.userId
+  ) {
+    return true;
+  }
+  if (
+    needed.includes("coordinator") &&
+    opts.assignedCoordinatorId != null &&
+    Number(opts.assignedCoordinatorId) === opts.userId
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function staffCanAccessCaseRow(
+  auth: { role?: string; id: number },
+  caseRow: RowDataPacket,
+): Promise<boolean> {
+  if (!auth.role) return false;
+  if (canListAllStaffCasesInline(auth.role)) return true;
+  const db = getPool();
+  const [asg] = await db.query<RowDataPacket[]>(
+    `SELECT assignment_role FROM case_assignments
+     WHERE case_id = ? AND user_id = ? AND unassigned_at IS NULL`,
+    [caseRow.id, auth.id],
+  );
+  return canAccessStaffCaseInline({
+    role: auth.role,
+    userId: auth.id,
+    assignedExpertId: (caseRow.assigned_expert_id as number | null) ?? null,
+    assignedCoordinatorId:
+      (caseRow.assigned_coordinator_id as number | null) ?? null,
+    activeAssignmentRoles: asg.map((r) => String(r.assignment_role)),
+  });
+}
+
+/** Staff case lookup that enforces assignment visibility (404 when denied). */
+async function findStaffAccessibleCase(
+  req: AuthedRequest,
+  publicUuid: string,
+): Promise<RowDataPacket | null> {
+  const caseRow = await findCaseByPublicUuid(publicUuid);
+  if (!caseRow || !req.auth) return null;
+  if (!(await staffCanAccessCaseRow(req.auth, caseRow))) return null;
+  return caseRow;
 }
 
 function mapAssignment(row: RowDataPacket): CaseAssignmentItem {
@@ -5746,6 +6646,222 @@ async function ensureTypedDeadline(opts: {
      VALUES (?, ?, 'deadline', ?, ?, 1, ?)`,
     [generatePublicUuid(), opts.caseId, opts.title, due, opts.actorId],
   );
+}
+
+async function upsertExpertDeliveryDeadline(opts: {
+  caseId: number;
+  caseNumber: string;
+  casePublicUuid: string;
+  dueAt: Date;
+  actorId: number | null;
+  expertUserId: number | null;
+  notifyExpert?: boolean;
+}): Promise<CaseDeadlineItem> {
+  const db = getPool();
+  const title = EXPERT_DELIVERY_DEADLINE_TITLE;
+  const severity = computeDeadlineSeverity(opts.dueAt);
+  const [existing] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM case_deadlines
+     WHERE case_id = ? AND deadline_type = ? AND completed_at IS NULL
+     LIMIT 1`,
+    [opts.caseId, EXPERT_DELIVERY_DEADLINE_TYPE],
+  );
+  if (existing.length > 0) {
+    const deadlineId = Number(existing[0].id);
+    await db.query<ResultSetHeader>(
+      `UPDATE case_deadlines
+       SET title = ?, due_at = ?, business_days = NULL, severity_level = ?
+       WHERE id = ?`,
+      [title, opts.dueAt, severity, deadlineId],
+    );
+    const [linkedCal] = await db.query<RowDataPacket[]>(
+      `SELECT id FROM calendar_events
+       WHERE case_deadline_id = ?
+       LIMIT 1`,
+      [deadlineId],
+    );
+    if (linkedCal.length > 0) {
+      await db.query<ResultSetHeader>(
+        `UPDATE calendar_events
+         SET title = ?, starts_at = ?
+         WHERE case_deadline_id = ?`,
+        [title, opts.dueAt, deadlineId],
+      );
+    } else {
+      const [legacyCal] = await db.query<RowDataPacket[]>(
+        `SELECT id FROM calendar_events
+         WHERE case_id = ? AND event_type = 'deadline' AND title = ?
+         LIMIT 1`,
+        [opts.caseId, title],
+      );
+      if (legacyCal.length > 0) {
+        await db.query<ResultSetHeader>(
+          `UPDATE calendar_events
+           SET case_deadline_id = ?, title = ?, starts_at = ?
+           WHERE id = ?`,
+          [deadlineId, title, opts.dueAt, legacyCal[0].id],
+        );
+      } else {
+        await db.query<ResultSetHeader>(
+          `INSERT INTO calendar_events
+             (public_uuid, case_id, case_deadline_id, event_type, title, starts_at, all_day, created_by)
+           VALUES (?, ?, ?, 'deadline', ?, ?, 1, ?)`,
+          [
+            generatePublicUuid(),
+            opts.caseId,
+            deadlineId,
+            title,
+            opts.dueAt,
+            opts.actorId,
+          ],
+        );
+      }
+    }
+  } else {
+    const [deadlineIns] = await db.query<ResultSetHeader>(
+      `INSERT INTO case_deadlines
+         (case_id, deadline_type, title, due_at, business_days, severity_level, created_by)
+       VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+      [
+        opts.caseId,
+        EXPERT_DELIVERY_DEADLINE_TYPE,
+        title,
+        opts.dueAt,
+        severity,
+        opts.actorId,
+      ],
+    );
+    const deadlineId = deadlineIns.insertId;
+    await db.query<ResultSetHeader>(
+      `INSERT INTO calendar_events
+         (public_uuid, case_id, case_deadline_id, event_type, title, starts_at, all_day, created_by)
+       VALUES (?, ?, ?, 'deadline', ?, ?, 1, ?)`,
+      [
+        generatePublicUuid(),
+        opts.caseId,
+        deadlineId,
+        title,
+        opts.dueAt,
+        opts.actorId,
+      ],
+    );
+  }
+
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT id, deadline_type, title, due_at, business_days, severity_level, completed_at
+     FROM case_deadlines
+     WHERE case_id = ? AND deadline_type = ? AND completed_at IS NULL
+     ORDER BY id DESC
+     LIMIT 1`,
+    [opts.caseId, EXPERT_DELIVERY_DEADLINE_TYPE],
+  );
+  const deadline = mapDeadline(rows[0]);
+
+  const recipientId =
+    opts.expertUserId ??
+    (await (async () => {
+      const [caseRows] = await db.query<RowDataPacket[]>(
+        `SELECT assigned_expert_id FROM cases WHERE id = ? LIMIT 1`,
+        [opts.caseId],
+      );
+      const id = caseRows[0]?.assigned_expert_id;
+      return id != null ? Number(id) : null;
+    })());
+
+  if (opts.notifyExpert !== false && recipientId != null) {
+    const assignee = await getActorContact("staff", recipientId);
+    const locale = assignee?.locale ?? "es";
+    const copy = expertDeliverySetNotificationCopyInline({
+      locale,
+      caseNumber: opts.caseNumber,
+      dueAt: opts.dueAt,
+    });
+    await createNotification({
+      recipientActor: "staff",
+      recipientId,
+      caseId: opts.caseId,
+      type: "general",
+      title: copy.title,
+      body: copy.body,
+      caseNumber: opts.caseNumber,
+      caseUrl: `${EMAIL_APP_URL}/portal/cases/${opts.casePublicUuid}`,
+      emailTo: assignee?.email,
+    });
+  }
+
+  return deadline;
+}
+
+async function clearExpertDeliveryDeadline(opts: {
+  caseId: number;
+  caseNumber?: string;
+  casePublicUuid?: string;
+  expertUserId?: number | null;
+  notifyExpert?: boolean;
+}): Promise<void> {
+  const db = getPool();
+  const [activeRows] = await db.query<RowDataPacket[]>(
+    `SELECT id FROM case_deadlines
+     WHERE case_id = ? AND deadline_type = ? AND completed_at IS NULL`,
+    [opts.caseId, EXPERT_DELIVERY_DEADLINE_TYPE],
+  );
+  for (const row of activeRows) {
+    const deadlineId = Number(row.id);
+    await db.query<ResultSetHeader>(
+      `DELETE FROM calendar_events WHERE case_deadline_id = ?`,
+      [deadlineId],
+    );
+  }
+  await db.query<ResultSetHeader>(
+    `DELETE FROM calendar_events
+     WHERE case_id = ? AND event_type = 'deadline' AND case_deadline_id IS NULL
+       AND title IN (?, ?)`,
+    [
+      opts.caseId,
+      EXPERT_DELIVERY_DEADLINE_TITLE,
+      EXPERT_DELIVERY_DEADLINE_TITLE_ES,
+    ],
+  );
+  await db.query<ResultSetHeader>(
+    `UPDATE case_deadlines
+     SET completed_at = UTC_TIMESTAMP()
+     WHERE case_id = ? AND deadline_type = ? AND completed_at IS NULL`,
+    [opts.caseId, EXPERT_DELIVERY_DEADLINE_TYPE],
+  );
+
+  const shouldNotify = opts.notifyExpert !== false;
+  const caseNumber = opts.caseNumber?.trim();
+  const casePublicUuid = opts.casePublicUuid?.trim();
+  if (!shouldNotify || !caseNumber || !casePublicUuid) return;
+
+  let recipientId = opts.expertUserId ?? null;
+  if (recipientId == null) {
+    const [caseRows] = await db.query<RowDataPacket[]>(
+      `SELECT assigned_expert_id FROM cases WHERE id = ? LIMIT 1`,
+      [opts.caseId],
+    );
+    const id = caseRows[0]?.assigned_expert_id;
+    recipientId = id != null ? Number(id) : null;
+  }
+  if (recipientId == null) return;
+
+  const assignee = await getActorContact("staff", recipientId);
+  const locale = assignee?.locale ?? "es";
+  const copy = expertDeliveryClearNotificationCopyInline({
+    locale,
+    caseNumber,
+  });
+  await createNotification({
+    recipientActor: "staff",
+    recipientId,
+    caseId: opts.caseId,
+    type: "general",
+    title: copy.title,
+    body: copy.body,
+    caseNumber,
+    caseUrl: `${EMAIL_APP_URL}/portal/cases/${casePublicUuid}`,
+    emailTo: assignee?.email,
+  });
 }
 
 async function maybeStartTenDayClock(
@@ -5988,43 +7104,25 @@ async function loadProcessGateInput(
     REPORT_STATUS_RANK,
   );
 
-  const lat = caseRow.property_lat;
-  const lng = caseRow.property_lng;
-  const hasPropertyGps =
-    lat != null &&
-    lng != null &&
-    String(lat).trim() !== "" &&
-    String(lng).trim() !== "";
-
-  return {
+  return buildProcessGateInputFromSourceInline({
     documentCategories,
-    evidenceCategories: mergeEvidenceCategories(
-      evidenceRows.map((r) => String(r.category)),
-      measurementRows.map((r) => String(r.measurement_type)),
-    ),
+    evidenceCategories: evidenceRows.map((r) => String(r.category)),
+    measurementTypes: measurementRows.map((r) => String(r.measurement_type)),
     hasPrimaryExpert: assignmentRows.length > 0,
     questionnaireStatus: bestQuestionnaire?.status ?? null,
-    hasStreetView:
-      Boolean(caseRow.street_view_validated_at) ||
-      questionnaireHasStreetView(bestQuestionnaire?.contentJson),
-    hasPropertyGps,
-    plaintiffQuestionnairePresent: documentCategories.includes(
-      "plaintiff_questionnaire",
-    ),
-    protestaFiled: documentCategories.includes("protesta"),
+    questionnaireContentJson: bestQuestionnaire?.contentJson,
+    streetViewValidatedAt: caseRow.street_view_validated_at,
+    propertyLat: caseRow.property_lat,
+    propertyLng: caseRow.property_lng,
+    involvesFatality: caseRow.involves_fatality,
     inspectionComplete: inspectionRows.length > 0,
     reportStatus: bestReport?.status ?? null,
-    ratificationPresent: documentCategories.includes("ratification"),
-    courtFilingPresent: documentCategories.includes("court_filing"),
-    involvesFatality: Boolean(caseRow.involves_fatality),
     logisticsReady: tripRows.length > 0,
-    hasUnpaidInvoices: hasBlockingFinanceForCompletion(
-      invoiceRows.map((r) => ({
-        status: String(r.status),
-        invoiceType: String(r.invoice_type || ""),
-      })),
-    ),
-  };
+    invoices: invoiceRows.map((r) => ({
+      status: String(r.status),
+      invoiceType: String(r.invoice_type || ""),
+    })),
+  });
 }
 
 function groupIds(
@@ -6090,6 +7188,56 @@ async function attachListadoToCases(
      WHERE case_id IN (${placeholders})`,
     ids,
   );
+  const [evidenceRows] = await db.query<RowDataPacket[]>(
+    `SELECT case_id, category FROM evidence_items
+     WHERE case_id IN (${placeholders}) AND deleted_at IS NULL`,
+    ids,
+  );
+  const [measurementRows] = await db.query<RowDataPacket[]>(
+    `SELECT case_id, measurement_type FROM measurements
+     WHERE case_id IN (${placeholders})`,
+    ids,
+  );
+  const onHoldIds = cases
+    .filter((c) => c.status === "on_hold")
+    .map((c) => c.id);
+  const holdResumeByCaseId = new Map<number, CaseStatus>();
+  if (onHoldIds.length > 0) {
+    const holdPh = onHoldIds.map(() => "?").join(", ");
+    const flowPh = CASE_STATUS_FLOW.map(() => "?").join(", ");
+    const [holdHistRows] = await db.query<RowDataPacket[]>(
+      `SELECT case_id, from_status, created_at FROM case_status_history
+       WHERE case_id IN (${holdPh}) AND to_status = 'on_hold'
+       ORDER BY created_at DESC`,
+      onHoldIds,
+    );
+    const [flowHistRows] = await db.query<RowDataPacket[]>(
+      `SELECT case_id, to_status, created_at FROM case_status_history
+       WHERE case_id IN (${holdPh}) AND to_status IN (${flowPh})
+       ORDER BY created_at DESC`,
+      [...onHoldIds, ...CASE_STATUS_FLOW],
+    );
+    const latestHoldFrom = latestHoldFromStatusByCaseInline(
+      holdHistRows.map((row) => ({
+        caseId: Number(row.case_id),
+        fromStatus: String(row.from_status),
+      })),
+    );
+    const latestFlowTo = latestFlowToStatusByCaseInline(
+      flowHistRows.map((row) => ({
+        caseId: Number(row.case_id),
+        toStatus: String(row.to_status),
+      })),
+    );
+    holdResumeByCaseId.clear();
+    for (const [cid, status] of buildHoldResumeStatusByCaseInline(
+      onHoldIds,
+      latestHoldFrom,
+      latestFlowTo,
+    )) {
+      holdResumeByCaseId.set(cid, status);
+    }
+  }
   const [firmRows] = await db.query<RowDataPacket[]>(
     `SELECT id, name FROM law_firms
      WHERE id IN (${cases.map(() => "?").join(", ")})`,
@@ -6103,6 +7251,8 @@ async function attachListadoToCases(
   const reportsBy = groupIds(reportRows);
   const tripsBy = new Set(tripRows.map((r) => Number(r.case_id)));
   const invoicesBy = groupIds(invoiceRows);
+  const evidenceBy = groupIds(evidenceRows);
+  const measurementsBy = groupIds(measurementRows);
   const firmName = new Map(
     firmRows.map((r) => [Number(r.id), String(r.name || "")]),
   );
@@ -6131,26 +7281,30 @@ async function attachListadoToCases(
       status: String(r.status),
       invoiceType: String(r.invoice_type || ""),
     }));
-    const input: ProcessGateInput = {
+    const input = buildProcessGateInputFromSourceInline({
       documentCategories: docs,
+      evidenceCategories: (evidenceBy.get(item.id) || []).map((r) =>
+        String(r.category),
+      ),
+      measurementTypes: (measurementsBy.get(item.id) || []).map((r) =>
+        String(r.measurement_type),
+      ),
       hasPrimaryExpert: Boolean(expert),
       questionnaireStatus: bestQ?.status ?? null,
-      hasStreetView:
-        Boolean(raw?.street_view_validated_at) ||
-        questionnaireHasStreetView(bestQ?.contentJson),
-      hasPropertyGps: raw?.property_lat != null && raw?.property_lng != null,
-      plaintiffQuestionnairePresent: docs.includes("plaintiff_questionnaire"),
-      protestaFiled: docs.includes("protesta"),
+      questionnaireContentJson: bestQ?.contentJson,
+      streetViewValidatedAt: raw?.street_view_validated_at,
+      propertyLat: raw?.property_lat,
+      propertyLng: raw?.property_lng,
+      involvesFatality: raw?.involves_fatality ?? item.involvesFatality,
       inspectionComplete: inspBy.has(item.id),
       reportStatus: bestReport?.status ?? null,
-      ratificationPresent: docs.includes("ratification"),
-      courtFilingPresent: docs.includes("court_filing"),
-      involvesFatality: Boolean(
-        raw?.involves_fatality ?? item.involvesFatality,
-      ),
       logisticsReady: tripsBy.has(item.id),
-      hasUnpaidInvoices: hasBlockingFinanceForCompletion(invoices),
-    };
+      invoices,
+    });
+    const holdResumeStatus =
+      item.status === "on_hold"
+        ? (holdResumeByCaseId.get(item.id) ?? null)
+        : null;
     return {
       ...item,
       lawFirmName:
@@ -6163,6 +7317,7 @@ async function attachListadoToCases(
         inspectionDeadlineAt: item.inspectionDeadlineAt,
         input,
         invoices,
+        holdResumeStatus,
       }),
     };
   });
@@ -6263,7 +7418,7 @@ async function notifyMissingDocumentsIfNeeded(
       title,
       body,
       caseNumber: String(caseRow.case_number),
-      caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+      caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
     });
   }
 
@@ -6281,7 +7436,7 @@ async function notifyMissingDocumentsIfNeeded(
         body,
         emailTo: contact.email,
         caseNumber: String(caseRow.case_number),
-        caseUrl: `${APP_URL}/client/cases/${caseRow.public_uuid}`,
+        caseUrl: `${EMAIL_APP_URL}/client/cases/${caseRow.public_uuid}`,
       });
     }
     if (shouldWriteLawFirmMissingDocsNote(active)) {
@@ -6318,10 +7473,10 @@ async function applyArtifactRejectLoop(opts: {
     deadlineTypesToCompleteOnTransition(fromStatus, toStatus),
     opts.conn,
   );
-  await db.query<ResultSetHeader>(
-    `UPDATE cases SET status = ? WHERE id = ?`,
-    [toStatus, caseId],
-  );
+  await db.query<ResultSetHeader>(`UPDATE cases SET status = ? WHERE id = ?`, [
+    toStatus,
+    caseId,
+  ]);
   const reopen = artifactToForceChangesRequested({
     artifact: opts.artifact,
     outcome: opts.outcome,
@@ -6416,7 +7571,7 @@ async function afterArtifactRejectLoop(opts: {
       body: `Status updated from ${opts.fromStatus} to ${opts.toStatus}.`,
       emailTo: contact.email,
       caseNumber: String(opts.caseRow.case_number),
-      caseUrl: `${APP_URL}/client/cases/${opts.caseRow.public_uuid}`,
+      caseUrl: `${EMAIL_APP_URL}/client/cases/${opts.caseRow.public_uuid}`,
       email: buildCaseStatusEmail({
         locale: contact.locale,
         firstName: contact.firstName,
@@ -6424,8 +7579,8 @@ async function afterArtifactRejectLoop(opts: {
         caseTitle: String(opts.caseRow.title || opts.caseRow.case_number),
         fromStatus: String(opts.fromStatus),
         toStatus: String(opts.toStatus),
-        caseUrl: `${APP_URL}/client/cases/${opts.caseRow.public_uuid}`,
-        appUrl: APP_URL,
+        caseUrl: `${EMAIL_APP_URL}/client/cases/${opts.caseRow.public_uuid}`,
+        appUrl: EMAIL_APP_URL,
       }),
     });
   }
@@ -6530,7 +7685,7 @@ async function runAutomationActions(
           title: `${action.notificationType} · ${ctx.caseNumber}`,
           body: action.reason,
           caseNumber: ctx.caseNumber,
-          caseUrl: `${APP_URL}/portal/cases`,
+          caseUrl: `${EMAIL_APP_URL}/portal/cases`,
         });
       }
     }
@@ -6580,7 +7735,7 @@ async function maybeNotifyDeadlineApproaching(
       title: `Deadline · ${caseRow.case_number}`,
       body: `${critical.title} is ${critical.severityLevel}.`,
       caseNumber: String(caseRow.case_number),
-      caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+      caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
     });
   }
 }
@@ -6604,16 +7759,6 @@ async function sendEmail(opts: {
   html: string;
   text: string;
 }): Promise<string | null> {
-  const urlCheck = assertSafeAppUrlForOutboundEmail();
-  if (urlCheck.ok === false) {
-    apiLogger.error("Blocked outbound email with localhost APP_URL", {
-      to: opts.to,
-      subject: opts.subject,
-      APP_URL,
-      error: urlCheck.error,
-    });
-    throw new Error(urlCheck.error);
-  }
   if (!resendClient) {
     apiLogger.info("[email:dev-fallback]", {
       to: opts.to,
@@ -6857,7 +8002,7 @@ export function createServer() {
           code,
           portal: "staff",
           minutes: OTP_TTL_MIN,
-          appUrl: APP_URL,
+          appUrl: EMAIL_APP_URL,
         });
         await sendEmail({
           to: user!.email as string,
@@ -6970,7 +8115,7 @@ export function createServer() {
          LIMIT 1`,
         [req.auth!.id],
       );
-      if (rows.length === 0 || rows[0].status !== "active") {
+      if (rows.length === 0 || !canRequestLoginOtp(rows[0].status as UserStatus)) {
         return res.status(401).json({ error: "Unauthorized" });
       }
       const allowed = await getLoginAllowedRoles();
@@ -7080,7 +8225,7 @@ export function createServer() {
           code,
           portal: "law_firm",
           minutes: OTP_TTL_MIN,
-          appUrl: APP_URL,
+          appUrl: EMAIL_APP_URL,
         });
         await sendEmail({
           to: user!.email as string,
@@ -7378,6 +8523,15 @@ export function createServer() {
 
         const where: string[] = ["deleted_at IS NULL"];
         const params: unknown[] = [];
+        const visibility = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "cases",
+        });
+        if (visibility.sql) {
+          where.push(visibility.sql);
+          params.push(...visibility.params);
+        }
         if (q) {
           where.push(
             `(case_number LIKE ? OR title LIKE ? OR IFNULL(court_name,'') LIKE ? OR IFNULL(property_city,'') LIKE ?
@@ -7438,12 +8592,154 @@ export function createServer() {
     },
   );
 
+  app.get(
+    "/api/cases/pipeline",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const limit = Math.min(
+          100,
+          Math.max(
+            1,
+            Number(req.query.limit) || 20,
+          ),
+        );
+        const column = String(req.query.column || "").trim();
+        const offset = Math.max(0, Number(req.query.offset) || 0);
+        const q = String(req.query.q || "").trim();
+        const statusFilter = String(req.query.status || "").trim();
+        const priority = String(req.query.priority || "").trim();
+
+        const where: string[] = ["deleted_at IS NULL"];
+        const params: unknown[] = [];
+        const visibility = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "cases",
+        });
+        if (visibility.sql) {
+          where.push(visibility.sql);
+          params.push(...visibility.params);
+        }
+        if (q) {
+          where.push(
+            `(case_number LIKE ? OR title LIKE ? OR IFNULL(court_name,'') LIKE ? OR IFNULL(property_city,'') LIKE ?
+              OR EXISTS (
+                SELECT 1 FROM law_firms lf
+                WHERE lf.id = cases.law_firm_id AND lf.name LIKE ?
+              )
+              OR EXISTS (
+                SELECT 1 FROM case_assignments a
+                JOIN staff_users u ON u.id = a.user_id
+                WHERE a.case_id = cases.id
+                  AND a.unassigned_at IS NULL
+                  AND a.assignment_role = 'expert' AND a.is_primary = 1
+                  AND CONCAT(IFNULL(u.first_name,''), ' ', IFNULL(u.last_name,'')) LIKE ?
+              ))`,
+          );
+          const like = `%${q}%`;
+          params.push(like, like, like, like, like, like);
+        }
+        if (priority) {
+          where.push("priority = ?");
+          params.push(priority);
+        }
+        const baseWhereSql = where.join(" AND ");
+        const baseParams = [...params];
+
+        const db = getPool();
+
+        async function loadColumn(
+          colStatus: CaseStatus,
+          colOffset: number,
+        ): Promise<{
+          items: CaseSummary[];
+          total: number;
+          offset: number;
+          limit: number;
+          has_more: boolean;
+        }> {
+          const colWhere = `${baseWhereSql} AND status = ?`;
+          const colParams = [...baseParams, colStatus];
+          const [countRows] = await db.query<RowDataPacket[]>(
+            `SELECT COUNT(*) AS total FROM cases WHERE ${colWhere}`,
+            colParams,
+          );
+          const total = Number(countRows[0]?.total || 0);
+          const [rows] = await db.query<RowDataPacket[]>(
+            `SELECT id, public_uuid, case_number, title, status, priority,
+                    court_name, property_city, property_state, law_firm_id,
+                    assigned_expert_id, inspection_deadline_at, involves_fatality,
+                    street_view_validated_at, property_lat, property_lng,
+                    created_at, updated_at
+             FROM cases
+             WHERE ${colWhere}
+             ORDER BY updated_at DESC
+             LIMIT ? OFFSET ?`,
+            [...colParams, limit, colOffset],
+          );
+          const summaries = await attachListadoToCases(
+            rows.map(mapCaseSummary),
+            rows,
+          );
+          return {
+            items: summaries,
+            total,
+            offset: colOffset,
+            limit,
+            has_more: colOffset + summaries.length < total,
+          };
+        }
+
+        if (column) {
+          if (
+            !(CASE_PIPELINE_STATUSES as readonly string[]).includes(column)
+          ) {
+            return res.status(400).json({ error: "Invalid column" });
+          }
+          const page = await loadColumn(column as CaseStatus, offset);
+          const response: CasesPipelineColumnMoreResponse = {
+            column,
+            items: page.items,
+            total: page.total,
+            offset: page.offset,
+            limit: page.limit,
+            hasMore: page.has_more,
+          };
+          return res.json(response);
+        }
+
+        const visible = casePipelineVisibleStatusesInline(statusFilter);
+        const columns: CasesPipelineResponse["columns"] = {};
+        for (const colStatus of visible) {
+          const page = await loadColumn(colStatus, 0);
+          columns[colStatus] = {
+            items: page.items,
+            total: page.total,
+            offset: page.offset,
+            limit: page.limit,
+            hasMore: page.has_more,
+          };
+        }
+        const response: CasesPipelineResponse = { limit, columns };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("cases pipeline failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
   app.post(
     "/api/cases",
     dbUnavailable,
     requireStaff,
     async (req: AuthedRequest, res: Response) => {
       try {
+        if (!canCreateStaffCaseInline(req.auth?.role)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
         const body = req.body as CreateCaseRequest;
         const title = String(body?.title || "").trim();
         if (!title) {
@@ -7554,6 +8850,9 @@ export function createServer() {
           return res.status(404).json({ error: "Case not found" });
         }
         const caseRow = rows[0];
+        if (!(await staffCanAccessCaseRow(req.auth!, caseRow))) {
+          return res.status(404).json({ error: "Case not found" });
+        }
         const caseId = caseRow.id as number;
         const status = caseRow.status as CaseStatus;
 
@@ -7846,7 +9145,7 @@ export function createServer() {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
         const body = req.body as UpdateCaseLocationRequest;
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -7957,7 +9256,7 @@ export function createServer() {
         if (parsed.ok === false) {
           return res.status(400).json({ error: parsed.error });
         }
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -8247,7 +9546,7 @@ export function createServer() {
               body: `Status updated from ${fromStatus} to ${toStatus}.`,
               emailTo: contact.email,
               caseNumber: String(rows[0].case_number),
-              caseUrl: `${APP_URL}/client/cases/${rows[0].public_uuid}`,
+              caseUrl: `${EMAIL_APP_URL}/client/cases/${rows[0].public_uuid}`,
               email: buildCaseStatusEmail({
                 locale: contact.locale,
                 firstName: contact.firstName,
@@ -8255,8 +9554,8 @@ export function createServer() {
                 caseTitle: String(rows[0].title || rows[0].case_number),
                 fromStatus: String(fromStatus),
                 toStatus: String(toStatus),
-                caseUrl: `${APP_URL}/client/cases/${rows[0].public_uuid}`,
-                appUrl: APP_URL,
+                caseUrl: `${EMAIL_APP_URL}/client/cases/${rows[0].public_uuid}`,
+                appUrl: EMAIL_APP_URL,
               }),
             });
           }
@@ -8386,6 +9685,11 @@ export function createServer() {
         if (buffer.length === 0 || buffer.length > DMS_MAX_FILE_BYTES) {
           return res.status(400).json({ error: "Invalid file size" });
         }
+        if (shouldUseDirectBlobUpload(buffer.length)) {
+          return res.status(413).json({
+            error: "File too large for JSON upload; use direct blob upload",
+          });
+        }
 
         const document = await insertCaseDocumentUpload({
           caseId: rows[0].id as number,
@@ -8404,6 +9708,69 @@ export function createServer() {
         return res.status(201).json({ document });
       } catch (err) {
         apiLogger.error("cases documents create failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/cases/:publicUuid/documents/from-blob",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canMutateCaseSection(req.auth?.role, "documents")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        if (!process.env.BLOB_READ_WRITE_TOKEN) {
+          return res.status(503).json({
+            error: "BLOB_READ_WRITE_TOKEN not configured",
+          });
+        }
+        const casePublicUuid = String(req.params.publicUuid);
+        const caseRow = await findStaffAccessibleCase(req, casePublicUuid);
+        if (!caseRow) {
+          return res.status(404).json({ error: "Case not found" });
+        }
+        const body = req.body as CreateCaseDocumentFromBlobRequest;
+        const categoryParsed = parseRequiredDocumentCategory(body.category);
+        if (categoryParsed.ok === false) {
+          return res.status(400).json({ error: categoryParsed.error });
+        }
+        const validated = validateFromBlobDocument(body, {
+          actor: "staff",
+          casePublicUuid,
+          maxFileBytes: DMS_MAX_FILE_BYTES,
+          isAllowedMime: isAllowedDmsMime,
+          blobPathnameFromUrl,
+          isPrivateBlobUrl,
+        });
+        if (validated.ok === false) {
+          return res.status(400).json({ error: validated.error });
+        }
+        const inspected = await inspectPrivateBlob(
+          validated.value.storageKey,
+          validated.value.fileSizeBytes,
+        );
+        if (inspected.ok === false) {
+          await safeDeleteBlobs([validated.value.storageKey]);
+          return res.status(inspected.status).json({ error: inspected.error });
+        }
+        const document = await insertCaseDocumentFromExistingBlob({
+          caseId: caseRow.id as number,
+          title: validated.value.title,
+          fileName: validated.value.fileName,
+          contentType: validated.value.contentType,
+          storageKey: validated.value.storageKey,
+          fileSizeBytes: inspected.size,
+          category: categoryParsed.value,
+          uploadedByStaffId: req.auth!.id,
+        });
+        await notifyMissingDocumentsIfNeeded(caseRow);
+        await maybeStartTenDayClock(caseRow, req.auth!.id);
+        return res.status(201).json({ document });
+      } catch (err) {
+        apiLogger.error("cases documents from-blob failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -8505,6 +9872,11 @@ export function createServer() {
           if (buffer.length === 0 || buffer.length > DMS_MAX_FILE_BYTES) {
             return res.status(400).json({
               error: `Invalid file size for ${file.fileName}`,
+            });
+          }
+          if (shouldUseDirectBlobUpload(buffer.length)) {
+            return res.status(413).json({
+              error: "File too large for JSON upload; use direct blob upload",
             });
           }
           const catParsed = parseRequiredDocumentCategory(file.category);
@@ -8755,14 +10127,23 @@ export function createServer() {
     "/api/dashboard/stats",
     dbUnavailable,
     requireStaff,
-    async (_req: AuthedRequest, res: Response) => {
+    async (req: AuthedRequest, res: Response) => {
       try {
         const db = getPool();
+        const visibility = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "cases",
+        });
+        const visSql = visibility.sql
+          ? ` AND ${visibility.sql}`
+          : "";
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT status, priority, COUNT(*) AS cnt
            FROM cases
-           WHERE deleted_at IS NULL
+           WHERE deleted_at IS NULL${visSql}
            GROUP BY status, priority`,
+          visibility.params,
         );
         const byStatus: Partial<Record<CaseStatus, number>> = {};
         let totalCases = 0;
@@ -8784,17 +10165,36 @@ export function createServer() {
             urgentOpen += cnt;
           }
         }
+        const visibilityC = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "c",
+        });
+        const visC = visibilityC.sql ? ` AND ${visibilityC.sql}` : "";
+        const visCParams = visibilityC.params;
+        const reviewStageFilter = buildReviewStageFilterSql(req.auth?.role);
+        const reviewStageSql = reviewStageFilter.sql;
+
         const [extra] = await db.query<RowDataPacket[]>(
           `SELECT
-             (SELECT COUNT(*) FROM review_requests WHERE status = 'pending') AS pending_reviews,
-             (SELECT COUNT(*) FROM invoices
-               WHERE status IN ('issued', 'partially_paid', 'overdue')
-                  OR (status = 'draft' AND invoice_type IN ('advance', 'final'))) AS pending_invoices,
-             (SELECT COUNT(*) FROM case_deadlines
-               WHERE completed_at IS NULL
-                 AND severity_level IN ('critical', 'overdue')) AS delayed_deadlines,
+             (SELECT COUNT(*) FROM review_requests rr
+                JOIN cases c ON c.id = rr.case_id
+               WHERE rr.status = 'pending'
+                 AND c.deleted_at IS NULL${visC}${reviewStageSql}) AS pending_reviews,
+             (SELECT COUNT(*) FROM invoices i
+                JOIN cases c ON c.id = i.case_id
+               WHERE c.deleted_at IS NULL${visC}
+                 AND (
+                   i.status IN ('issued', 'partially_paid', 'overdue')
+                   OR (i.status = 'draft' AND i.invoice_type IN ('advance', 'final'))
+                 )) AS pending_invoices,
+             (SELECT COUNT(*) FROM case_deadlines d
+                JOIN cases c ON c.id = d.case_id
+               WHERE c.deleted_at IS NULL${visC}
+                 AND d.completed_at IS NULL
+                 AND d.severity_level IN ('critical', 'overdue')) AS delayed_deadlines,
              (SELECT COUNT(*) FROM cases c
-                WHERE c.deleted_at IS NULL
+                WHERE c.deleted_at IS NULL${visC}
                   AND (
                     (
                       c.status IN ('intake', 'assignment')
@@ -8848,6 +10248,13 @@ export function createServer() {
                     )
                   )
              ) AS missing_docs_cases`,
+          [
+            ...visCParams,
+            ...reviewStageFilter.params,
+            ...visCParams,
+            ...visCParams,
+            ...visCParams,
+          ],
         );
         const response: DashboardStatsResponse = {
           totalCases,
@@ -8869,6 +10276,65 @@ export function createServer() {
   );
 
   app.get(
+    "/api/reviews/pending",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canViewCaseSection(req.auth?.role, "reviews")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const stageFilter = buildReviewStageFilterSql(req.auth?.role);
+        if (stageFilter.params.length === 0) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const limit = Math.min(
+          100,
+          Math.max(1, Number(req.query.limit) || 50),
+        );
+        const db = getPool();
+        const visibility = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "c",
+        });
+        const visSql = visibility.sql ? ` AND ${visibility.sql}` : "";
+        const visParams = visibility.params;
+        const [countRows] = await db.query<RowDataPacket[]>(
+          `SELECT COUNT(*) AS total
+           FROM review_requests rr
+           JOIN cases c ON c.id = rr.case_id
+           WHERE rr.status = 'pending'
+             AND c.deleted_at IS NULL${visSql}${stageFilter.sql}`,
+          [...visParams, ...stageFilter.params],
+        );
+        const total = Number(countRows[0]?.total || 0);
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT rr.*, c.public_uuid AS case_public_uuid, c.case_number, c.title AS case_title
+           FROM review_requests rr
+           JOIN cases c ON c.id = rr.case_id
+           WHERE rr.status = 'pending'
+             AND c.deleted_at IS NULL${visSql}${stageFilter.sql}
+           ORDER BY rr.due_at IS NULL, rr.due_at ASC, rr.created_at ASC
+           LIMIT ?`,
+          [...visParams, ...stageFilter.params, limit],
+        );
+        const reviews = rows.map((row) => ({
+          ...mapReviewRequest(row),
+          casePublicUuid: String(row.case_public_uuid),
+          caseNumber: String(row.case_number),
+          caseTitle: String(row.case_title || row.case_number),
+        }));
+        const response: PendingReviewsResponse = { reviews, total };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("pending reviews list failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.get(
     "/api/documents",
     dbUnavailable,
     requireStaff,
@@ -8884,6 +10350,15 @@ export function createServer() {
           "c.deleted_at IS NULL",
         ];
         const params: unknown[] = [];
+        const visibility = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "c",
+        });
+        if (visibility.sql) {
+          where.push(visibility.sql);
+          params.push(...visibility.params);
+        }
         if (q) {
           where.push(
             `(d.title LIKE ? OR c.case_number LIKE ? OR v.ocr_text LIKE ?)`,
@@ -8962,15 +10437,28 @@ export function createServer() {
         const like = `%${q}%`;
         const db = getPool();
         const results: GlobalSearchHit[] = [];
+        const visibility = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "cases",
+        });
+        const visSql = visibility.sql ? ` AND ${visibility.sql}` : "";
+        const visibilityC = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "c",
+        });
+        const visSqlC = visibilityC.sql ? ` AND ${visibilityC.sql}` : "";
 
         const [cases] = await db.query<RowDataPacket[]>(
           `SELECT id, public_uuid, case_number, title
            FROM cases
            WHERE deleted_at IS NULL
              AND (case_number LIKE ? OR title LIKE ? OR plaintiff_name LIKE ?)
+             ${visSql}
            ORDER BY updated_at DESC
            LIMIT 10`,
-          [like, like, like],
+          [like, like, like, ...visibility.params],
         );
         for (const r of cases) {
           results.push({
@@ -8991,9 +10479,10 @@ export function createServer() {
              ON v.document_id = d.id AND v.version_number = d.current_version
            WHERE d.deleted_at IS NULL AND c.deleted_at IS NULL
              AND (d.title LIKE ? OR c.case_number LIKE ? OR v.ocr_text LIKE ?)
+             ${visSqlC}
            ORDER BY d.created_at DESC
            LIMIT 10`,
-          [like, like, like],
+          [like, like, like, ...visibilityC.params],
         );
         for (const r of docs) {
           results.push({
@@ -9058,13 +10547,29 @@ export function createServer() {
     "/api/reports/kpis",
     dbUnavailable,
     requireStaff,
-    async (_req: AuthedRequest, res: Response) => {
+    async (req: AuthedRequest, res: Response) => {
       try {
         const db = getPool();
+        const visibility = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "cases",
+        });
+        const visSql = visibility.sql ? ` AND ${visibility.sql}` : "";
+        const visibilityC = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "c",
+        });
+        const visC = visibilityC.sql ? ` AND ${visibilityC.sql}` : "";
+        const reviewStageFilter = buildReviewStageFilterSql(req.auth?.role);
+        const reviewStageSql = reviewStageFilter.sql;
+
         const [statusRows] = await db.query<RowDataPacket[]>(
           `SELECT status, COUNT(*) AS cnt
-           FROM cases WHERE deleted_at IS NULL
+           FROM cases WHERE deleted_at IS NULL${visSql}
            GROUP BY status`,
+          visibility.params,
         );
         const casesByStatus: Record<string, number> = {};
         let completedCount = 0;
@@ -9075,30 +10580,48 @@ export function createServer() {
           if (status === "completed") completedCount = cnt;
         }
 
-        const [expertRows] = await db.query<RowDataPacket[]>(
-          `SELECT u.id AS user_id,
-                  CONCAT(u.first_name, ' ', u.last_name) AS name,
-                  COUNT(*) AS cnt
-           FROM cases c
-           JOIN staff_users u ON u.id = c.assigned_expert_id
-           WHERE c.deleted_at IS NULL AND c.assigned_expert_id IS NOT NULL
-           GROUP BY u.id, u.first_name, u.last_name
-           ORDER BY cnt DESC
-           LIMIT 20`,
-        );
+        const [expertRows] = canListAllStaffCasesInline(req.auth?.role)
+          ? await db.query<RowDataPacket[]>(
+              `SELECT u.id AS user_id,
+                      CONCAT(u.first_name, ' ', u.last_name) AS name,
+                      COUNT(*) AS cnt
+               FROM cases c
+               JOIN staff_users u ON u.id = c.assigned_expert_id
+               WHERE c.deleted_at IS NULL AND c.assigned_expert_id IS NOT NULL
+               GROUP BY u.id, u.first_name, u.last_name
+               ORDER BY cnt DESC
+               LIMIT 20`,
+            )
+          : [[] as RowDataPacket[]];
 
         const [agg] = await db.query<RowDataPacket[]>(
           `SELECT
-             (SELECT COUNT(*) FROM case_deadlines
-               WHERE completed_at IS NULL
-                 AND severity_level IN ('critical', 'overdue')) AS delayed_count,
-             (SELECT COUNT(*) FROM invoices
-               WHERE status IN ('issued', 'partially_paid', 'overdue')
-                  OR (status = 'draft' AND invoice_type IN ('advance', 'final'))) AS pending_invoices,
-             (SELECT COUNT(*) FROM review_requests WHERE status = 'pending') AS pending_reviews,
+             (SELECT COUNT(*) FROM case_deadlines d
+                JOIN cases c ON c.id = d.case_id
+               WHERE c.deleted_at IS NULL${visC}
+                 AND d.completed_at IS NULL
+                 AND d.severity_level IN ('critical', 'overdue')) AS delayed_count,
+             (SELECT COUNT(*) FROM invoices i
+                JOIN cases c ON c.id = i.case_id
+               WHERE c.deleted_at IS NULL${visC}
+                 AND (
+                   i.status IN ('issued', 'partially_paid', 'overdue')
+                   OR (i.status = 'draft' AND i.invoice_type IN ('advance', 'final'))
+                 )) AS pending_invoices,
+             (SELECT COUNT(*) FROM review_requests rr
+                JOIN cases c ON c.id = rr.case_id
+               WHERE rr.status = 'pending'
+                 AND c.deleted_at IS NULL${visC}${reviewStageSql}) AS pending_reviews,
              (SELECT AVG(DATEDIFF(completed_at, COALESCE(intake_received_at, created_at)))
                 FROM cases
-               WHERE deleted_at IS NULL AND completed_at IS NOT NULL) AS avg_days`,
+               WHERE deleted_at IS NULL AND completed_at IS NOT NULL${visSql}) AS avg_days`,
+          [
+            ...visibilityC.params,
+            ...visibilityC.params,
+            ...visibilityC.params,
+            ...reviewStageFilter.params,
+            ...visibility.params,
+          ],
         );
 
         const response: ReportsKpiResponse = {
@@ -9140,27 +10663,41 @@ export function createServer() {
           !Number.isNaN(toDate.getTime());
 
         const db = getPool();
+        const visibility = buildStaffCaseVisibilityFilterInline({
+          role: req.auth!.role,
+          userId: req.auth!.id,
+          casesAlias: "c",
+        });
+        const caseAccessSql = visibility.sql
+          ? `(e.case_id IS NULL OR (c.id IS NOT NULL AND c.deleted_at IS NULL AND ${visibility.sql}))`
+          : `(e.case_id IS NULL OR (c.id IS NOT NULL AND c.deleted_at IS NULL))`;
         const [rows] = hasRange
           ? await db.query<RowDataPacket[]>(
-              `SELECT id, public_uuid, case_id, event_type, title, starts_at, ends_at, location
-               FROM calendar_events
-               WHERE starts_at >= ? AND starts_at <= ?
-               ORDER BY starts_at ASC
+              `SELECT e.id, e.public_uuid, e.case_id, e.case_deadline_id, e.event_type, e.title, e.starts_at, e.ends_at, e.location
+               FROM calendar_events e
+               LEFT JOIN cases c ON c.id = e.case_id
+               WHERE e.starts_at >= ? AND e.starts_at <= ?
+                 AND ${caseAccessSql}
+               ORDER BY e.starts_at ASC
                LIMIT 500`,
-              [fromDate!.toISOString(), toDate!.toISOString()],
+              [fromDate!.toISOString(), toDate!.toISOString(), ...visibility.params],
             )
           : await db.query<RowDataPacket[]>(
-              `SELECT id, public_uuid, case_id, event_type, title, starts_at, ends_at, location
-               FROM calendar_events
-               WHERE starts_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 60 DAY)
-                 AND starts_at <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL 180 DAY)
-               ORDER BY starts_at ASC
+              `SELECT e.id, e.public_uuid, e.case_id, e.case_deadline_id, e.event_type, e.title, e.starts_at, e.ends_at, e.location
+               FROM calendar_events e
+               LEFT JOIN cases c ON c.id = e.case_id
+               WHERE e.starts_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 60 DAY)
+                 AND e.starts_at <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL 180 DAY)
+                 AND ${caseAccessSql}
+               ORDER BY e.starts_at ASC
                LIMIT 500`,
+              visibility.params,
             );
         const events: CalendarEventItem[] = rows.map((r) => ({
           id: r.id as number,
           publicUuid: r.public_uuid as string,
           caseId: (r.case_id as number | null) ?? null,
+          caseDeadlineId: (r.case_deadline_id as number | null) ?? null,
           eventType: r.event_type as string,
           title: r.title as string,
           startsAt: toIso(r.starts_at) || new Date().toISOString(),
@@ -9454,8 +10991,8 @@ export function createServer() {
           body: `Payment of ${amount} ${inv.currency || "MXN"} recorded.`,
           caseNumber: payCase ? String(payCase.case_number) : null,
           caseUrl: payCase
-            ? `${APP_URL}/portal/cases/${payCase.public_uuid}`
-            : `${APP_URL}/portal/finance`,
+            ? `${EMAIL_APP_URL}/portal/cases/${payCase.public_uuid}`
+            : `${EMAIL_APP_URL}/portal/finance`,
         });
         return res.status(201).json({
           payment: {
@@ -9621,7 +11158,7 @@ export function createServer() {
               locale: inviteLocale,
               firstName,
               firmName,
-              appUrl: APP_URL,
+              appUrl: EMAIL_APP_URL,
             }),
             "invite-client",
           );
@@ -9667,8 +11204,8 @@ export function createServer() {
           buildInviteStaffEmail({
             locale: inviteLocale,
             firstName,
-            roleLabel: String(role),
-            appUrl: APP_URL,
+            role: String(role),
+            appUrl: EMAIL_APP_URL,
           }),
           "invite-staff",
         );
@@ -9721,8 +11258,8 @@ export function createServer() {
             buildInviteStaffEmail({
               locale,
               firstName: String(row.first_name),
-              roleLabel: String(row.role),
-              appUrl: APP_URL,
+              role: String(row.role),
+              appUrl: EMAIL_APP_URL,
               resend: true,
             }),
             "resend-invite-staff",
@@ -9758,7 +11295,7 @@ export function createServer() {
             locale,
             firstName: String(row.first_name),
             firmName: row.firm_name ? String(row.firm_name) : null,
-            appUrl: APP_URL,
+            appUrl: EMAIL_APP_URL,
             resend: true,
           }),
           "resend-invite-client",
@@ -10061,7 +11598,7 @@ export function createServer() {
             .status(400)
             .json({ error: "userId and assignmentRole required" });
         }
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -10120,6 +11657,19 @@ export function createServer() {
         }
 
         if (isPrimary && role === "expert") {
+          const prevExpertId =
+            caseRow.assigned_expert_id != null
+              ? Number(caseRow.assigned_expert_id)
+              : null;
+          if (prevExpertId != null && prevExpertId !== userId) {
+            await clearExpertDeliveryDeadline({
+              caseId: Number(caseRow.id),
+              caseNumber: String(caseRow.case_number),
+              casePublicUuid: String(caseRow.public_uuid),
+              expertUserId: prevExpertId,
+              notifyExpert: true,
+            });
+          }
           await db.query<ResultSetHeader>(
             `UPDATE cases SET assigned_expert_id = ? WHERE id = ?`,
             [userId, caseRow.id],
@@ -10132,25 +11682,56 @@ export function createServer() {
           );
         }
 
+        let deliveryDueAt: Date | null = null;
+        if (
+          role === "expert" &&
+          isPrimary &&
+          body.deliveryDueAt != null &&
+          String(body.deliveryDueAt).trim() !== ""
+        ) {
+          const parsed = parseExpertDeliveryDueDateInputInline(body.deliveryDueAt);
+          if (parsed.ok === false) {
+            return res.status(400).json({ error: parsed.error });
+          }
+          deliveryDueAt = parsed.dueAt;
+          await upsertExpertDeliveryDeadline({
+            caseId: Number(caseRow.id),
+            caseNumber: String(caseRow.case_number),
+            casePublicUuid: String(caseRow.public_uuid),
+            dueAt: deliveryDueAt,
+            actorId: req.auth!.id,
+            expertUserId: userId,
+            notifyExpert: false,
+          });
+        }
+
         const assignee = await getActorContact("staff", userId);
+        const notifyLocale = assignee?.locale ?? "es";
+        const notifyCopy = assignmentNotificationCopyInline({
+          locale: notifyLocale,
+          caseNumber: String(caseRow.case_number),
+          role: String(role),
+          deliveryDueAt,
+        });
         await createNotification({
           recipientActor: "staff",
           recipientId: userId,
           caseId: caseRow.id as number,
           type: "new_assignment",
-          title: `Assigned to ${caseRow.case_number}`,
-          body: `You were assigned as ${role} on case ${caseRow.case_number}.`,
+          title: notifyCopy.title,
+          body: notifyCopy.body,
           caseNumber: String(caseRow.case_number),
-          caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
           email: assignee
             ? buildAssignmentEmail({
                 locale: assignee.locale,
                 firstName: assignee.firstName,
                 caseNumber: String(caseRow.case_number),
                 caseTitle: String(caseRow.title || caseRow.case_number),
-                roleLabel: String(role),
-                caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
-                appUrl: APP_URL,
+                role: String(role),
+                caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
+                appUrl: EMAIL_APP_URL,
+                deliveryDueAt,
               })
             : null,
           emailTo: assignee?.email,
@@ -10174,6 +11755,71 @@ export function createServer() {
     },
   );
 
+  app.patch(
+    "/api/cases/:publicUuid/expert-delivery-deadline",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canManageCaseAssignments(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const body = req.body as SetExpertDeliveryDeadlineRequest;
+        const caseRow = await findStaffAccessibleCase(
+          req,
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+
+        const rawDue = body?.deliveryDueAt;
+        if (rawDue == null || String(rawDue).trim() === "") {
+          await clearExpertDeliveryDeadline({
+            caseId: Number(caseRow.id),
+            caseNumber: String(caseRow.case_number),
+            casePublicUuid: String(caseRow.public_uuid),
+            expertUserId:
+              caseRow.assigned_expert_id != null
+                ? Number(caseRow.assigned_expert_id)
+                : null,
+            notifyExpert: true,
+          });
+          return res.json({ deadline: null });
+        }
+
+        const parsed = parseExpertDeliveryDueDateInputInline(rawDue);
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
+
+        const expertId =
+          caseRow.assigned_expert_id != null
+            ? Number(caseRow.assigned_expert_id)
+            : null;
+        if (expertId == null) {
+          return res.status(409).json({
+            error: "Assign a primary expert before setting a delivery date",
+          });
+        }
+
+        const deadline = await upsertExpertDeliveryDeadline({
+          caseId: Number(caseRow.id),
+          caseNumber: String(caseRow.case_number),
+          casePublicUuid: String(caseRow.public_uuid),
+          dueAt: parsed.dueAt,
+          actorId: req.auth!.id,
+          expertUserId: expertId,
+          notifyExpert: true,
+        });
+
+        const response: ExpertDeliveryDeadlineResponse = { deadline };
+        return res.json(response);
+      } catch (err) {
+        apiLogger.error("expert delivery deadline failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
   app.delete(
     "/api/cases/:publicUuid/assignments/:assignmentId",
     dbUnavailable,
@@ -10183,7 +11829,7 @@ export function createServer() {
         if (!canManageCaseAssignments(req.auth?.role)) {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -10212,6 +11858,13 @@ export function createServer() {
              WHERE id = ? AND assigned_expert_id = ?`,
             [caseRow.id, asgRows[0].user_id],
           );
+          await clearExpertDeliveryDeadline({
+            caseId: Number(caseRow.id),
+            caseNumber: String(caseRow.case_number),
+            casePublicUuid: String(caseRow.public_uuid),
+            expertUserId: Number(asgRows[0].user_id),
+            notifyExpert: true,
+          });
         }
         if (
           asgRows[0].assignment_role === "coordinator" &&
@@ -10243,7 +11896,7 @@ export function createServer() {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
         const body = req.body as CreateQuestionnaireRequest;
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -10333,9 +11986,10 @@ export function createServer() {
           };
         }
 
-        const contentRec = (body.contentJson || null) as
-          | Record<string, unknown>
-          | null;
+        const contentRec = (body.contentJson || null) as Record<
+          string,
+          unknown
+        > | null;
         const svWrite = questionnaireStreetViewWrite(contentRec);
         if (svWrite === "set") {
           await db.query<ResultSetHeader>(
@@ -10385,7 +12039,7 @@ export function createServer() {
         if (!toStatus) {
           return res.status(400).json({ error: "status is required" });
         }
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -10549,7 +12203,7 @@ export function createServer() {
     async (req: AuthedRequest, res: Response) => {
       try {
         const body = req.body as CompleteReviewRequest;
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -10757,11 +12411,11 @@ export function createServer() {
           recipientActor: "staff",
           recipientId: (rows[0].requested_by as number) || req.auth!.id,
           caseId: caseRow.id as number,
-          type: "qa_requested",
+          type: reviewCompleteNotificationTypeInline(String(rows[0].review_stage)),
           title: `Review ${resolved.nextStatus} · ${caseRow.case_number}`,
           body: body.notes?.trim() || `Review marked ${resolved.nextStatus}.`,
           caseNumber: String(caseRow.case_number),
-          caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
         });
 
         const [updated] = await db.query<RowDataPacket[]>(
@@ -10788,7 +12442,7 @@ export function createServer() {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
         const body = req.body as CreateInspectionRequest;
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -10846,7 +12500,7 @@ export function createServer() {
             title: `Inspection scheduled · ${caseRow.case_number}`,
             body: `Inspection scheduled for ${scheduledAt.toISOString()}.`,
             caseNumber: String(caseRow.case_number),
-            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
           });
         }
         return res.status(201).json({ inspection: item });
@@ -10864,7 +12518,7 @@ export function createServer() {
     async (req: AuthedRequest, res: Response) => {
       try {
         const toStatus = (req.body as { status?: InspectionStatus })?.status;
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -10959,7 +12613,7 @@ export function createServer() {
             .status(400)
             .json({ error: "measurementType and valueNumeric required" });
         }
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -11014,7 +12668,7 @@ export function createServer() {
         }
         const value = validated.value;
 
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -11134,7 +12788,7 @@ export function createServer() {
         if (!canMutateCaseSection(req.auth?.role, "evidence")) {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -11179,7 +12833,7 @@ export function createServer() {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
         const body = req.body as CreateLogisticsTripRequest;
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -11246,7 +12900,7 @@ export function createServer() {
               ? `Trip toward ${body.destinationCity.trim()} recorded.`
               : "Logistics trip recorded.",
             caseNumber: String(caseRow.case_number),
-            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
           });
         }
         return res.status(201).json({ trip: item });
@@ -11288,7 +12942,7 @@ export function createServer() {
             .status(400)
             .json({ error: "tripId, expenseType and amount required" });
         }
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -11344,7 +12998,7 @@ export function createServer() {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
         const body = req.body as CreateTechnicalReportRequest;
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -11383,7 +13037,7 @@ export function createServer() {
             title: `Report QA · ${caseRow.case_number}`,
             body: "Technical report submitted for grammar QA.",
             caseNumber: String(caseRow.case_number),
-            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
           });
         }
         return res.status(201).json({
@@ -11418,7 +13072,7 @@ export function createServer() {
         if (!toStatus) {
           return res.status(400).json({ error: "status is required" });
         }
-        const caseRow = await findCaseByPublicUuid(
+        const caseRow = await findStaffAccessibleCase(req, 
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
@@ -11560,7 +13214,7 @@ export function createServer() {
             title: `Report ${toStatus} · ${caseRow.case_number}`,
             body: `Technical report moved to ${toStatus}.`,
             caseNumber: String(caseRow.case_number),
-            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
           });
         }
 
@@ -11578,14 +13232,14 @@ export function createServer() {
               body: "A technical report is available in your portal.",
               emailTo: contact.email,
               caseNumber: String(caseRow.case_number),
-              caseUrl: `${APP_URL}/client/cases/${caseRow.public_uuid}`,
+              caseUrl: `${EMAIL_APP_URL}/client/cases/${caseRow.public_uuid}`,
               email: buildReportDeliveredEmail({
                 locale: contact.locale,
                 firstName: contact.firstName,
                 caseNumber: String(caseRow.case_number),
                 caseTitle: String(caseRow.title || caseRow.case_number),
-                caseUrl: `${APP_URL}/client/cases/${caseRow.public_uuid}`,
-                appUrl: APP_URL,
+                caseUrl: `${EMAIL_APP_URL}/client/cases/${caseRow.public_uuid}`,
+                appUrl: EMAIL_APP_URL,
               }),
             });
           }
@@ -11851,14 +13505,14 @@ export function createServer() {
             body: `Law firm submitted: ${title}`,
             emailTo: String(admin.email),
             caseNumber,
-            caseUrl: `${APP_URL}/portal/cases/${publicUuid}`,
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${publicUuid}`,
             email: buildNewCaseIntakeEmail({
               locale: normalizeLocale(admin.preferred_language as string),
               firstName: String(admin.first_name || "Admin"),
               caseNumber,
               caseTitle: title,
-              caseUrl: `${APP_URL}/portal/cases/${publicUuid}`,
-              appUrl: APP_URL,
+              caseUrl: `${EMAIL_APP_URL}/portal/cases/${publicUuid}`,
+              appUrl: EMAIL_APP_URL,
             }),
           });
         }
@@ -12144,7 +13798,7 @@ export function createServer() {
             title: `Client review · ${caseRow.case_number}`,
             body: `Law firm marked report as ${resolved.nextStatus}.`,
             caseNumber: String(caseRow.case_number),
-            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
           });
         }
 
@@ -12203,8 +13857,13 @@ export function createServer() {
         }
         const caseRow = rows[0];
         const buffer = Buffer.from(base64, "base64");
-        if (buffer.length === 0 || buffer.length > 15 * 1024 * 1024) {
+        if (buffer.length === 0 || buffer.length > DMS_MAX_FILE_BYTES) {
           return res.status(400).json({ error: "Invalid file size" });
+        }
+        if (shouldUseDirectBlobUpload(buffer.length)) {
+          return res.status(413).json({
+            error: "File too large for JSON upload; use direct blob upload",
+          });
         }
         const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
         const pathname = `client-cases/${caseRow.id}/${Date.now()}-${safeName}`;
@@ -12249,7 +13908,7 @@ export function createServer() {
             title: `Client document · ${caseRow.case_number}`,
             body: `Law firm uploaded "${title}" (${category}).`,
             caseNumber: String(caseRow.case_number),
-            caseUrl: `${APP_URL}/portal/cases/${caseRow.public_uuid}`,
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
           });
         }
 
@@ -12273,6 +13932,99 @@ export function createServer() {
         });
       } catch (err) {
         apiLogger.error("client document upload failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/client/cases/:publicUuid/documents/from-blob",
+    dbUnavailable,
+    requireLawFirm,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!process.env.BLOB_READ_WRITE_TOKEN) {
+          return res.status(503).json({
+            error: "BLOB_READ_WRITE_TOKEN not configured",
+          });
+        }
+        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
+        if (!lawFirmId) {
+          return res.status(403).json({ error: "No law firm linked to user" });
+        }
+        const body = req.body as CreateCaseDocumentFromBlobRequest;
+        const categoryParsed = parseClientUploadCategory(body.category);
+        if (categoryParsed.ok === false) {
+          return res.status(400).json({ error: categoryParsed.error });
+        }
+        const db = getPool();
+        const casePublicUuid = String(req.params.publicUuid);
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT id, case_number, public_uuid, status, law_firm_id, involves_fatality,
+                  assigned_coordinator_id, assigned_expert_id
+           FROM cases
+           WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [casePublicUuid, lawFirmId],
+        );
+        if (rows.length === 0) {
+          return res.status(404).json({ error: "Case not found" });
+        }
+        const caseRow = rows[0];
+        const validated = validateFromBlobDocument(body, {
+          actor: "law_firm",
+          casePublicUuid,
+          maxFileBytes: DMS_MAX_FILE_BYTES,
+          isAllowedMime: isAllowedDmsMime,
+          blobPathnameFromUrl,
+          isPrivateBlobUrl,
+        });
+        if (validated.ok === false) {
+          return res.status(400).json({ error: validated.error });
+        }
+        const inspected = await inspectPrivateBlob(
+          validated.value.storageKey,
+          validated.value.fileSizeBytes,
+        );
+        if (inspected.ok === false) {
+          await safeDeleteBlobs([validated.value.storageKey]);
+          return res.status(inspected.status).json({ error: inspected.error });
+        }
+        const document = await insertCaseDocumentFromExistingBlob({
+          caseId: caseRow.id as number,
+          title: validated.value.title,
+          fileName: validated.value.fileName,
+          contentType: validated.value.contentType,
+          storageKey: validated.value.storageKey,
+          fileSizeBytes: inspected.size,
+          category: categoryParsed.value,
+          uploadedByStaffId: null,
+          uploadedByLawFirmUserId: req.auth!.id,
+        });
+
+        const staffRecipients = new Set<number>();
+        const coordinator = await resolveCoordinatorOrAdmin(caseRow);
+        if (coordinator != null) staffRecipients.add(coordinator);
+        if (caseRow.assigned_expert_id != null) {
+          staffRecipients.add(Number(caseRow.assigned_expert_id));
+        }
+        for (const recipientId of staffRecipients) {
+          await createNotification({
+            recipientActor: "staff",
+            recipientId,
+            caseId: Number(caseRow.id),
+            type: "general",
+            title: `Client document · ${caseRow.case_number}`,
+            body: `Law firm uploaded "${document.title}" (${categoryParsed.value}).`,
+            caseNumber: String(caseRow.case_number),
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          });
+        }
+        await maybeStartTenDayClock(caseRow, coordinator);
+        await notifyMissingDocumentsIfNeeded(caseRow);
+        return res.status(201).json({ document });
+      } catch (err) {
+        apiLogger.error("client document from-blob failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
@@ -12347,6 +14099,83 @@ export function createServer() {
   );
 
   // ---- Uploads (Vercel Blob) ----
+
+  app.post(
+    "/api/blob/client-upload",
+    dbUnavailable,
+    requireAuth,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!process.env.BLOB_READ_WRITE_TOKEN) {
+          return res.status(503).json({
+            error: "BLOB_READ_WRITE_TOKEN not configured",
+          });
+        }
+        const jsonResponse = await handleUpload({
+          body: req.body as HandleUploadBody,
+          request: req,
+          token: process.env.BLOB_READ_WRITE_TOKEN,
+          onBeforeGenerateToken: async (pathname, clientPayload) => {
+            const parsed = parseDirectUploadClientPayload(clientPayload);
+            if (parsed.ok === false) {
+              throw new Error(parsed.error);
+            }
+            const actor = req.auth!.actor;
+            if (parsed.value.actor !== actor) {
+              throw new Error("Upload actor does not match session");
+            }
+            if (
+              actor === "staff" &&
+              !canMutateCaseSection(req.auth?.role, "documents")
+            ) {
+              throw new Error("Insufficient permissions");
+            }
+            if (
+              !isAllowedDirectUploadPathname(
+                pathname,
+                actor,
+                parsed.value.casePublicUuid,
+              )
+            ) {
+              throw new Error("Blob pathname does not belong to this case");
+            }
+            if (actor === "staff") {
+              const caseRow = await findCaseByPublicUuid(
+                parsed.value.casePublicUuid,
+              );
+              if (!caseRow) throw new Error("Case not found");
+            } else {
+              const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
+              if (!lawFirmId) throw new Error("No law firm linked to user");
+              const db = getPool();
+              const [rows] = await db.query<RowDataPacket[]>(
+                `SELECT id FROM cases
+                 WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
+                 LIMIT 1`,
+                [parsed.value.casePublicUuid, lawFirmId],
+              );
+              if (rows.length === 0) throw new Error("Case not found");
+            }
+            return {
+              allowedContentTypes: [...DMS_CLIENT_UPLOAD_CONTENT_TYPES],
+              maximumSizeInBytes: DMS_MAX_FILE_BYTES,
+              addRandomSuffix: true,
+              tokenPayload: JSON.stringify({
+                casePublicUuid: parsed.value.casePublicUuid,
+                actor,
+              }),
+            };
+          },
+        });
+        return res.json(jsonResponse);
+      } catch (err) {
+        apiLogger.warn("blob client-upload failed", err);
+        const message =
+          err instanceof Error ? err.message : "Upload token failed";
+        return res.status(400).json({ error: message });
+      }
+    },
+  );
 
   app.post(
     "/api/uploads",

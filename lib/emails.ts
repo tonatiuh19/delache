@@ -8,18 +8,24 @@ import type { AppLocale } from "../shared/i18n";
 import type { AuthActor } from "../shared/authActors";
 import type { NotificationType } from "../shared/api";
 import { toneForNotificationType } from "../shared/notificationRules";
+import { resolveEmailAssetBaseUrl } from "../shared/appUrlRules";
+import {
+  emailAssignmentRoleLabel,
+  emailStaffRoleLabel,
+} from "../shared/emailLabels";
 
 export const EMAIL_BRAND = {
-  bg: "#eef2f8",
+  bg: "#f7f4ee",
   surface: "#ffffff",
-  header: "#0b1b33",
-  primary: "#0b4ea2",
-  accent: "#2979ff",
+  header: "#1A1408",
+  primary: "#E6AB40",
+  accent: "#C9922A",
+  onPrimary: "#0F172A",
   text: "#0e1b31",
   muted: "#475569",
   dim: "#64748b",
-  border: "#dbe3f0",
-  codeBg: "#f1f5f9",
+  border: "#ebe4d6",
+  codeBg: "#fbf5e8",
   success: "#15803d",
   successBg: "#f0fdf4",
   warn: "#b45309",
@@ -84,6 +90,7 @@ type EmailStrings = {
     intro: string;
     caseLabel: string;
     roleLabel: string;
+    deliveryDueLabel: string;
     cta: string;
   };
   caseStatus: {
@@ -172,9 +179,11 @@ const EMAIL_STRINGS_ES: EmailStrings = {
     preheader: "Te asignaron un expediente",
     title: "Nueva asignación",
     greeting: "Hola {{name}},",
-    intro: "Te asignaron al expediente siguiente. Entra al portal para revisar el detalle.",
+    intro:
+      "Te asignaron al expediente siguiente. Entra al portal para revisar el detalle.",
     caseLabel: "Expediente",
     roleLabel: "Asignación",
+    deliveryDueLabel: "Entrega antes de",
     cta: "Ver expediente",
   },
   caseStatus: {
@@ -229,7 +238,8 @@ const EMAIL_STRINGS_EN: EmailStrings = {
     introStaff: "Use this code to sign in to the DELACHE internal portal:",
     introClient: "Use this code to sign in to the DELACHE law firm portal:",
     expiry: "Expires in {{minutes}} minutes. Do not share it with anyone.",
-    security: "If you did not request this code, you can safely ignore this email.",
+    security:
+      "If you did not request this code, you can safely ignore this email.",
   },
   inviteStaff: {
     preheader: "Your operations center access is ready",
@@ -263,9 +273,11 @@ const EMAIL_STRINGS_EN: EmailStrings = {
     preheader: "You were assigned to a case",
     title: "New assignment",
     greeting: "Hi {{name}},",
-    intro: "You were assigned to the following case. Open the portal to review details.",
+    intro:
+      "You were assigned to the following case. Open the portal to review details.",
     caseLabel: "Case",
     roleLabel: "Assignment",
+    deliveryDueLabel: "Deliver by",
     cta: "View case",
   },
   caseStatus: {
@@ -324,13 +336,18 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function brandMarkHtml(): string {
-  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0">
+function brandMarkHtml(appUrl: string): string {
+  const assetBase = resolveEmailAssetBaseUrl(appUrl, {
+    publicAssetOrigin: process.env.EMAIL_ASSET_BASE_URL || process.env.PUBLIC_APP_URL,
+  });
+  const logoSrc = `${assetBase}/brand/logo-full.png`;
+  // Wordmark fallback sits behind the image for clients that block remote images.
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
   <tr>
-    <td width="36" height="36" align="center" valign="middle" bgcolor="${EMAIL_BRAND.accent}" style="width:36px;height:36px;border-radius:10px;background:${EMAIL_BRAND.accent};">
-      <span style="display:inline-block;width:12px;height:12px;border:2.5px solid #fff;transform:rotate(45deg);"></span>
+    <td align="center" style="text-align:center;">
+      <img src="${escapeHtml(logoSrc)}" width="140" height="140" alt="DELACHE" style="display:block;margin:0 auto;width:140px;max-width:56%;height:auto;border:0;outline:none;text-decoration:none;background:transparent;" />
+      <div style="margin-top:10px;font-size:18px;font-weight:800;letter-spacing:0.18em;color:${EMAIL_BRAND.primary};font-family:${EMAIL_BRAND.fontFamily};">DELACHE</div>
     </td>
-    <td style="padding-left:12px;font-size:18px;font-weight:800;letter-spacing:0.18em;color:#fff;font-family:${EMAIL_BRAND.fontFamily};">DELACHE</td>
   </tr>
 </table>`;
 }
@@ -338,8 +355,8 @@ function brandMarkHtml(): string {
 function emailButton(url: string, label: string): string {
   return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0 8px;">
   <tr>
-    <td align="center" bgcolor="${EMAIL_BRAND.accent}" style="border-radius:12px;background:linear-gradient(135deg,${EMAIL_BRAND.accent} 0%,${EMAIL_BRAND.primary} 100%);">
-      <a href="${escapeHtml(url)}" target="_blank" style="display:inline-block;padding:14px 28px;color:#ffffff;font-weight:700;font-size:15px;text-decoration:none;border-radius:12px;font-family:${EMAIL_BRAND.fontFamily};">${escapeHtml(label)}</a>
+    <td align="center" bgcolor="${EMAIL_BRAND.primary}" style="border-radius:12px;background:linear-gradient(135deg,${EMAIL_BRAND.primary} 0%,${EMAIL_BRAND.accent} 100%);">
+      <a href="${escapeHtml(url)}" target="_blank" style="display:inline-block;padding:14px 28px;color:${EMAIL_BRAND.onPrimary};font-weight:700;font-size:15px;text-decoration:none;border-radius:12px;font-family:${EMAIL_BRAND.fontFamily};">${escapeHtml(label)}</a>
     </td>
   </tr>
 </table>`;
@@ -359,10 +376,17 @@ function otpCodeBlock(code: string): string {
 </table>`;
 }
 
-function highlightBanner(text: string, tone: "accent" | "warn" | "success" | "info" = "accent"): string {
+function highlightBanner(
+  text: string,
+  tone: "accent" | "warn" | "success" | "info" = "accent",
+): string {
   const colors =
     tone === "warn"
-      ? { bg: EMAIL_BRAND.warnBg, border: EMAIL_BRAND.warn, fg: EMAIL_BRAND.warn }
+      ? {
+          bg: EMAIL_BRAND.warnBg,
+          border: EMAIL_BRAND.warn,
+          fg: EMAIL_BRAND.warn,
+        }
       : tone === "success"
         ? {
             bg: EMAIL_BRAND.successBg,
@@ -459,9 +483,9 @@ export function emailShell(opts: BaseEmailOptions): string {
       <td align="center" valign="top" style="padding:36px 16px;">
         <table role="presentation" class="email-container" width="560" cellspacing="0" cellpadding="0" border="0" bgcolor="${EMAIL_BRAND.surface}" style="width:560px;max-width:560px;border-radius:16px;border:1px solid ${EMAIL_BRAND.border};overflow:hidden;box-shadow:0 10px 30px rgba(11,30,61,0.06);">
           <tr>
-            <td class="email-header" bgcolor="${EMAIL_BRAND.header}" style="padding:28px 32px 22px;background:${EMAIL_BRAND.header};border-bottom:3px solid ${EMAIL_BRAND.accent};">
-              ${brandMarkHtml()}
-              <h1 style="margin:18px 0 0;font-size:24px;font-weight:800;color:#ffffff;line-height:1.3;">${escapeHtml(title)}</h1>
+            <td class="email-header" bgcolor="${EMAIL_BRAND.header}" style="padding:28px 32px 22px;background:${EMAIL_BRAND.header};border-bottom:3px solid ${EMAIL_BRAND.accent};text-align:center;">
+              ${brandMarkHtml(appUrl)}
+              <h1 style="margin:18px 0 0;font-size:24px;font-weight:800;color:#ffffff;line-height:1.3;text-align:center;">${escapeHtml(title)}</h1>
             </td>
           </tr>
           <tr>
@@ -525,11 +549,13 @@ export function buildOtpEmail(opts: {
 export function buildInviteStaffEmail(opts: {
   locale: AppLocale;
   firstName: string;
-  roleLabel: string;
+  /** Staff role key (e.g. expert) — localized for the email locale */
+  role: string;
   appUrl: string;
   resend?: boolean;
 }): EmailPayload {
   const s = emailStrings(opts.locale);
+  const roleLabel = emailStaffRoleLabel(opts.role, opts.locale);
   const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/portal/login`;
   const banner =
     opts.locale === "es"
@@ -543,7 +569,7 @@ export function buildInviteStaffEmail(opts: {
     ${highlightBanner(banner, "accent")}
     <p style="margin:0 0 12px;font-size:17px;font-weight:600;">${escapeHtml(interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName }))}</p>
     <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.inviteStaff.intro)}</p>
-    ${metaCard([{ label: s.inviteStaff.roleLabel, value: opts.roleLabel }])}
+    ${metaCard([{ label: s.inviteStaff.roleLabel, value: roleLabel }])}
     ${stepsList([...s.inviteStaff.steps])}`;
 
   return {
@@ -560,7 +586,7 @@ export function buildInviteStaffEmail(opts: {
       cta: { label: s.inviteStaff.cta, url: loginUrl },
       appUrl: opts.appUrl,
     }),
-    text: `${interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName })}\n\n${s.inviteStaff.intro}\n\n${s.inviteStaff.roleLabel}: ${opts.roleLabel}\n\n${loginUrl}`,
+    text: `${interpolateEmail(s.inviteStaff.greeting, { name: opts.firstName })}\n\n${s.inviteStaff.intro}\n\n${s.inviteStaff.roleLabel}: ${roleLabel}\n\n${loginUrl}`,
   };
 }
 
@@ -614,21 +640,39 @@ export function buildAssignmentEmail(opts: {
   firstName: string;
   caseNumber: string;
   caseTitle: string;
-  roleLabel: string;
+  /** Assignment role key (e.g. expert) — localized for the email locale */
+  role: string;
   caseUrl: string;
   appUrl: string;
+  deliveryDueAt?: Date | null;
 }): EmailPayload {
   const s = emailStrings(opts.locale);
+  const roleLabel = emailAssignmentRoleLabel(opts.role, opts.locale);
+  const meta: { label: string; value: string }[] = [
+    {
+      label: s.assignment.caseLabel,
+      value: `${opts.caseNumber} — ${opts.caseTitle}`,
+    },
+    { label: s.assignment.roleLabel, value: roleLabel },
+  ];
+  if (opts.deliveryDueAt && opts.role === "expert") {
+    meta.push({
+      label: s.assignment.deliveryDueLabel,
+      value: opts.deliveryDueAt.toLocaleDateString(
+        opts.locale === "en" ? "en-US" : "es-MX",
+        { weekday: "short", year: "numeric", month: "short", day: "numeric" },
+      ),
+    });
+  }
   const bodyHtml = `
     <p style="margin:0 0 12px;font-size:17px;">${escapeHtml(interpolateEmail(s.assignment.greeting, { name: opts.firstName }))}</p>
     <p style="margin:0 0 8px;color:${EMAIL_BRAND.muted};">${escapeHtml(s.assignment.intro)}</p>
-    ${metaCard([
-      {
-        label: s.assignment.caseLabel,
-        value: `${opts.caseNumber} — ${opts.caseTitle}`,
-      },
-      { label: s.assignment.roleLabel, value: opts.roleLabel },
-    ])}`;
+    ${metaCard(meta)}`;
+
+  const dueText =
+    opts.deliveryDueAt && opts.role === "expert"
+      ? `\n${s.assignment.deliveryDueLabel}: ${meta[meta.length - 1]?.value ?? ""}`
+      : "";
 
   return {
     subject: interpolateEmail(s.subjects.assignment, {
@@ -642,7 +686,7 @@ export function buildAssignmentEmail(opts: {
       cta: { label: s.assignment.cta, url: opts.caseUrl },
       appUrl: opts.appUrl,
     }),
-    text: `${interpolateEmail(s.assignment.greeting, { name: opts.firstName })}\n\n${s.assignment.intro}\n\n${opts.caseNumber} — ${opts.caseTitle}\n${opts.roleLabel}\n\n${opts.caseUrl}`,
+    text: `${interpolateEmail(s.assignment.greeting, { name: opts.firstName })}\n\n${s.assignment.intro}\n\n${opts.caseNumber} — ${opts.caseTitle}\n${roleLabel}${dueText}\n\n${opts.caseUrl}`,
   };
 }
 
@@ -769,9 +813,7 @@ export function buildOpsNotificationEmail(opts: {
 }): EmailPayload {
   const tone = toneForNotificationType(opts.notificationType);
   const greeting =
-    opts.locale === "es"
-      ? `Hola ${opts.firstName},`
-      : `Hi ${opts.firstName},`;
+    opts.locale === "es" ? `Hola ${opts.firstName},` : `Hi ${opts.firstName},`;
   const ctaLabel =
     opts.locale === "es" ? "Abrir en DELACHE" : "Open in DELACHE";
   const preheader = opts.body.slice(0, 120);

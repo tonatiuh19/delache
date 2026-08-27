@@ -8,55 +8,128 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   FileText,
   LayoutDashboard,
   LogOut,
   Menu,
   Settings,
-  UserRound,
   Users,
   Wallet,
   X,
 } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchMe, logout } from "@/store/slices/authSlice";
-import { fetchNotifications } from "@/store/slices/portalSlice";
-import {
-  canManageAdmin,
-  canManageFinance,
-} from "@shared/rbac";
+import { fetchNotifications, fetchPendingReviews } from "@/store/slices/portalSlice";
+import { useNotificationPolling } from "@/hooks/useNotificationPolling";
+import { canManageAdmin, canManageFinance } from "@shared/rbac";
+import { canAccessReviewsQueue } from "@shared/reviewQueueRules";
 import MetaHelmet from "@/components/MetaHelmet";
 import AppVersionLabel from "@/components/AppVersionLabel";
+import BrandLogo from "@/components/BrandLogo";
 import { cn } from "@/lib/utils";
 import { PortalShellSkeleton } from "@/components/portal/PortalSkeletons";
 import GlobalSearchBar from "@/components/portal/GlobalSearchBar";
 
 const SIDEBAR_COLLAPSED_KEY = "delache_sidebar_collapsed";
+const SIDEBAR_EXPANDED_W = 280;
+const SIDEBAR_COLLAPSED_W = 88;
 
-const navItems = [
-  { to: "/portal", end: true, icon: LayoutDashboard, labelKey: "portal.dashboard", gate: "staff" },
-  { to: "/portal/cases", end: false, icon: Briefcase, labelKey: "portal.cases", gate: "staff" },
-  { to: "/portal/calendar", end: false, icon: CalendarDays, labelKey: "portal.calendar", gate: "staff" },
-  { to: "/portal/documents", end: false, icon: FileText, labelKey: "portal.documents", gate: "staff" },
-  { to: "/portal/finance", end: false, icon: Wallet, labelKey: "portal.finance", gate: "finance" },
-  { to: "/portal/notifications", end: false, icon: Bell, labelKey: "portal.notifications", gate: "staff" },
-  { to: "/portal/team", end: false, icon: Users, labelKey: "portal.team", gate: "admin" },
-  { to: "/portal/settings", end: false, icon: Settings, labelKey: "portal.settings", gate: "admin" },
-] as const;
+type NavGate = "staff" | "finance" | "admin" | "reviews";
 
-function BrandMark({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className={cn("flex items-center gap-3", compact && "justify-center")}>
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
-        <span className="h-4 w-4 rotate-45 border-[3px] border-current" />
-      </span>
-      {!compact ? (
-        <span className="text-[13px] font-extrabold tracking-[0.28em] text-white">
-          DELACHE
-        </span>
-      ) : null}
-    </div>
-  );
+type NavItem = {
+  to: string;
+  end?: boolean;
+  icon: typeof LayoutDashboard;
+  labelKey: string;
+  gate: NavGate;
+};
+
+type NavSection = {
+  id: string;
+  labelKey: string;
+  items: NavItem[];
+};
+
+const navSections: NavSection[] = [
+  {
+    id: "overview",
+    labelKey: "portal.navSection.overview",
+    items: [
+      {
+        to: "/portal",
+        end: true,
+        icon: LayoutDashboard,
+        labelKey: "portal.dashboard",
+        gate: "staff",
+      },
+    ],
+  },
+  {
+    id: "work",
+    labelKey: "portal.navSection.work",
+    items: [
+      {
+        to: "/portal/cases",
+        icon: Briefcase,
+        labelKey: "portal.cases",
+        gate: "staff",
+      },
+      {
+        to: "/portal/calendar",
+        icon: CalendarDays,
+        labelKey: "portal.calendar",
+        gate: "staff",
+      },
+      {
+        to: "/portal/documents",
+        icon: FileText,
+        labelKey: "portal.documents",
+        gate: "staff",
+      },
+      {
+        to: "/portal/reviews",
+        icon: ClipboardList,
+        labelKey: "portal.reviews",
+        gate: "reviews",
+      },
+      {
+        to: "/portal/finance",
+        icon: Wallet,
+        labelKey: "portal.finance",
+        gate: "finance",
+      },
+    ],
+  },
+  {
+    id: "admin",
+    labelKey: "portal.navSection.admin",
+    items: [
+      {
+        to: "/portal/team",
+        icon: Users,
+        labelKey: "portal.team",
+        gate: "admin",
+      },
+      {
+        to: "/portal/settings",
+        icon: Settings,
+        labelKey: "portal.settings",
+        gate: "admin",
+      },
+    ],
+  },
+];
+
+function userInitials(firstName?: string | null, lastName?: string | null) {
+  const a = (firstName || "").trim().charAt(0);
+  const b = (lastName || "").trim().charAt(0);
+  return `${a}${b}`.toUpperCase() || "D";
+}
+
+function formatUnread(count: number): string {
+  if (count > 99) return "99+";
+  return String(count);
 }
 
 export default function PortalLayout() {
@@ -64,7 +137,7 @@ export default function PortalLayout() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const { user, token, loading } = useAppSelector((s) => s.auth);
-  const { unreadCount } = useAppSelector((s) => s.portal);
+  const { unreadCount, pendingReviewsTotal } = useAppSelector((s) => s.portal);
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
@@ -89,11 +162,27 @@ export default function PortalLayout() {
     }
   }, [user, navigate]);
 
+  useNotificationPolling(
+    Boolean(user && user.actor === "staff"),
+    fetchNotifications,
+  );
+
+  const showReviewsBadge = canAccessReviewsQueue(user?.role);
+
   useEffect(() => {
-    if (user && user.actor === "staff") {
-      void dispatch(fetchNotifications());
-    }
-  }, [user, dispatch]);
+    if (!user || user.actor !== "staff" || !showReviewsBadge) return;
+    void dispatch(fetchPendingReviews({ limit: 1 }));
+  }, [dispatch, user, showReviewsBadge]);
+
+  useEffect(() => {
+    if (!user || user.actor !== "staff" || !showReviewsBadge) return;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void dispatch(fetchPendingReviews({ limit: 1 }));
+    };
+    document.addEventListener("visibilitychange", refresh);
+    return () => document.removeEventListener("visibilitychange", refresh);
+  }, [dispatch, user, showReviewsBadge]);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
@@ -110,138 +199,236 @@ export default function PortalLayout() {
 
   if (!user || user.actor !== "staff") return null;
 
-  const visibleNav = navItems.filter((item) => {
-    if (item.gate === "admin") return canManageAdmin(user.role);
-    if (item.gate === "finance") return canManageFinance(user.role);
+  const canSee = (gate: NavGate) => {
+    if (gate === "admin") return canManageAdmin(user.role);
+    if (gate === "finance") return canManageFinance(user.role);
+    if (gate === "reviews") return canAccessReviewsQueue(user.role);
     return true;
-  });
+  };
+
+  const visibleSections = navSections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => canSee(item.gate)),
+    }))
+    .filter((section) => section.items.length > 0);
 
   const sidebarInner = (opts: { compact: boolean; onNavigate?: () => void }) => (
     <div className="flex h-full flex-col">
-      <div className={cn("flex items-center justify-between px-4 py-5", opts.compact && "px-2")}>
-        <BrandMark compact={opts.compact} />
-        {!opts.compact ? (
-          <button
-            type="button"
-            className="hidden rounded-lg p-2 text-muted-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground lg:inline-flex"
-            onClick={() => setCollapsed(true)}
-            aria-label={t("portal.collapseSidebar")}
-          >
-            <ChevronLeft size={18} />
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="hidden rounded-lg p-2 text-muted-foreground transition hover:bg-sidebar-accent lg:inline-flex"
-            onClick={() => setCollapsed(false)}
-            aria-label={t("portal.expandSidebar")}
-          >
-            <ChevronRight size={18} />
-          </button>
+      <div
+        className={cn(
+          "flex items-center gap-2 border-b border-white/10 px-4 py-4",
+          opts.compact && "flex-col px-2 py-3",
         )}
-      </div>
-
-      {!opts.compact ? (
-        <div className="px-3 pb-3">
-          <GlobalSearchBar variant="sidebar" />
-        </div>
-      ) : null}
-
-      <nav className="flex-1 space-y-1 px-2">
-        {visibleNav.map(({ to, end, icon: Icon, labelKey }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={end}
-            onClick={opts.onNavigate}
-            className={({ isActive }) =>
-              cn(
-                "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition",
-                opts.compact && "justify-center px-2",
-                isActive
-                  ? "bg-primary text-primary-foreground shadow-sm"
-                  : "text-white/70 hover:bg-white/10 hover:text-white",
-              )
-            }
-          >
-            <span className="relative shrink-0">
-              <Icon size={18} />
-              {to === "/portal/notifications" && unreadCount > 0 && !opts.compact ? (
-                <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-accent" />
-              ) : null}
-            </span>
-            {!opts.compact ? (
-              <span className="flex items-center gap-2">
-                {t(labelKey)}
-                {to === "/portal/notifications" && unreadCount > 0 ? (
-                  <span className="rounded-full bg-accent px-1.5 text-[10px] font-bold text-accent-foreground">
-                    {unreadCount}
-                  </span>
-                ) : null}
-              </span>
-            ) : null}
-          </NavLink>
-        ))}
-      </nav>
-
-      <div className="border-t border-sidebar-border p-3">
-        <NavLink
-          to="/portal/profile"
-          onClick={opts.onNavigate}
-          className={({ isActive }) =>
-            cn(
-              "mb-2 flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition",
-              isActive
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "text-white/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-              opts.compact && "justify-center px-2",
-            )
-          }
-          title={t("portal.profile")}
-        >
-          <UserRound size={16} />
-          {!opts.compact ? t("portal.profile") : null}
-        </NavLink>
+      >
         <div
           className={cn(
-            "mb-3 rounded-xl bg-white/5 px-3 py-2",
-            opts.compact && "px-2 text-center",
+            "min-w-0 flex-1",
+            opts.compact && "flex w-full justify-center",
           )}
         >
-          {!opts.compact ? (
-            <>
-              <div className="truncate text-xs font-semibold text-white">
-                {user.firstName} {user.lastName}
-              </div>
-              <div className="truncate text-[10px] text-white/45">
-                {user.email}
-              </div>
-            </>
+          {opts.compact ? (
+            <BrandLogo variant="mark" size="sm" />
           ) : (
-            <div className="text-[10px] font-bold uppercase text-accent">
-              {user.firstName?.[0]}
-              {user.lastName?.[0]}
-            </div>
+            <BrandLogo
+              variant="full"
+              size="md"
+              className="max-h-10 max-w-[11.5rem]"
+            />
           )}
         </div>
         <button
           type="button"
-          onClick={onLogout}
           className={cn(
-            "flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-destructive transition hover:bg-destructive/15",
-            opts.compact && "justify-center px-2",
+            "hidden rounded-lg p-1.5 text-white/45 transition hover:bg-white/10 hover:text-white lg:inline-flex",
+            opts.compact && "mt-1",
           )}
+          onClick={() => setCollapsed(!opts.compact)}
+          aria-label={
+            opts.compact
+              ? t("portal.expandSidebar")
+              : t("portal.collapseSidebar")
+          }
         >
-          <LogOut size={16} />
-          {!opts.compact ? t("portal.logout") : null}
+          {opts.compact ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
+      </div>
+
+      {!opts.compact ? (
+        <div className="border-b border-white/10 px-3 py-3">
+          <GlobalSearchBar variant="sidebar" />
+        </div>
+      ) : null}
+
+      <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
+        {visibleSections.map((section) => (
+          <div key={section.id}>
+            {!opts.compact ? (
+              <p className="mb-2 px-2 text-[10px] font-bold uppercase tracking-[0.18em] text-white/35">
+                {t(section.labelKey)}
+              </p>
+            ) : (
+              <div className="mb-2 mx-auto h-px w-6 bg-white/15" aria-hidden />
+            )}
+            <ul className="space-y-0.5">
+              {section.items.map(({ to, end, icon: Icon, labelKey }) => {
+                const showBadge =
+                  to === "/portal/reviews" &&
+                  showReviewsBadge &&
+                  pendingReviewsTotal > 0;
+                return (
+                <li key={to}>
+                  <NavLink
+                    to={to}
+                    end={end}
+                    onClick={opts.onNavigate}
+                    title={opts.compact ? t(labelKey) : undefined}
+                    className={({ isActive }) =>
+                      cn(
+                        "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium transition",
+                        opts.compact && "justify-center px-2",
+                        isActive
+                          ? "bg-white/[0.09] text-white shadow-[inset_3px_0_0_0_hsl(var(--primary))]"
+                          : "text-white/55 hover:bg-white/[0.06] hover:text-white",
+                      )
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <span className="relative shrink-0">
+                          <Icon
+                            size={18}
+                            strokeWidth={isActive ? 2.25 : 1.75}
+                            className={cn(
+                              isActive ? "text-primary" : "text-white/55 group-hover:text-white/80",
+                            )}
+                          />
+                          {opts.compact && showBadge ? (
+                            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-destructive-foreground">
+                              {formatUnread(pendingReviewsTotal)}
+                            </span>
+                          ) : null}
+                        </span>
+                        {!opts.compact ? (
+                          <>
+                            <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>
+                            {showBadge ? (
+                              <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-destructive px-1.5 text-[10px] font-bold text-destructive-foreground">
+                                {formatUnread(pendingReviewsTotal)}
+                              </span>
+                            ) : null}
+                          </>
+                        ) : null}
+                      </>
+                    )}
+                  </NavLink>
+                </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+      </nav>
+
+      <div className="mt-auto border-t border-white/10 p-3">
         <div
           className={cn(
-            "mt-2 px-3",
+            "rounded-2xl border border-white/10 bg-white/[0.04] p-2.5",
+            opts.compact && "px-1.5 py-2",
+          )}
+        >
+          <div
+            className={cn(
+              "flex items-center gap-2.5 rounded-xl px-1.5 py-1.5",
+              opts.compact && "justify-center px-0",
+            )}
+          >
+            <NavLink
+              to="/portal/profile"
+              onClick={opts.onNavigate}
+              className={({ isActive }) =>
+                cn(
+                  "flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-1 py-1 transition",
+                  isActive ? "bg-white/10" : "hover:bg-white/[0.06]",
+                  opts.compact && "flex-none justify-center px-0",
+                )
+              }
+              title={t("portal.profile")}
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[11px] font-bold tracking-wide text-primary ring-1 ring-primary/30">
+                {userInitials(user.firstName, user.lastName)}
+              </span>
+              {!opts.compact ? (
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block truncate text-[13px] font-semibold text-white">
+                    {user.firstName} {user.lastName}
+                  </span>
+                  <span className="block truncate text-[11px] text-white/45">
+                    {t(`team.role.${user.role}`, { defaultValue: user.role })}
+                  </span>
+                </span>
+              ) : null}
+            </NavLink>
+            {!opts.compact ? (
+              <NavLink
+                to="/portal/notifications"
+                onClick={opts.onNavigate}
+                className="relative shrink-0 rounded-lg p-2 text-white/50 transition hover:bg-white/10 hover:text-white"
+                title={t("portal.notifications")}
+                aria-label={t("portal.notifications")}
+              >
+                <Bell size={16} />
+                {unreadCount > 0 ? (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-destructive-foreground">
+                    {formatUnread(unreadCount)}
+                  </span>
+                ) : null}
+              </NavLink>
+            ) : null}
+          </div>
+
+          <div
+            className={cn(
+              "mt-1.5 grid gap-0.5 border-t border-white/10 pt-1.5",
+              opts.compact && "grid-cols-1",
+            )}
+          >
+            {opts.compact ? (
+              <NavLink
+                to="/portal/notifications"
+                onClick={opts.onNavigate}
+                className="relative flex w-full items-center justify-center rounded-xl px-2.5 py-2 text-white/50 transition hover:bg-white/[0.06] hover:text-white"
+                title={t("portal.notifications")}
+                aria-label={t("portal.notifications")}
+              >
+                <Bell size={15} />
+                {unreadCount > 0 ? (
+                  <span className="absolute right-2 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-destructive-foreground">
+                    {formatUnread(unreadCount)}
+                  </span>
+                ) : null}
+              </NavLink>
+            ) : null}
+            <button
+              type="button"
+              onClick={onLogout}
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-[12px] font-medium text-white/50 transition hover:bg-white/[0.06] hover:text-white",
+                opts.compact && "justify-center px-1",
+              )}
+            >
+              <LogOut size={15} />
+              {!opts.compact ? t("portal.logout") : null}
+            </button>
+          </div>
+        </div>
+        <div
+          className={cn(
+            "mt-2 px-1",
             opts.compact && "flex justify-center px-0",
           )}
         >
-          <AppVersionLabel className="text-white/35" />
+          <AppVersionLabel className="text-white/25" />
         </div>
       </div>
     </div>
@@ -255,33 +442,33 @@ export default function PortalLayout() {
         noindex
       />
 
-      {/* Mobile top bar */}
       <header className="sticky top-0 z-40 flex h-14 items-center justify-between gap-3 border-b border-border bg-card/90 px-4 backdrop-blur lg:hidden">
-        <BrandMark />
+        <BrandLogo variant="mark" size="sm" />
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
           <GlobalSearchBar className="max-w-[min(100%,16rem)]" />
           <button
             type="button"
-            className="shrink-0 rounded-lg p-2 text-foreground"
+            className="relative shrink-0 rounded-lg p-2 text-foreground"
             onClick={() => setMobileOpen(true)}
             aria-label={t("portal.expandSidebar")}
           >
             <Menu size={20} />
+            {unreadCount > 0 ? (
+              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive" />
+            ) : null}
           </button>
         </div>
       </header>
 
       <div className="lg:flex">
-        {/* Desktop sidebar */}
         <motion.aside
-          animate={{ width: collapsed ? 84 : 268 }}
+          animate={{ width: collapsed ? SIDEBAR_COLLAPSED_W : SIDEBAR_EXPANDED_W }}
           transition={{ type: "spring", stiffness: 320, damping: 32 }}
-          className="sticky top-0 hidden h-screen shrink-0 border-r border-sidebar-border bg-[#0b0f1a] text-white lg:block"
+          className="sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r border-white/10 bg-delache-950 text-white lg:block"
         >
           {sidebarInner({ compact: collapsed })}
         </motion.aside>
 
-        {/* Mobile drawer */}
         <AnimatePresence>
           {mobileOpen ? (
             <>
@@ -299,11 +486,11 @@ export default function PortalLayout() {
                 animate={{ x: 0 }}
                 exit={{ x: -320 }}
                 transition={{ type: "spring", stiffness: 360, damping: 34 }}
-                className="fixed inset-y-0 left-0 z-50 w-[292px] bg-[#0b0f1a] text-white lg:hidden"
+                className="fixed inset-y-0 left-0 z-50 w-[300px] overflow-hidden bg-delache-950 text-white lg:hidden"
               >
                 <button
                   type="button"
-                  className="absolute right-3 top-4 rounded-lg p-2 text-white/70"
+                  className="absolute right-3 top-4 z-10 rounded-lg p-2 text-white/70"
                   onClick={() => setMobileOpen(false)}
                 >
                   <X size={18} />

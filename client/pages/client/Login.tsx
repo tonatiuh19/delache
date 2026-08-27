@@ -4,30 +4,20 @@ import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import MetaHelmet from "@/components/MetaHelmet";
 import OtpLoginForm from "@/components/auth/OtpLoginForm";
-
-function BrandMark() {
-  return (
-    <span className="grid h-9 w-9 place-items-center rounded-xl bg-primary text-primary-foreground">
-      <span className="h-4 w-4 rotate-45 border-[3px] border-current" />
-    </span>
-  );
-}
+import BrandLogo from "@/components/BrandLogo";
 
 function ClientLoginVisual() {
   const { t } = useTranslation();
   return (
-    <div className="relative hidden min-h-screen overflow-hidden bg-[#f3f6fb] lg:flex lg:flex-col lg:justify-between lg:border-r lg:border-border lg:p-12 xl:p-16">
-      <div className="absolute -left-24 top-[-10%] h-[480px] w-[480px] rounded-full bg-accent/15 blur-[90px]" />
+    <div className="relative hidden min-h-screen overflow-hidden bg-[#faf7f0] lg:flex lg:flex-col lg:justify-between lg:border-r lg:border-border lg:p-12 xl:p-16">
+      <div className="absolute -left-24 top-[-10%] h-[480px] w-[480px] rounded-full bg-primary/20 blur-[90px]" />
       <div className="absolute bottom-[-18%] right-[-12%] h-[420px] w-[420px] rounded-full bg-primary/10 blur-[90px]" />
-      <div className="relative z-10 flex items-center gap-3 text-foreground">
-        <BrandMark />
-        <span className="text-[15px] font-extrabold tracking-[.28em]">
-          {t("common.appName")}
-        </span>
+      <div className="relative z-10 flex items-center text-foreground">
+        <BrandLogo variant="full" size="lg" />
       </div>
       <div className="relative z-10 max-w-xl py-12">
         <div className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.22em] text-primary">
-          <span className="h-2 w-2 rounded-full bg-accent shadow-[0_0_0_5px_rgba(41,121,255,.12)]" />{" "}
+          <span className="h-2 w-2 rounded-full bg-primary shadow-[0_0_0_5px_rgba(230,171,64,.16)]" />{" "}
           {t("auth.clientPortal")}
         </div>
         <h1 className="font-[Manrope] text-5xl font-semibold leading-[1.02] tracking-[-.065em] text-foreground xl:text-6xl">
@@ -105,14 +95,10 @@ export default function ClientLogin() {
         <div className="flex items-center justify-between lg:justify-end">
           <Link
             to="/"
-            className="flex items-center gap-3 text-foreground lg:hidden"
+            className="inline-flex items-center text-foreground lg:hidden"
+            aria-label={t("common.appName")}
           >
-            <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-              <span className="h-3.5 w-3.5 rotate-45 border-2 border-current" />
-            </span>
-            <span className="text-sm font-extrabold tracking-[.24em]">
-              {t("common.appName")}
-            </span>
+            <BrandLogo variant="full" size="sm" />
           </Link>
           <Link
             to="/"

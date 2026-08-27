@@ -22,6 +22,7 @@ import CasesPage from "./pages/portal/Cases";
 import CaseDetailPage from "./pages/portal/CaseDetail";
 import CalendarPage from "./pages/portal/Calendar";
 import DocumentsPage from "./pages/portal/Documents";
+import ReviewsPage from "./pages/portal/Reviews";
 import FinancePage from "./pages/portal/Finance";
 import TeamPage from "./pages/portal/Team";
 import SettingsPage from "./pages/portal/Settings";
@@ -66,6 +67,7 @@ const App = () => (
                   <Route path="cases/:publicUuid" element={<CaseDetailPage />} />
                   <Route path="calendar" element={<CalendarPage />} />
                   <Route path="documents" element={<DocumentsPage />} />
+                  <Route path="reviews" element={<ReviewsPage />} />
                   <Route path="finance" element={<FinancePage />} />
                   <Route path="team" element={<TeamPage />} />
                   <Route path="settings" element={<SettingsPage />} />

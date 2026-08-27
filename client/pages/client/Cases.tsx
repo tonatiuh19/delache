@@ -11,6 +11,7 @@ import {
   createClientCase,
   fetchClientCases,
 } from "@/store/slices/clientSlice";
+import { notifyThunkSave } from "@/utils/formSave";
 
 export default function ClientCasesPage() {
   const { t } = useTranslation();
@@ -34,7 +35,7 @@ export default function ClientCasesPage() {
       title: Yup.string().trim().required(),
     }),
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         createClientCase({
           title: values.title.trim(),
           courtName: values.courtName.trim() || undefined,
@@ -44,7 +45,15 @@ export default function ClientCasesPage() {
           involvesFatality: values.involvesFatality,
         }),
       );
-      helpers.resetForm();
+      if (
+        notifyThunkSave(result, {
+          failureTitle: t("client.caseSaveFailed"),
+          fallbackError: "create_failed",
+          silentSuccess: true,
+        })
+      ) {
+        helpers.resetForm();
+      }
     },
   });
 

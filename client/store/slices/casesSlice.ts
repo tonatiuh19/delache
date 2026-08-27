@@ -1,4 +1,5 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
+import { logout } from "./authSlice";
 import type {
   CaseAssignmentItem,
   CaseAuditLogItem,
@@ -10,6 +11,9 @@ import type {
   CaseResponse,
   CasesListQuery,
   CasesListResponse,
+  CasesPipelineColumnMoreResponse,
+  CasesPipelineQuery,
+  CasesPipelineResponse,
   CaseStatus,
   CaseStatusHistoryItem,
   CaseSummary,
@@ -18,6 +22,7 @@ import type {
   CreateCaseDocumentRequest,
   CreateCaseNoteRequest,
   CreateCaseRequest,
+  DocumentCategory,
   CreateEvidenceRequest,
   CreateEvidenceResponse,
   CreateInspectionRequest,
@@ -27,6 +32,8 @@ import type {
   CreateQuestionnaireRequest,
   CreateTechnicalReportRequest,
   DeleteEvidenceResponse,
+  ExpertDeliveryDeadlineResponse,
+  SetExpertDeliveryDeadlineRequest,
   DocumentCompletenessInfo,
   EvidenceChecklistStatus,
   EvidenceItem,
@@ -48,6 +55,7 @@ import type {
 } from "@shared/api";
 import type { CaseProcessGateSnapshot } from "@shared/processGates";
 import api from "@/lib/api";
+import { uploadCaseDocumentsBatch } from "@/utils/caseDocumentUpload";
 
 interface CasesState {
   items: CaseSummary[];
@@ -77,6 +85,20 @@ interface CasesState {
   hasUnpaidInvoices: boolean;
   processGate: CaseProcessGateSnapshot | null;
   statusGateMissing: string[];
+  pipelineColumns: Record<
+    string,
+    {
+      items: CaseSummary[];
+      total: number;
+      offset: number;
+      limit: number;
+      hasMore: boolean;
+    }
+  >;
+  pipelineLoading: boolean;
+  pipelineRefreshing: boolean;
+  pipelineLoadingMore: string | null;
+  pipelinePageLimit: number;
   loading: boolean;
   detailLoading: boolean;
   creating: boolean;
@@ -108,6 +130,11 @@ const initialState: CasesState = {
   hasUnpaidInvoices: false,
   processGate: null,
   statusGateMissing: [],
+  pipelineColumns: {},
+  pipelineLoading: false,
+  pipelineRefreshing: false,
+  pipelineLoadingMore: null,
+  pipelinePageLimit: 20,
   loading: false,
   detailLoading: false,
   creating: false,
@@ -122,6 +149,30 @@ function rejectMsg(err: unknown, fallback: string) {
   );
 }
 
+function resetCaseDetail(state: CasesState) {
+  state.selected = null;
+  state.history = [];
+  state.notes = [];
+  state.documents = [];
+  state.assignments = [];
+  state.deadlines = [];
+  state.questionnaires = [];
+  state.inspections = [];
+  state.measurements = [];
+  state.evidence = [];
+  state.evidenceChecklist = null;
+  state.reviewRequests = [];
+  state.documentCompleteness = null;
+  state.auditLogs = [];
+  state.trips = [];
+  state.expenses = [];
+  state.technicalReports = [];
+  state.allowedNextStatuses = [];
+  state.processGate = null;
+  state.statusGateMissing = [];
+  state.hasUnpaidInvoices = false;
+}
+
 export const fetchCases = createAsyncThunk(
   "cases/fetchCases",
   async (params: CasesListQuery | undefined, { rejectWithValue }) => {
@@ -129,6 +180,66 @@ export const fetchCases = createAsyncThunk(
       const { data } = await api.get<CasesListResponse>("/api/cases", {
         params: params || undefined,
       });
+      return data;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "fetch_failed"));
+    }
+  },
+);
+
+function pipelineQueryParams(
+  args?: CasesPipelineQuery,
+): Record<string, string | number> {
+  const params: Record<string, string | number> = {};
+  if (args?.q) params.q = args.q;
+  if (args?.status) params.status = args.status;
+  if (args?.priority) params.priority = args.priority;
+  if (args?.limit != null) params.limit = args.limit;
+  if (args?.column) params.column = args.column;
+  if (args?.offset != null) params.offset = args.offset;
+  return params;
+}
+
+export const fetchCasesPipeline = createAsyncThunk(
+  "cases/fetchCasesPipeline",
+  async (args: CasesPipelineQuery | undefined, { rejectWithValue }) => {
+    try {
+      const { data } = await api.get<CasesPipelineResponse>(
+        "/api/cases/pipeline",
+        {
+          params: pipelineQueryParams({
+            ...args,
+            limit: args?.limit ?? 20,
+            column: undefined,
+            offset: undefined,
+          }),
+        },
+      );
+      return data;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "fetch_failed"));
+    }
+  },
+);
+
+export const fetchMoreCasesPipelineColumn = createAsyncThunk(
+  "cases/fetchMoreCasesPipelineColumn",
+  async (
+    args: CasesPipelineQuery & { column: string; offset: number },
+    { rejectWithValue },
+  ) => {
+    try {
+      const { data } = await api.get<CasesPipelineColumnMoreResponse>(
+        "/api/cases/pipeline",
+        {
+          params: pipelineQueryParams({
+            ...args,
+            limit: args.limit ?? 20,
+            column: args.column,
+            offset: args.offset,
+          }),
+        },
+      );
       return data;
     } catch (err: unknown) {
       return rejectWithValue(rejectMsg(err, "fetch_failed"));
@@ -297,6 +408,35 @@ export const bulkUploadCaseDocuments = createAsyncThunk(
   },
 );
 
+export const uploadCaseDocumentsSmart = createAsyncThunk(
+  "cases/uploadCaseDocumentsSmart",
+  async (
+    payload: {
+      publicUuid: string;
+      files: File[];
+      category: DocumentCategory;
+    },
+    { rejectWithValue },
+  ) => {
+    try {
+      const result = await uploadCaseDocumentsBatch({
+        publicUuid: payload.publicUuid,
+        files: payload.files,
+        category: payload.category,
+        actor: "staff",
+      });
+      if (result.documents.length === 0) {
+        return rejectWithValue(
+          result.failures[0]?.error || "upload_failed",
+        );
+      }
+      return result;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "upload_failed"));
+    }
+  },
+);
+
 export const updateDocumentCategory = createAsyncThunk(
   "cases/updateDocumentCategory",
   async (
@@ -341,6 +481,25 @@ export const runDocumentOcr = createAsyncThunk(
   },
 );
 
+export const setExpertDeliveryDeadline = createAsyncThunk(
+  "cases/setExpertDeliveryDeadline",
+  async (
+    payload: { publicUuid: string } & SetExpertDeliveryDeadlineRequest,
+    { rejectWithValue },
+  ) => {
+    try {
+      const { publicUuid, ...body } = payload;
+      const { data } = await api.patch<ExpertDeliveryDeadlineResponse>(
+        `/api/cases/${publicUuid}/expert-delivery-deadline`,
+        body,
+      );
+      return data.deadline;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "expert_delivery_failed"));
+    }
+  },
+);
+
 export const assignCaseMember = createAsyncThunk(
   "cases/assignCaseMember",
   async (
@@ -348,9 +507,10 @@ export const assignCaseMember = createAsyncThunk(
     { rejectWithValue },
   ) => {
     try {
+      const { publicUuid, ...body } = payload;
       const { data } = await api.post<{ assignment: CaseAssignmentItem }>(
-        `/api/cases/${payload.publicUuid}/assignments`,
-        payload,
+        `/api/cases/${publicUuid}/assignments`,
+        body,
       );
       return data.assignment;
     } catch (err: unknown) {
@@ -616,24 +776,7 @@ const casesSlice = createSlice({
       state.error = null;
     },
     clearSelectedCase(state) {
-      state.selected = null;
-      state.history = [];
-      state.notes = [];
-      state.documents = [];
-      state.assignments = [];
-      state.deadlines = [];
-      state.questionnaires = [];
-      state.inspections = [];
-      state.measurements = [];
-      state.evidence = [];
-      state.evidenceChecklist = null;
-      state.reviewRequests = [];
-      state.documentCompleteness = null;
-      state.auditLogs = [];
-      state.trips = [];
-      state.expenses = [];
-      state.technicalReports = [];
-      state.allowedNextStatuses = [];
+      resetCaseDetail(state);
     },
   },
   extraReducers: (builder) => {
@@ -651,6 +794,56 @@ const casesSlice = createSlice({
         state.loading = false;
         state.error = (action.payload as string) || "fetch_failed";
       })
+      .addCase(fetchCasesPipeline.pending, (state, action) => {
+        const reset = action.meta.arg?.resetColumns !== false;
+        const hasColumns = Object.keys(state.pipelineColumns).length > 0;
+        if (reset || !hasColumns) {
+          state.pipelineLoading = true;
+          state.pipelineColumns = {};
+        } else {
+          state.pipelineRefreshing = true;
+        }
+        state.error = null;
+      })
+      .addCase(fetchCasesPipeline.fulfilled, (state, action) => {
+        state.pipelineLoading = false;
+        state.pipelineRefreshing = false;
+        state.pipelineColumns = action.payload.columns ?? {};
+        state.pipelinePageLimit = action.payload.limit ?? 20;
+      })
+      .addCase(fetchCasesPipeline.rejected, (state, action) => {
+        state.pipelineLoading = false;
+        state.pipelineRefreshing = false;
+        state.error = (action.payload as string) || "fetch_failed";
+      })
+      .addCase(fetchMoreCasesPipelineColumn.pending, (state, action) => {
+        state.pipelineLoadingMore = action.meta.arg.column;
+      })
+      .addCase(fetchMoreCasesPipelineColumn.rejected, (state) => {
+        state.pipelineLoadingMore = null;
+      })
+      .addCase(fetchMoreCasesPipelineColumn.fulfilled, (state, action) => {
+        state.pipelineLoadingMore = null;
+        const colKey = action.payload.column;
+        const prev = state.pipelineColumns[colKey] ?? {
+          items: [],
+          total: 0,
+          offset: 0,
+          limit: action.payload.limit,
+          hasMore: false,
+        };
+        const seen = new Set(prev.items.map((c) => c.publicUuid));
+        const appended = action.payload.items.filter(
+          (c) => !seen.has(c.publicUuid),
+        );
+        state.pipelineColumns[colKey] = {
+          items: [...prev.items, ...appended],
+          total: action.payload.total,
+          offset: action.payload.offset,
+          limit: action.payload.limit,
+          hasMore: action.payload.hasMore,
+        };
+      })
       .addCase(createCase.pending, (state) => {
         state.creating = true;
         state.error = null;
@@ -663,10 +856,14 @@ const casesSlice = createSlice({
         state.creating = false;
         state.error = (action.payload as string) || "create_failed";
       })
-      .addCase(fetchCaseDetail.pending, (state) => {
+      .addCase(fetchCaseDetail.pending, (state, action) => {
+        const uuid = String(action.meta.arg || "");
         state.detailLoading = true;
         state.error = null;
         state.processGate = null;
+        if (!state.selected || state.selected.publicUuid !== uuid) {
+          resetCaseDetail(state);
+        }
       })
       .addCase(fetchCaseDetail.fulfilled, (state, action) => {
         state.detailLoading = false;
@@ -695,6 +892,10 @@ const casesSlice = createSlice({
       })
       .addCase(fetchCaseDetail.rejected, (state, action) => {
         state.detailLoading = false;
+        const uuid = String(action.meta.arg || "");
+        if (!state.selected || state.selected.publicUuid === uuid) {
+          resetCaseDetail(state);
+        }
         state.error = (action.payload as string) || "fetch_failed";
       })
       .addCase(updateCaseStatus.pending, (state) => {
@@ -748,8 +949,14 @@ const casesSlice = createSlice({
             : c,
         );
       })
+      .addCase(updateCaseLocation.rejected, (state, action) => {
+        state.error = (action.payload as string) || "location_failed";
+      })
       .addCase(addCaseNote.fulfilled, (state, action) => {
         state.notes = [action.payload, ...state.notes];
+      })
+      .addCase(addCaseNote.rejected, (state, action) => {
+        state.error = (action.payload as string) || "note_failed";
       })
       .addCase(uploadCaseDocument.fulfilled, (state, action) => {
         state.documents = [action.payload, ...state.documents];
@@ -762,6 +969,15 @@ const casesSlice = createSlice({
       })
       .addCase(bulkUploadCaseDocuments.rejected, (state, action) => {
         state.error = (action.payload as string) || "bulk_upload_failed";
+      })
+      .addCase(uploadCaseDocumentsSmart.fulfilled, (state, action) => {
+        state.documents = [...action.payload.documents, ...state.documents];
+        if (action.payload.failures.length > 0) {
+          state.error = action.payload.failures[0].error;
+        }
+      })
+      .addCase(uploadCaseDocumentsSmart.rejected, (state, action) => {
+        state.error = (action.payload as string) || "upload_failed";
       })
       .addCase(updateDocumentCategory.fulfilled, (state, action) => {
         state.documents = state.documents.map((d) =>
@@ -789,10 +1005,25 @@ const casesSlice = createSlice({
         );
         state.assignments = [action.payload, ...next];
       })
+      .addCase(setExpertDeliveryDeadline.fulfilled, (state, action) => {
+        const rest = state.deadlines.filter(
+          (d) => d.deadlineType !== "expert_delivery",
+        );
+        state.deadlines = action.payload ? [...rest, action.payload] : rest;
+      })
+      .addCase(setExpertDeliveryDeadline.rejected, (state, action) => {
+        state.error = (action.payload as string) || "expert_delivery_failed";
+      })
+      .addCase(assignCaseMember.rejected, (state, action) => {
+        state.error = (action.payload as string) || "assign_failed";
+      })
       .addCase(unassignCaseMember.fulfilled, (state, action) => {
         state.assignments = state.assignments.filter(
           (a) => a.id !== action.payload,
         );
+      })
+      .addCase(unassignCaseMember.rejected, (state, action) => {
+        state.error = (action.payload as string) || "unassign_failed";
       })
       .addCase(createQuestionnaire.fulfilled, (state, action) => {
         const next = action.payload;
@@ -801,11 +1032,20 @@ const casesSlice = createSlice({
         );
         state.questionnaires = [next, ...without];
       })
+      .addCase(createQuestionnaire.rejected, (state, action) => {
+        state.error = (action.payload as string) || "questionnaire_failed";
+      })
       .addCase(createInspection.fulfilled, (state, action) => {
         state.inspections = [action.payload, ...state.inspections];
       })
+      .addCase(createInspection.rejected, (state, action) => {
+        state.error = (action.payload as string) || "inspection_failed";
+      })
       .addCase(createMeasurement.fulfilled, (state, action) => {
         state.measurements = [action.payload, ...state.measurements];
+      })
+      .addCase(createMeasurement.rejected, (state, action) => {
+        state.error = (action.payload as string) || "measurement_failed";
       })
       .addCase(createEvidence.fulfilled, (state, action) => {
         state.evidence = [action.payload.evidence, ...state.evidence];
@@ -826,16 +1066,28 @@ const casesSlice = createSlice({
       .addCase(createTrip.fulfilled, (state, action) => {
         state.trips = [action.payload, ...state.trips];
       })
+      .addCase(createTrip.rejected, (state, action) => {
+        state.error = (action.payload as string) || "trip_failed";
+      })
       .addCase(createExpense.fulfilled, (state, action) => {
         state.expenses = [action.payload, ...state.expenses];
       })
+      .addCase(createExpense.rejected, (state, action) => {
+        state.error = (action.payload as string) || "expense_failed";
+      })
       .addCase(createTechnicalReport.fulfilled, (state, action) => {
         state.technicalReports = [action.payload, ...state.technicalReports];
+      })
+      .addCase(createTechnicalReport.rejected, (state, action) => {
+        state.error = (action.payload as string) || "report_failed";
       })
       .addCase(updateTechnicalReportStatus.fulfilled, (state, action) => {
         state.technicalReports = state.technicalReports.map((r) =>
           r.publicUuid === action.payload.publicUuid ? action.payload : r,
         );
+      })
+      .addCase(updateTechnicalReportStatus.rejected, (state, action) => {
+        state.error = (action.payload as string) || "report_status_failed";
       })
       .addCase(updateQuestionnaireStatus.fulfilled, (state, action) => {
         state.questionnaires = state.questionnaires.map((q) =>
@@ -861,7 +1113,8 @@ const casesSlice = createSlice({
       })
       .addCase(updateInspectionStatus.rejected, (state, action) => {
         state.error = (action.payload as string) || "inspection_status_failed";
-      });
+      })
+      .addCase(logout.fulfilled, () => initialState);
   },
 });
 

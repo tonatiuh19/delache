@@ -15,10 +15,25 @@ export default {
     extend: {
       colors: {
         delache: {
-          blue: "#0B4EA2",
-          accent: "#2979FF",
+          // Scale derived from primary #E6AB40 (H≈39°)
+          50: "#FBF5E8",
+          100: "#F7EBD2",
+          200: "#F0D9A8",
+          300: "#E8C574",
+          400: "#EBB85A",
+          500: "#E6AB40",
+          600: "#C9922A",
+          700: "#A67620",
+          800: "#6B4C14",
+          900: "#3D2C0C",
+          950: "#1A1408",
+          gold: "#E6AB40",
+          goldDeep: "#C9922A",
           ink: "#0F172A",
-          paper: "#FAFBFC",
+          paper: "#FAF7F0",
+          /** @deprecated use delache.500 */
+          blue: "#E6AB40",
+          accent: "#C9922A",
         },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -65,8 +80,8 @@ export default {
         },
       },
       boxShadow: {
-        premium: "0 24px 70px rgba(11, 78, 162, 0.12)",
-        dashboard: "0 35px 100px rgba(2, 12, 35, 0.45)",
+        premium: "0 24px 70px rgba(230, 171, 64, 0.14)",
+        dashboard: "0 35px 100px rgba(10, 10, 10, 0.5)",
       },
       borderRadius: {
         lg: "var(--radius)",

@@ -165,6 +165,40 @@ export interface CasesListQuery extends GridListParams {
   priority?: string;
 }
 
+export interface CasesPipelineColumnPage {
+  items: CaseSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+export interface CasesPipelineQuery {
+  q?: string;
+  status?: string;
+  priority?: string;
+  limit?: number;
+  /** When false, refetch keeps existing columns visible (background refresh). */
+  resetColumns?: boolean;
+  /** Load-more: column status key. */
+  column?: string;
+  offset?: number;
+}
+
+export interface CasesPipelineResponse {
+  limit: number;
+  columns: Record<string, CasesPipelineColumnPage>;
+}
+
+export interface CasesPipelineColumnMoreResponse {
+  column: string;
+  items: CaseSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
 export interface TeamListQuery extends GridListParams {
   q?: string;
   role?: string;
@@ -293,7 +327,8 @@ export type DeadlineType =
   | "external_legal_validation"
   | "court_delivery"
   | "payment"
-  | "custom";
+  | "custom"
+  | "expert_delivery";
 
 export type DeadlineSeverity = "safe" | "warning" | "critical" | "overdue";
 
@@ -349,6 +384,17 @@ export interface ReviewRequestItem {
   completedAt: string | null;
   notes: string | null;
   createdAt: string;
+}
+
+export interface PendingReviewQueueItem extends ReviewRequestItem {
+  casePublicUuid: string;
+  caseNumber: string;
+  caseTitle: string;
+}
+
+export interface PendingReviewsResponse {
+  reviews: PendingReviewQueueItem[];
+  total: number;
 }
 
 export interface CompleteReviewRequest {
@@ -640,6 +686,17 @@ export interface CreateAssignmentRequest {
   assignmentRole: AssignmentRole;
   isPrimary?: boolean;
   notes?: string;
+  /** Primary expert delivery due date (YYYY-MM-DD or ISO). Creates action item + notifies expert. */
+  deliveryDueAt?: string;
+}
+
+export interface SetExpertDeliveryDeadlineRequest {
+  /** YYYY-MM-DD or ISO datetime; omit/null to clear the active deadline. */
+  deliveryDueAt?: string | null;
+}
+
+export interface ExpertDeliveryDeadlineResponse {
+  deadline: CaseDeadlineItem | null;
 }
 
 export interface CreateQuestionnaireRequest {
@@ -813,6 +870,15 @@ export interface CreateCaseDocumentRequest {
   data: string;
 }
 
+export interface CreateCaseDocumentFromBlobRequest {
+  title: string;
+  category?: DocumentCategory;
+  fileName: string;
+  contentType?: string;
+  storageKey: string;
+  fileSizeBytes: number;
+}
+
 export interface UpdateDocumentCategoryRequest {
   category: DocumentCategory;
 }
@@ -833,6 +899,7 @@ export interface CalendarEventItem {
   id: number;
   publicUuid: string;
   caseId: number | null;
+  caseDeadlineId?: number | null;
   eventType: string;
   title: string;
   startsAt: string;

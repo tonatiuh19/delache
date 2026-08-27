@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useFormik } from "formik";
 import * as Yup from "yup";
@@ -9,16 +9,16 @@ import {
   FileUp,
   MapPinned,
   MessageSquarePlus,
+  Pencil,
   Trash2,
 } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import { CaseDetailSkeleton } from "@/components/portal/PortalSkeletons";
-import DocumentDropzone from "@/components/portal/DocumentDropzone";
-import DocumentCategorySelect from "@/components/portal/DocumentCategorySelect";
 import DocumentPreviewSheet, {
   asPreviewableDocument,
   type PreviewableDocument,
 } from "@/components/portal/DocumentPreviewSheet";
+import CaseDocumentsPanel from "@/components/portal/CaseDocumentsPanel";
 import DigitalSignaturePad, {
   type SignatureExport,
 } from "@/components/portal/DigitalSignaturePad";
@@ -36,25 +36,36 @@ import {
   QUESTIONNAIRE_STATUS_RANK,
   REPORT_STATUS_RANK,
 } from "@shared/processGates";
+import { isForwardTransitionBlockedByGates } from "@shared/casePipelineRules";
 import { isActiveDocumentStatus } from "@shared/documentCompleteness";
 import { SectionHelper, FieldHelper } from "@/components/portal/FormHelpers";
+import PendingSubmitButton from "@/components/portal/PendingSubmitButton";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
+import { notifyThunkSave } from "@/utils/formSave";
 import {
   canChangeCaseStatus,
+  canCompleteReviewStage,
   canEditCaseLocation,
+  canManageCaseAssignments,
+  canMutateCaseSection,
   canViewCaseSection,
 } from "@shared/portalCapabilities";
 import {
   buildPropertyQuery,
+  formatDecimalCoordinate,
   googleStreetViewUrl,
+  hasPropertyMapPreview,
   parseGpsText,
   resolveOptionalLatLng,
+  shouldStartPropertyLocationEditing,
 } from "@shared/locationRules";
+import { resolveLocationGpsForSave } from "@shared/formSaveRules";
+import { isBlobTokenMissingError } from "@shared/documentDmsRules";
+import { toast } from "@/hooks/use-toast";
 import { requestDevicePosition } from "@/utils/geolocation";
 import {
   addCaseNote,
   assignCaseMember,
-  bulkUploadCaseDocuments,
   completeReviewRequest,
   createEvidence,
   createExpense,
@@ -67,6 +78,7 @@ import {
   fetchCaseDetail,
   geocodeAddress,
   runDocumentOcr,
+  setExpertDeliveryDeadline,
   unassignCaseMember,
   updateCaseFlags,
   updateCaseLocation,
@@ -75,7 +87,7 @@ import {
   updateQuestionnaireStatus,
   updateDocumentCategory,
   updateTechnicalReportStatus,
-  uploadCaseDocument,
+  uploadCaseDocumentsSmart,
 } from "@/store/slices/casesSlice";
 import { fetchTeamMembers } from "@/store/slices/portalSlice";
 import type {
@@ -121,6 +133,7 @@ function severityClass(level: string) {
 
 export default function CaseDetailPage() {
   const { publicUuid = "" } = useParams();
+  const location = useLocation();
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const {
@@ -162,6 +175,8 @@ export default function CaseDetailPage() {
   const [signaturePadKey, setSignaturePadKey] = useState(0);
   const [locating, setLocating] = useState(false);
   const [locationStatus, setLocationStatus] = useState<string | null>(null);
+  const [locationEditing, setLocationEditing] = useState(true);
+  const [unassigningId, setUnassigningId] = useState<number | null>(null);
 
   const refreshDetail = () => {
     if (publicUuid) void dispatch(fetchCaseDetail(publicUuid));
@@ -172,6 +187,37 @@ export default function CaseDetailPage() {
     void dispatch(fetchTeamMembers({ limit: 100, sortBy: "first_name", sortDir: "ASC" }));
   }, [dispatch, publicUuid]);
 
+  useEffect(() => {
+    if (!selected) return;
+    setLocationEditing(
+      shouldStartPropertyLocationEditing({
+        address: selected.propertyAddress,
+        city: selected.propertyCity,
+        state: selected.propertyState,
+        postalCode: selected.propertyPostalCode,
+        country: selected.propertyCountry,
+        lat: selected.propertyLat,
+        lng: selected.propertyLng,
+      }),
+    );
+  }, [selected?.publicUuid]);
+
+  useEffect(() => {
+    if (location.hash !== "#case-reviews") return;
+    if (detailLoading) return;
+    if (!selected || selected.publicUuid !== publicUuid) return;
+    if (!canViewCaseSection(role, "reviews")) return;
+    const el = document.getElementById("case-reviews");
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [
+    location.hash,
+    detailLoading,
+    reviewRequests.length,
+    publicUuid,
+    role,
+    selected?.publicUuid,
+  ]);
+
   const locationForm = useFormik({
     enableReinitialize: true,
     initialValues: {
@@ -181,19 +227,49 @@ export default function CaseDetailPage() {
       propertyPostalCode: selected?.propertyPostalCode || "",
       propertyCountry: selected?.propertyCountry || "MX",
       propertyLat:
-        selected?.propertyLat != null ? String(selected.propertyLat) : "",
+        selected?.propertyLat != null
+          ? formatDecimalCoordinate(selected.propertyLat)
+          : "",
       propertyLng:
-        selected?.propertyLng != null ? String(selected.propertyLng) : "",
+        selected?.propertyLng != null
+          ? formatDecimalCoordinate(selected.propertyLng)
+          : "",
     },
     onSubmit: async (values) => {
       setLocationStatus(null);
-      const coords = resolveOptionalLatLng(
-        values.propertyLat,
-        values.propertyLng,
-      );
-      if (coords.ok === false) {
-        setLocationStatus(t("maps.invalidGpsText"));
-        return;
+      const gps = resolveLocationGpsForSave({
+        latRaw: values.propertyLat,
+        lngRaw: values.propertyLng,
+        resolveOptionalLatLng,
+      });
+      let propertyLat: number | null = selected?.propertyLat ?? null;
+      let propertyLng: number | null = selected?.propertyLng ?? null;
+      if (gps.action === "clear") {
+        propertyLat = null;
+        propertyLng = null;
+      } else if (gps.action === "set") {
+        propertyLat = gps.lat;
+        propertyLng = gps.lng;
+        await locationForm.setFieldValue(
+          "propertyLat",
+          formatDecimalCoordinate(gps.lat),
+        );
+        await locationForm.setFieldValue(
+          "propertyLng",
+          formatDecimalCoordinate(gps.lng),
+        );
+      } else if (gps.warning === "need_both") {
+        toast({
+          title: t("maps.locationPartialSaved"),
+          description: t("maps.gpsNeedBoth"),
+          variant: "destructive",
+        });
+      } else if (gps.warning === "invalid") {
+        toast({
+          title: t("maps.locationPartialSaved"),
+          description: t("maps.invalidGpsText"),
+          variant: "destructive",
+        });
       }
       const result = await dispatch(
         updateCaseLocation({
@@ -203,15 +279,25 @@ export default function CaseDetailPage() {
           propertyState: values.propertyState.trim() || null,
           propertyPostalCode: values.propertyPostalCode.trim() || null,
           propertyCountry: values.propertyCountry.trim() || "MX",
-          propertyLat: coords.value?.lat ?? null,
-          propertyLng: coords.value?.lng ?? null,
+          propertyLat,
+          propertyLng,
         }),
       );
       if (updateCaseLocation.fulfilled.match(result)) {
         setLocationStatus(t("maps.locationSaved"));
+        setLocationEditing(false);
+        toast({
+          title: t("maps.locationSaved"),
+        });
         refreshDetail();
       } else {
+        const message = String(result.payload || t("maps.locationSaveFailed"));
         setLocationStatus(t("maps.locationSaveFailed"));
+        toast({
+          title: t("maps.locationSaveFailed"),
+          description: message,
+          variant: "destructive",
+        });
       }
     },
   });
@@ -220,8 +306,18 @@ export default function CaseDetailPage() {
     initialValues: { body: "" },
     validationSchema: Yup.object({ body: Yup.string().trim().required() }),
     onSubmit: async (values, helpers) => {
-      await dispatch(addCaseNote({ publicUuid, body: values.body.trim() }));
-      helpers.resetForm();
+      const result = await dispatch(
+        addCaseNote({ publicUuid, body: values.body.trim() }),
+      );
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.noteSaveSuccess"),
+          failureTitle: t("cases.noteSaveFailed"),
+          fallbackError: "note_failed",
+        })
+      ) {
+        helpers.resetForm();
+      }
     },
   });
 
@@ -230,28 +326,77 @@ export default function CaseDetailPage() {
       userId: "",
       assignmentRole: "expert" as AssignmentRole,
       isPrimary: true,
+      deliveryDueAt: "",
     },
     validationSchema: Yup.object({
       userId: Yup.string().required(),
       assignmentRole: Yup.string().required(),
+      deliveryDueAt: Yup.string(),
     }),
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         assignCaseMember({
           publicUuid,
           userId: Number(values.userId),
           assignmentRole: values.assignmentRole,
           isPrimary: values.isPrimary,
+          deliveryDueAt:
+            values.assignmentRole === "expert" &&
+            values.isPrimary &&
+            values.deliveryDueAt.trim()
+              ? values.deliveryDueAt.trim()
+              : undefined,
         }),
       );
-      refreshDetail();
-      helpers.resetForm({
-        values: {
-          userId: "",
-          assignmentRole: "expert",
-          isPrimary: true,
-        },
-      });
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.assignSaveSuccess"),
+          failureTitle: t("cases.assignSaveFailed"),
+          fallbackError: "assign_failed",
+        })
+      ) {
+        refreshDetail();
+        helpers.resetForm({
+          values: {
+            userId: "",
+            assignmentRole: "expert",
+            isPrimary: true,
+            deliveryDueAt: "",
+          },
+        });
+      }
+    },
+  });
+
+  const primaryExpert = assignments.find(
+    (a) => a.assignmentRole === "expert" && a.isPrimary,
+  );
+  const expertDeliveryDeadline = deadlines.find(
+    (d) => d.deadlineType === "expert_delivery" && !d.completedAt,
+  );
+  const expertDeliveryForm = useFormik({
+    enableReinitialize: true,
+    initialValues: {
+      deliveryDueAt: expertDeliveryDeadline
+        ? expertDeliveryDeadline.dueAt.slice(0, 10)
+        : "",
+    },
+    onSubmit: async (values) => {
+      const result = await dispatch(
+        setExpertDeliveryDeadline({
+          publicUuid,
+          deliveryDueAt: values.deliveryDueAt.trim() || null,
+        }),
+      );
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.expertDeliverySaveSuccess"),
+          failureTitle: t("cases.expertDeliverySaveFailed"),
+          fallbackError: "expert_delivery_failed",
+        })
+      ) {
+        refreshDetail();
+      }
     },
   });
 
@@ -290,7 +435,7 @@ export default function CaseDetailPage() {
       submit: true,
     },
     onSubmit: async (values) => {
-      await dispatch(
+      const result = await dispatch(
         createQuestionnaire({
           publicUuid,
           submit: values.submit,
@@ -302,22 +447,38 @@ export default function CaseDetailPage() {
           },
         }),
       );
-      refreshDetail();
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.questionnaireSaveSuccess"),
+          failureTitle: t("cases.questionnaireSaveFailed"),
+          fallbackError: "questionnaire_failed",
+        })
+      ) {
+        refreshDetail();
+      }
     },
   });
 
   const inspectionForm = useFormik({
     initialValues: { scheduledAt: "", notes: "" },
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         createInspection({
           publicUuid,
           scheduledAt: values.scheduledAt || undefined,
           notes: values.notes.trim() || undefined,
         }),
       );
-      refreshDetail();
-      helpers.resetForm();
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.inspectionSaveSuccess"),
+          failureTitle: t("cases.inspectionSaveFailed"),
+          fallbackError: "inspection_failed",
+        })
+      ) {
+        refreshDetail();
+        helpers.resetForm();
+      }
     },
   });
 
@@ -332,7 +493,7 @@ export default function CaseDetailPage() {
       valueNumeric: Yup.number().typeError("n").required(),
     }),
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         createMeasurement({
           publicUuid,
           measurementType: values.measurementType,
@@ -342,15 +503,23 @@ export default function CaseDetailPage() {
           inspectionId: inspections[0]?.id ?? null,
         }),
       );
-      refreshDetail();
-      helpers.resetForm({
-        values: {
-          measurementType: "horizontal_distance",
-          valueNumeric: "",
-          unit: "m",
-          poleId: "",
-        },
-      });
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.measurementSaveSuccess"),
+          failureTitle: t("cases.measurementSaveFailed"),
+          fallbackError: "measurement_failed",
+        })
+      ) {
+        refreshDetail();
+        helpers.resetForm({
+          values: {
+            measurementType: "horizontal_distance",
+            valueNumeric: "",
+            unit: "m",
+            poleId: "",
+          },
+        });
+      }
     },
   });
 
@@ -393,7 +562,13 @@ export default function CaseDetailPage() {
             data: exported.dataBase64,
           }),
         );
-        if (createEvidence.fulfilled.match(result)) {
+        if (
+          notifyThunkSave(result, {
+            successTitle: t("cases.evidenceSaveSuccess"),
+            failureTitle: t("cases.evidenceSaveFailed"),
+            fallbackError: "evidence_failed",
+          })
+        ) {
           helpers.resetForm();
           setEvidenceFile(null);
           setSignaturePadKey((k) => k + 1);
@@ -426,13 +601,67 @@ export default function CaseDetailPage() {
         payload.data = await fileToBase64(evidenceFile);
       }
       const result = await dispatch(createEvidence(payload));
-      if (createEvidence.fulfilled.match(result)) {
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.evidenceSaveSuccess"),
+          failureTitle: t("cases.evidenceSaveFailed"),
+          fallbackError: "evidence_failed",
+        })
+      ) {
         helpers.resetForm();
         setEvidenceFile(null);
         refreshDetail();
       }
     },
   });
+
+  const persistPropertyCoords = async (lat: number, lng: number) => {
+    const next = {
+      ...locationForm.values,
+      propertyLat: String(lat),
+      propertyLng: String(lng),
+    };
+    await locationForm.setValues(next);
+    setLocationStatus(null);
+    const result = await dispatch(
+      updateCaseLocation({
+        publicUuid,
+        propertyAddress: next.propertyAddress.trim() || null,
+        propertyCity: next.propertyCity.trim() || null,
+        propertyState: next.propertyState.trim() || null,
+        propertyPostalCode: next.propertyPostalCode.trim() || null,
+        propertyCountry: next.propertyCountry.trim() || "MX",
+        propertyLat: lat,
+        propertyLng: lng,
+      }),
+    );
+    if (updateCaseLocation.fulfilled.match(result)) {
+      setLocationStatus(t("maps.locationSaved"));
+      setLocationEditing(false);
+      refreshDetail();
+    } else {
+      setLocationStatus(t("maps.locationSaveFailed"));
+    }
+  };
+
+  const cancelLocationEdit = () => {
+    locationForm.resetForm();
+    setLocationStatus(null);
+    if (
+      selected &&
+      hasPropertyMapPreview({
+        address: selected.propertyAddress,
+        city: selected.propertyCity,
+        state: selected.propertyState,
+        postalCode: selected.propertyPostalCode,
+        country: selected.propertyCountry,
+        lat: selected.propertyLat,
+        lng: selected.propertyLng,
+      })
+    ) {
+      setLocationEditing(false);
+    }
+  };
 
   const fillFromDevice = async (target: "property" | "evidence") => {
     setLocating(true);
@@ -450,9 +679,7 @@ export default function CaseDetailPage() {
       return;
     }
     if (target === "property") {
-      await locationForm.setFieldValue("propertyLat", String(pos.lat));
-      await locationForm.setFieldValue("propertyLng", String(pos.lng));
-      setLocationStatus(t("maps.coordsFilled"));
+      await persistPropertyCoords(pos.lat, pos.lng);
       return;
     }
     await evidenceForm.setFieldValue("lat", String(pos.lat));
@@ -478,15 +705,10 @@ export default function CaseDetailPage() {
     const result = await dispatch(geocodeAddress(query.trim()));
     setLocating(false);
     if (geocodeAddress.fulfilled.match(result)) {
-      await locationForm.setFieldValue(
-        "propertyLat",
-        String(result.payload.lat),
+      await persistPropertyCoords(
+        result.payload.lat,
+        result.payload.lng,
       );
-      await locationForm.setFieldValue(
-        "propertyLng",
-        String(result.payload.lng),
-      );
-      setLocationStatus(t("maps.geocodeOk"));
     } else {
       setLocationStatus(t("maps.geocodeFailed"));
     }
@@ -500,7 +722,7 @@ export default function CaseDetailPage() {
       notes: "",
     },
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         createTrip({
           publicUuid,
           originCity: values.originCity.trim() || undefined,
@@ -509,8 +731,16 @@ export default function CaseDetailPage() {
           notes: values.notes.trim() || undefined,
         }),
       );
-      refreshDetail();
-      helpers.resetForm();
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.tripSaveSuccess"),
+          failureTitle: t("cases.tripSaveFailed"),
+          fallbackError: "trip_failed",
+        })
+      ) {
+        refreshDetail();
+        helpers.resetForm();
+      }
     },
   });
 
@@ -526,7 +756,7 @@ export default function CaseDetailPage() {
       amount: Yup.number().typeError("n").min(0).required(),
     }),
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         createExpense({
           publicUuid,
           tripId: Number(values.tripId),
@@ -535,14 +765,22 @@ export default function CaseDetailPage() {
           vendorName: values.vendorName.trim() || undefined,
         }),
       );
-      helpers.resetForm({
-        values: {
-          tripId: trips[0] ? String(trips[0].id) : "",
-          expenseType: "flight",
-          amount: "",
-          vendorName: "",
-        },
-      });
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.expenseSaveSuccess"),
+          failureTitle: t("cases.expenseSaveFailed"),
+          fallbackError: "expense_failed",
+        })
+      ) {
+        helpers.resetForm({
+          values: {
+            tripId: trips[0] ? String(trips[0].id) : "",
+            expenseType: "flight",
+            amount: "",
+            vendorName: "",
+          },
+        });
+      }
     },
   });
 
@@ -552,7 +790,7 @@ export default function CaseDetailPage() {
       conclusions: "",
     },
     onSubmit: async (values, helpers) => {
-      await dispatch(
+      const result = await dispatch(
         createTechnicalReport({
           publicUuid,
           investigationSummary: values.investigationSummary.trim() || undefined,
@@ -560,67 +798,102 @@ export default function CaseDetailPage() {
           submit: true,
         }),
       );
-      refreshDetail();
-      helpers.resetForm();
+      if (
+        notifyThunkSave(result, {
+          successTitle: t("cases.reportSaveSuccess"),
+          failureTitle: t("cases.reportSaveFailed"),
+          fallbackError: "report_failed",
+        })
+      ) {
+        refreshDetail();
+        helpers.resetForm();
+      }
     },
   });
 
   const onStatus = async (status: CaseStatus) => {
-    await dispatch(
+    const result = await dispatch(
       updateCaseStatus({
         publicUuid,
         status,
         reason: reason.trim() || undefined,
       }),
     );
-    await dispatch(fetchCaseDetail(publicUuid));
-    setReason("");
+    if (
+      notifyThunkSave(result, {
+        successTitle: t("cases.statusSaveSuccess"),
+        failureTitle: t("cases.statusSaveFailed"),
+        fallbackError: "status_failed",
+      })
+    ) {
+      await dispatch(fetchCaseDetail(publicUuid));
+      setReason("");
+    }
   };
 
   const onBulkUpload = async (files: File[]) => {
     if (files.length === 0) return;
     setDocsUploading(true);
     try {
-      if (files.length === 1) {
-        const data = await fileToBase64(files[0]);
-        await dispatch(
-          uploadCaseDocument({
-            publicUuid,
-            title: files[0].name,
-            fileName: files[0].name,
-            contentType: files[0].type || "application/octet-stream",
-            category: uploadCategory,
-            data,
-          }),
-        );
-      } else {
-        const payloads = [];
-        for (const file of files) {
-          payloads.push({
-            title: file.name,
-            fileName: file.name,
-            contentType: file.type || "application/octet-stream",
-            category: uploadCategory,
-            data: await fileToBase64(file),
+      const result = await dispatch(
+        uploadCaseDocumentsSmart({
+          publicUuid,
+          files,
+          category: uploadCategory,
+        }),
+      );
+      if (uploadCaseDocumentsSmart.fulfilled.match(result)) {
+        refreshDetail();
+        if (result.payload.failures.length > 0) {
+          toast({
+            title: t("documents.partialUpload", {
+              ok: result.payload.documents.length,
+              failed: result.payload.failures.length,
+            }),
+            description: result.payload.failures
+              .slice(0, 3)
+              .map((f) => f.name)
+              .join(", "),
+            variant: "destructive",
           });
         }
-        await dispatch(
-          bulkUploadCaseDocuments({ publicUuid, files: payloads }),
-        );
+        return;
       }
-      refreshDetail();
+      const message = String(result.payload || "upload_failed");
+      toast({
+        title: t("documents.uploadFailed"),
+        description: isBlobTokenMissingError(message)
+          ? t("documents.blobNotConfigured")
+          : message,
+        variant: "destructive",
+      });
     } finally {
       setDocsUploading(false);
     }
   };
 
-  if (detailLoading && !selected) {
+  const detailMatchesRoute =
+    Boolean(publicUuid) &&
+    Boolean(selected) &&
+    selected.publicUuid === publicUuid;
+
+  if (!publicUuid) {
+    return (
+      <div className="p-8 text-sm text-muted-foreground">
+        {t("cases.notFound")}
+      </div>
+    );
+  }
+
+  if (detailLoading || !detailMatchesRoute) {
     return <CaseDetailSkeleton />;
   }
 
   if (!selected) {
     return (
-      <div className="p-8 text-sm text-muted-foreground">{t("cases.notFound")}</div>
+      <div className="p-8 text-sm text-muted-foreground">
+        {t("cases.notFound")}
+      </div>
     );
   }
 
@@ -739,6 +1012,7 @@ export default function CaseDetailPage() {
       <ProcessTimeline
         status={selected.status}
         serverGate={processGate}
+        viewerRole={role}
         gateInput={buildProcessGateInput({
           documentCategories: documents
             .filter((d) => isActiveDocumentStatus(d.status))
@@ -771,54 +1045,127 @@ export default function CaseDetailPage() {
         })}
       />
 
-      <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+      <section
+        id="case-location"
+        className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
+      >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="inline-flex items-center gap-2 text-sm font-bold">
             <MapPinned className="h-4 w-4 text-primary" />
             {t("maps.propertyLocation")}
           </h2>
           {canEditCaseLocation(role) ? (
-            <div className="flex flex-wrap gap-2">
+            locationEditing ? (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={locating}
+                  onClick={() => void fillFromDevice("property")}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold disabled:opacity-50"
+                >
+                  <Crosshair className="h-3.5 w-3.5" />
+                  {t("maps.useMyLocation")}
+                </button>
+                <button
+                  type="button"
+                  disabled={locating}
+                  onClick={() => void geocodeProperty()}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold disabled:opacity-50"
+                >
+                  {t("maps.geocodeAddress")}
+                </button>
+                {hasPropertyMapPreview({
+                  address: selected.propertyAddress,
+                  city: selected.propertyCity,
+                  state: selected.propertyState,
+                  postalCode: selected.propertyPostalCode,
+                  country: selected.propertyCountry,
+                  lat: selected.propertyLat,
+                  lng: selected.propertyLng,
+                }) ? (
+                  <button
+                    type="button"
+                    onClick={cancelLocationEdit}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold"
+                  >
+                    {t("maps.cancelEditLocation")}
+                  </button>
+                ) : null}
+              </div>
+            ) : (
               <button
                 type="button"
-                disabled={locating}
-                onClick={() => void fillFromDevice("property")}
-                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold disabled:opacity-50"
+                onClick={() => {
+                  setLocationStatus(null);
+                  setLocationEditing(true);
+                }}
+                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold"
               >
-                <Crosshair className="h-3.5 w-3.5" />
-                {t("maps.useMyLocation")}
+                <Pencil className="h-3.5 w-3.5" />
+                {t("maps.editLocation")}
               </button>
-              <button
-                type="button"
-                disabled={locating}
-                onClick={() => void geocodeProperty()}
-                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold disabled:opacity-50"
-              >
-                {t("maps.geocodeAddress")}
-              </button>
-            </div>
+            )
           ) : null}
         </div>
-        <SectionHelper className="mt-3">{t("help.caseDetail.location")}</SectionHelper>
+        {locationEditing ? (
+          <SectionHelper className="mt-3">{t("help.caseDetail.location")}</SectionHelper>
+        ) : null}
 
-        <LocationMapPanel
-          className="mt-3"
-          lat={propertyMapLat}
-          lng={propertyMapLng}
-          query={buildPropertyQuery({
-            address: locationForm.values.propertyAddress || selected.propertyAddress,
-            city: locationForm.values.propertyCity || selected.propertyCity,
-            state: locationForm.values.propertyState || selected.propertyState,
-            postalCode:
-              locationForm.values.propertyPostalCode ||
-              selected.propertyPostalCode,
-            country:
-              locationForm.values.propertyCountry || selected.propertyCountry,
-          })}
-          label={t("maps.propertyLocation")}
-        />
+        {!locationEditing ||
+        propertyMapLat != null ||
+        Boolean(
+          buildPropertyQuery({
+            address: locationEditing
+              ? locationForm.values.propertyAddress
+              : selected.propertyAddress,
+            city: locationEditing
+              ? locationForm.values.propertyCity
+              : selected.propertyCity,
+            state: locationEditing
+              ? locationForm.values.propertyState
+              : selected.propertyState,
+            postalCode: locationEditing
+              ? locationForm.values.propertyPostalCode
+              : selected.propertyPostalCode,
+            country: locationEditing
+              ? locationForm.values.propertyCountry
+              : selected.propertyCountry,
+          }),
+        ) ? (
+          <LocationMapPanel
+            className="mt-3"
+            lat={
+              locationEditing
+                ? propertyMapLat
+                : selected.propertyLat
+            }
+            lng={
+              locationEditing
+                ? propertyMapLng
+                : selected.propertyLng
+            }
+            query={buildPropertyQuery({
+              address: locationEditing
+                ? locationForm.values.propertyAddress
+                : selected.propertyAddress,
+              city: locationEditing
+                ? locationForm.values.propertyCity
+                : selected.propertyCity,
+              state: locationEditing
+                ? locationForm.values.propertyState
+                : selected.propertyState,
+              postalCode: locationEditing
+                ? locationForm.values.propertyPostalCode
+                : selected.propertyPostalCode,
+              country: locationEditing
+                ? locationForm.values.propertyCountry
+                : selected.propertyCountry,
+            })}
+            label={t("maps.propertyLocation")}
+          />
+        ) : null}
 
-        {canEditCaseLocation(role) ? (
+        {canEditCaseLocation(role) && locationEditing ? (
           <form
             onSubmit={locationForm.handleSubmit}
             className="mt-3 grid gap-2 sm:grid-cols-2"
@@ -893,18 +1240,40 @@ export default function CaseDetailPage() {
               />
               <FieldHelper>{t("help.maps.lng")}</FieldHelper>
             </div>
-            <button
-              type="submit"
-              disabled={locationForm.isSubmitting}
-              className="h-10 rounded-xl bg-primary text-xs font-bold text-primary-foreground sm:col-span-2 disabled:opacity-50"
+            <PendingSubmitButton
+              pending={locationForm.isSubmitting}
+              className="sm:col-span-2 text-xs font-bold"
             >
               {t("maps.saveLocation")}
-            </button>
+            </PendingSubmitButton>
           </form>
+        ) : null}
+
+        {!locationEditing &&
+        canEditCaseLocation(role) &&
+        !hasPropertyMapPreview({
+          address: selected.propertyAddress,
+          city: selected.propertyCity,
+          state: selected.propertyState,
+          postalCode: selected.propertyPostalCode,
+          country: selected.propertyCountry,
+          lat: selected.propertyLat,
+          lng: selected.propertyLng,
+        }) ? (
+          <button
+            type="button"
+            onClick={() => setLocationEditing(true)}
+            className="mt-3 inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border bg-muted/30 text-xs font-semibold text-foreground"
+          >
+            <Pencil className="h-3.5 w-3.5 text-primary" />
+            {t("maps.addLocation")}
+          </button>
         ) : null}
       </section>
 
-      {documentCompleteness && canViewCaseSection(role, "completeness") ? (
+      {documentCompleteness &&
+      canViewCaseSection(role, "completeness") &&
+      !canViewCaseSection(role, "documents") ? (
         <section className="rounded-2xl border border-border bg-card p-4 shadow-sm">
           <h2 className="text-sm font-bold">{t("cases.documentCompleteness")}</h2>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -971,6 +1340,10 @@ export default function CaseDetailPage() {
                 <div className="font-semibold">{d.title}</div>
                 <div className={severityClass(d.severityLevel)}>
                   {new Date(d.dueAt).toLocaleDateString()} ·{" "}
+                  {t(`cases.deadlineType.${d.deadlineType}`, {
+                    defaultValue: d.title,
+                  })}{" "}
+                  ·{" "}
                   {t(`cases.severity.${d.severityLevel}`, {
                     defaultValue: d.severityLevel,
                   })}
@@ -983,12 +1356,22 @@ export default function CaseDetailPage() {
 
       {(canViewCaseSection(role, "workflow") ||
         canViewCaseSection(role, "timeline") ||
-        canViewCaseSection(role, "notes") ||
-        canViewCaseSection(role, "documents")) && (
-      <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+        canViewCaseSection(role, "notes")) && (
+      <div
+        className={
+          (canViewCaseSection(role, "workflow") ||
+            canViewCaseSection(role, "timeline")) &&
+          canViewCaseSection(role, "notes")
+            ? "grid gap-4 lg:grid-cols-[1.4fr_1fr]"
+            : "grid gap-4"
+        }
+      >
         {(canViewCaseSection(role, "workflow") ||
           canViewCaseSection(role, "timeline")) && (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+        <section
+          id="case-workflow"
+          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
+        >
           {canViewCaseSection(role, "workflow") ? (
             <>
           <h2 className="text-sm font-bold text-foreground">
@@ -1006,16 +1389,27 @@ export default function CaseDetailPage() {
             placeholder={t("cases.reasonPlaceholder")}
             className="mt-4 h-10 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
           />
-          {error === "Process gates not satisfied" ? (
+          {processGate?.ok === false ||
+          error === "Process gates not satisfied" ? (
             <div className="mt-3 text-xs text-destructive" role="alert">
               <p>{t("process.gatesBlocked")}</p>
-              {statusGateMissing.length > 0 ? (
+              {(
+                processGate?.missing?.length
+                  ? processGate.missing
+                  : statusGateMissing
+              ).length > 0 ? (
                 <ul className="mt-1.5 list-disc space-y-0.5 pl-4">
-                  {statusGateMissing.map((code) => (
+                  {(processGate?.missing?.length
+                    ? processGate.missing
+                    : statusGateMissing
+                  ).map((code) => (
                     <li key={code}>{processGateLabel(t, code)}</li>
                   ))}
                 </ul>
               ) : null}
+              <p className="mt-2 text-muted-foreground">
+                {t("cases.workflowGatesHint")}
+              </p>
             </div>
           ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
@@ -1024,17 +1418,37 @@ export default function CaseDetailPage() {
                 {t("cases.noTransitions")}
               </span>
             ) : (
-              allowedNextStatuses.map((status) => (
-                <button
-                  key={status}
-                  type="button"
-                  disabled={updatingStatus}
-                  onClick={() => onStatus(status)}
-                  className="rounded-full border border-border bg-background px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-primary hover:text-primary disabled:opacity-60"
-                >
-                  {t(`cases.status.${status}`, { defaultValue: status })}
-                </button>
-              ))
+              allowedNextStatuses.map((status) => {
+                const gateBlocked =
+                  Boolean(selected) &&
+                  isForwardTransitionBlockedByGates({
+                    fromStatus: selected!.status,
+                    toStatus: status,
+                    gatesOk: processGate?.ok,
+                  });
+                return (
+                  <button
+                    key={status}
+                    type="button"
+                    disabled={updatingStatus || gateBlocked}
+                    title={
+                      gateBlocked
+                        ? t("cases.pipeline.lock.gates")
+                        : undefined
+                    }
+                    onClick={() => {
+                      if (gateBlocked) return;
+                      void onStatus(status);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {updatingStatus ? (
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                    ) : null}
+                    {t(`cases.status.${status}`, { defaultValue: status })}
+                  </button>
+                );
+              })
             )}
           </div>
             </>
@@ -1083,8 +1497,7 @@ export default function CaseDetailPage() {
         </section>
         )}
 
-        <div className="space-y-4">
-          {canViewCaseSection(role, "notes") ? (
+        {canViewCaseSection(role, "notes") ? (
           <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-bold text-foreground">
@@ -1102,12 +1515,9 @@ export default function CaseDetailPage() {
                 className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
                 placeholder={t("cases.notePlaceholder")}
               />
-              <button
-                type="submit"
-                className="h-10 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground"
-              >
+              <PendingSubmitButton pending={noteForm.isSubmitting}>
                 {t("cases.addNote")}
-              </button>
+              </PendingSubmitButton>
             </form>
             <ul className="mt-4 space-y-2">
               {notes.map((n) => (
@@ -1123,79 +1533,41 @@ export default function CaseDetailPage() {
               ))}
             </ul>
           </section>
-          ) : null}
-
-          {canViewCaseSection(role, "documents") ? (
-          <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
-            <h2 className="text-sm font-bold text-foreground">
-              {t("cases.documents")}
-            </h2>
-            <div className="mt-3 space-y-2">
-              <DocumentCategorySelect
-                value={uploadCategory}
-                onChange={setUploadCategory}
-              />
-              <FieldHelper>{t("help.caseDetail.documentCategory")}</FieldHelper>
-              <DocumentDropzone
-                uploading={docsUploading}
-                onFiles={onBulkUpload}
-                compact
-              />
-            </div>
-            <ul className="mt-4 space-y-2">
-              {documents.length === 0 ? (
-                <li className="text-xs text-muted-foreground">
-                  {t("cases.noDocuments")}
-                </li>
-              ) : (
-                documents.map((d) => (
-                  <li
-                    key={d.publicUuid}
-                    className="flex items-center justify-between gap-2 rounded-xl border border-border px-3 py-2"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-semibold text-foreground">
-                        {d.title}
-                      </p>
-                      <div className="mt-1 max-w-[14rem]">
-                        <DocumentCategorySelect
-                          value={d.category}
-                          onChange={(category) => {
-                            void dispatch(
-                              updateDocumentCategory({
-                                publicUuid,
-                                documentUuid: d.publicUuid,
-                                category,
-                              }),
-                            ).then(() => refreshDetail());
-                          }}
-                        />
-                      </div>
-                      <p className="mt-1 text-[10px] text-muted-foreground">
-                        v{d.currentVersion}
-                        {d.ocrStatus
-                          ? ` · ${t(`documents.ocrStatus.${d.ocrStatus}`, {
-                              defaultValue: d.ocrStatus,
-                            })}`
-                          : ""}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setDocPreview(asPreviewableDocument(d))}
-                      className="shrink-0 text-[10px] font-bold uppercase text-primary"
-                    >
-                      {t("documents.preview")}
-                    </button>
-                  </li>
-                ))
-              )}
-            </ul>
-          </section>
-          ) : null}
-        </div>
+        ) : null}
       </div>
       )}
+
+      {canViewCaseSection(role, "documents") ? (
+        <CaseDocumentsPanel
+          documents={documents}
+          uploadCategory={uploadCategory}
+          onUploadCategoryChange={setUploadCategory}
+          uploading={docsUploading}
+          onUploadFiles={onBulkUpload}
+          onPreview={(d) => setDocPreview(asPreviewableDocument(d))}
+          missingGateCodes={processGate?.missing ?? statusGateMissing}
+          documentCompleteness={
+            canViewCaseSection(role, "completeness")
+              ? documentCompleteness
+              : null
+          }
+          canUpload={canMutateCaseSection(role, "documents")}
+          onUpdateCategory={async ({ documentUuid, category }) => {
+            const result = await dispatch(
+              updateDocumentCategory({
+                publicUuid,
+                documentUuid,
+                category,
+              }),
+            );
+            if (updateDocumentCategory.fulfilled.match(result)) {
+              refreshDetail();
+              return true;
+            }
+            return false;
+          }}
+        />
+      ) : null}
 
       <DocumentPreviewSheet
         open={Boolean(docPreview)}
@@ -1219,9 +1591,16 @@ export default function CaseDetailPage() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         {canViewCaseSection(role, "assignments") ? (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+        <section
+          id="case-assignments"
+          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
+        >
           <h2 className="text-sm font-bold">{t("cases.assignments")}</h2>
           <SectionHelper>{t("help.caseDetail.assignments")}</SectionHelper>
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            {t("cases.assignmentHowItWorks")}
+          </p>
+          {canManageCaseAssignments(role) ? (
           <form
             onSubmit={assignForm.handleSubmit}
             className="mt-3 grid gap-2 sm:grid-cols-2"
@@ -1230,12 +1609,13 @@ export default function CaseDetailPage() {
               name="userId"
               value={assignForm.values.userId}
               onChange={assignForm.handleChange}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+              className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
             >
               <option value="">{t("cases.selectMember")}</option>
               {members.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.firstName} {m.lastName} ({m.role})
+                  {m.firstName} {m.lastName} (
+                  {t(`team.role.${m.role}`, { defaultValue: m.role })})
                 </option>
               ))}
             </select>
@@ -1251,6 +1631,22 @@ export default function CaseDetailPage() {
                 </option>
               ))}
             </select>
+            {assignForm.values.assignmentRole === "expert" &&
+            assignForm.values.isPrimary ? (
+              <label className="text-xs font-semibold text-muted-foreground">
+                {t("cases.expertDeliveryDate")}
+                <input
+                  type="date"
+                  name="deliveryDueAt"
+                  value={assignForm.values.deliveryDueAt}
+                  onChange={assignForm.handleChange}
+                  className="mt-1.5 h-10 w-full rounded-xl border border-input bg-background px-3 text-sm font-normal text-foreground"
+                />
+                <FieldHelper>{t("help.caseDetail.expertDelivery")}</FieldHelper>
+              </label>
+            ) : (
+              <div />
+            )}
             <label className="flex items-center gap-2 text-xs text-muted-foreground sm:col-span-2">
               <input
                 type="checkbox"
@@ -1260,13 +1656,77 @@ export default function CaseDetailPage() {
               />
               {t("cases.primaryAssignment")}
             </label>
-            <button
-              type="submit"
-              className="h-10 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground sm:col-span-2"
+            <PendingSubmitButton
+              pending={assignForm.isSubmitting}
+              disabled={!assignForm.values.userId}
+              className="sm:col-span-2"
             >
               {t("cases.assign")}
-            </button>
+            </PendingSubmitButton>
           </form>
+          ) : null}
+          {canManageCaseAssignments(role) && primaryExpert ? (
+            <form
+              onSubmit={expertDeliveryForm.handleSubmit}
+              className="mt-4 rounded-xl border border-border bg-muted/20 p-3"
+            >
+              <p className="text-xs font-bold text-foreground">
+                {t("cases.expertDeliveryActionTitle")}
+              </p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {t("cases.expertDeliveryActionHint", {
+                  name: primaryExpert.userName,
+                })}
+              </p>
+              <label className="mt-3 block text-xs font-semibold text-muted-foreground">
+                {t("cases.expertDeliveryDate")}
+                <input
+                  type="date"
+                  name="deliveryDueAt"
+                  value={expertDeliveryForm.values.deliveryDueAt}
+                  onChange={expertDeliveryForm.handleChange}
+                  className="mt-1.5 h-10 w-full rounded-xl border border-input bg-background px-3 text-sm font-normal text-foreground"
+                />
+              </label>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <PendingSubmitButton
+                  pending={expertDeliveryForm.isSubmitting}
+                  disabled={!expertDeliveryForm.values.deliveryDueAt.trim()}
+                  className="h-9 px-4 text-xs"
+                >
+                  {t("cases.expertDeliverySave")}
+                </PendingSubmitButton>
+                {expertDeliveryDeadline ? (
+                  <button
+                    type="button"
+                    disabled={expertDeliveryForm.isSubmitting}
+                    onClick={() => {
+                      void (async () => {
+                        const result = await dispatch(
+                          setExpertDeliveryDeadline({
+                            publicUuid,
+                            deliveryDueAt: null,
+                          }),
+                        );
+                        if (
+                          notifyThunkSave(result, {
+                            successTitle: t("cases.expertDeliveryClearSuccess"),
+                            failureTitle: t("cases.expertDeliverySaveFailed"),
+                            fallbackError: "expert_delivery_failed",
+                          })
+                        ) {
+                          refreshDetail();
+                        }
+                      })();
+                    }}
+                    className="inline-flex h-9 items-center rounded-xl border border-border px-4 text-xs font-semibold text-muted-foreground transition hover:border-destructive hover:text-destructive disabled:opacity-60"
+                  >
+                    {t("cases.expertDeliveryClear")}
+                  </button>
+                ) : null}
+              </div>
+            </form>
+          ) : null}
           <ul className="mt-4 space-y-2">
             {assignments.map((a) => (
               <li
@@ -1282,20 +1742,38 @@ export default function CaseDetailPage() {
                     {a.isPrimary ? ` · ${t("cases.primary")}` : ""}
                   </div>
                 </div>
-                <button
+                <PendingSubmitButton
                   type="button"
-                  className="text-[10px] font-bold uppercase text-destructive"
-                  onClick={() =>
-                    void dispatch(
-                      unassignCaseMember({
-                        publicUuid,
-                        assignmentId: a.id,
-                      }),
-                    ).then(() => refreshDetail())
-                  }
+                  pending={unassigningId === a.id}
+                  pendingLabel={t("common.saving")}
+                  className="h-8 bg-transparent px-2 text-[10px] font-bold uppercase text-destructive shadow-none hover:bg-destructive/10"
+                  onClick={() => {
+                    void (async () => {
+                      setUnassigningId(a.id);
+                      try {
+                        const result = await dispatch(
+                          unassignCaseMember({
+                            publicUuid,
+                            assignmentId: a.id,
+                          }),
+                        );
+                        if (
+                          notifyThunkSave(result, {
+                            successTitle: t("cases.unassignSaveSuccess"),
+                            failureTitle: t("cases.unassignSaveFailed"),
+                            fallbackError: "unassign_failed",
+                          })
+                        ) {
+                          refreshDetail();
+                        }
+                      } finally {
+                        setUnassigningId(null);
+                      }
+                    })();
+                  }}
                 >
                   {t("cases.unassign")}
-                </button>
+                </PendingSubmitButton>
               </li>
             ))}
           </ul>
@@ -1303,7 +1781,10 @@ export default function CaseDetailPage() {
         ) : null}
 
         {canViewCaseSection(role, "questionnaire") ? (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+        <section
+          id="case-questionnaire"
+          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
+        >
           <h2 className="text-sm font-bold">{t("cases.questionnaire")}</h2>
           <SectionHelper>{t("help.caseDetail.questionnaire")}</SectionHelper>
           {!canEditQuestionnaire ? (
@@ -1336,15 +1817,7 @@ export default function CaseDetailPage() {
                     setLocationStatus(t("maps.invalidGpsText"));
                     return;
                   }
-                  void locationForm.setFieldValue(
-                    "propertyLat",
-                    String(parsed.lat),
-                  );
-                  void locationForm.setFieldValue(
-                    "propertyLng",
-                    String(parsed.lng),
-                  );
-                  setLocationStatus(t("maps.coordsFilled"));
+                  void persistPropertyCoords(parsed.lat, parsed.lng);
                 }}
               >
                 {t("maps.applyGpsToProperty")}
@@ -1395,13 +1868,13 @@ export default function CaseDetailPage() {
               placeholder={t("cases.observationsPlaceholder")}
               className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm disabled:opacity-60"
             />
-            <button
-              type="submit"
+            <PendingSubmitButton
+              pending={questionnaireForm.isSubmitting}
               disabled={!canEditQuestionnaire}
-              className="h-10 rounded-xl bg-accent px-4 text-xs font-semibold text-accent-foreground disabled:opacity-60"
+              className="bg-accent text-accent-foreground"
             >
               {t("cases.saveQuestionnaire")}
-            </button>
+            </PendingSubmitButton>
           </form>
           <ul className="mt-4 space-y-2">
             {questionnaires.map((q) => (
@@ -1451,7 +1924,10 @@ export default function CaseDetailPage() {
         ) : null}
 
         {canViewCaseSection(role, "reviews") ? (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+        <section
+          id="case-reviews"
+          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
+        >
           <h2 className="text-sm font-bold">{t("cases.reviewRequests")}</h2>
           <SectionHelper>{t("help.caseDetail.reviewRequests")}</SectionHelper>
           <ul className="mt-3 space-y-2">
@@ -1483,6 +1959,7 @@ export default function CaseDetailPage() {
                         {new Date(r.dueAt).toLocaleString()}
                       </div>
                     ) : null}
+                    {canCompleteReviewStage(role, r.reviewStage) ? (
                     <div className="mt-2 flex flex-wrap gap-2">
                       {(
                         [
@@ -1511,6 +1988,11 @@ export default function CaseDetailPage() {
                         </button>
                       ))}
                     </div>
+                    ) : (
+                      <p className="mt-2 text-[10px] text-muted-foreground">
+                        {t("cases.reviewAwaitingRole")}
+                      </p>
+                    )}
                   </li>
                 ))
             )}
@@ -1519,7 +2001,10 @@ export default function CaseDetailPage() {
         ) : null}
 
         {canViewCaseSection(role, "inspections") ? (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+        <section
+          id="case-inspections"
+          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
+        >
           <h2 className="text-sm font-bold">{t("cases.inspections")}</h2>
           <SectionHelper>{t("help.caseDetail.inspections")}</SectionHelper>
           <form
@@ -1540,12 +2025,12 @@ export default function CaseDetailPage() {
               placeholder={t("cases.inspectionNotes")}
               className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
             />
-            <button
-              type="submit"
-              className="h-10 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground sm:col-span-2"
+            <PendingSubmitButton
+              pending={inspectionForm.isSubmitting}
+              className="sm:col-span-2"
             >
               {t("cases.scheduleInspection")}
-            </button>
+            </PendingSubmitButton>
           </form>
           <form
             onSubmit={measurementForm.handleSubmit}
@@ -1580,12 +2065,12 @@ export default function CaseDetailPage() {
               placeholder={t("cases.poleId")}
               className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
             />
-            <button
-              type="submit"
-              className="h-10 rounded-xl border border-border bg-background text-xs font-semibold"
+            <PendingSubmitButton
+              pending={measurementForm.isSubmitting}
+              className="border border-border bg-background text-foreground"
             >
               {t("cases.addMeasurement")}
-            </button>
+            </PendingSubmitButton>
           </form>
           <ul className="mt-4 space-y-2 text-xs">
             {inspections.map((i) => (
@@ -1637,7 +2122,10 @@ export default function CaseDetailPage() {
         ) : null}
 
         {canViewCaseSection(role, "evidence") ? (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+        <section
+          id="case-evidence"
+          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
+        >
           <div className="flex flex-wrap items-end justify-between gap-2">
             <h2 className="text-sm font-bold">{t("cases.evidence")}</h2>
             {evidenceChecklist && (
@@ -1756,13 +2244,12 @@ export default function CaseDetailPage() {
                 {String(evidenceForm.status)}
               </p>
             )}
-            <button
-              type="submit"
-              disabled={evidenceForm.isSubmitting}
-              className="h-10 rounded-xl bg-accent px-4 text-xs font-semibold text-accent-foreground sm:col-span-2"
+            <PendingSubmitButton
+              pending={evidenceForm.isSubmitting}
+              className="sm:col-span-2 bg-accent text-accent-foreground"
             >
               {t("cases.addEvidence")}
-            </button>
+            </PendingSubmitButton>
           </form>
           {latestGpsEvidence ? (
             <div className="mt-4">
@@ -1842,7 +2329,10 @@ export default function CaseDetailPage() {
         ) : null}
 
         {canViewCaseSection(role, "logistics") ? (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+        <section
+          id="case-logistics"
+          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
+        >
           <h2 className="text-sm font-bold">{t("cases.logistics")}</h2>
           <SectionHelper>{t("help.caseDetail.logistics")}</SectionHelper>
           <form onSubmit={tripForm.handleSubmit} className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -1867,12 +2357,12 @@ export default function CaseDetailPage() {
               onChange={tripForm.handleChange}
               className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
             />
-            <button
-              type="submit"
-              className="h-10 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground sm:col-span-2"
+            <PendingSubmitButton
+              pending={tripForm.isSubmitting}
+              className="sm:col-span-2"
             >
               {t("cases.addTrip")}
-            </button>
+            </PendingSubmitButton>
           </form>
           <ul className="mt-4 space-y-2">
             {trips.map((tr) => (
@@ -1955,12 +2445,12 @@ export default function CaseDetailPage() {
                 placeholder={t("cases.vendor")}
                 className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
               />
-              <button
-                type="submit"
-                className="h-10 rounded-xl border border-border bg-background text-xs font-semibold sm:col-span-2"
+              <PendingSubmitButton
+                pending={expenseForm.isSubmitting}
+                className="sm:col-span-2 border border-border bg-background text-foreground"
               >
                 {t("cases.addExpense")}
-              </button>
+              </PendingSubmitButton>
             </form>
           ) : null}
           <ul className="mt-3 space-y-2 text-xs">
@@ -2001,12 +2491,12 @@ export default function CaseDetailPage() {
               placeholder={t("cases.conclusions")}
               className="rounded-xl border border-input bg-background px-3 py-2 text-sm sm:col-span-2"
             />
-            <button
-              type="submit"
-              className="h-10 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground sm:col-span-2"
+            <PendingSubmitButton
+              pending={reportForm.isSubmitting}
+              className="sm:col-span-2"
             >
               {t("cases.submitReport")}
-            </button>
+            </PendingSubmitButton>
           </form>
           <ul className="mt-4 space-y-3">
             {technicalReports.map((r) => (
@@ -2015,7 +2505,10 @@ export default function CaseDetailPage() {
                 className="rounded-xl border border-border px-3 py-3 text-xs"
               >
                 <div className="font-semibold">
-                  v{r.versionNumber} · {r.status}
+                  v{r.versionNumber} ·{" "}
+                  {t(`cases.reportStatus.${r.status}`, {
+                    defaultValue: r.status,
+                  })}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {r.allowedNextStatuses.map((st) => (
@@ -2033,7 +2526,10 @@ export default function CaseDetailPage() {
                         ).then(() => refreshDetail())
                       }
                     >
-                      → {st}
+                      →{" "}
+                      {t(`cases.reportStatus.${st}`, {
+                        defaultValue: st,
+                      })}
                     </button>
                   ))}
                 </div>

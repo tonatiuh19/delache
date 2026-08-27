@@ -36,6 +36,8 @@ describe("email templates", () => {
     expect(staff.html).toContain("482913");
     expect(staff.html).toContain(EMAIL_BRAND.primary);
     expect(staff.html).toContain("portal interno");
+    expect(staff.html).toContain("https://app.delache.mx/brand/logo-full.png");
+    expect(staff.html).toContain('align="center"');
     expect(staff.text).toContain("482913");
 
     const client = buildOtpEmail({
@@ -49,15 +51,30 @@ describe("email templates", () => {
     expect(client.subject).toContain("111222");
   });
 
+  it("uses a public asset origin for logos when appUrl is localhost", () => {
+    const staff = buildOtpEmail({
+      locale: "es",
+      firstName: "Alex",
+      code: "123456",
+      portal: "staff",
+      appUrl: "http://localhost:8080",
+    });
+    expect(staff.html).toContain(
+      "https://www.delache.mx/brand/logo-full.png",
+    );
+    expect(staff.html).not.toContain("localhost:8080/brand/");
+  });
+
   it("builds invite emails with portal CTAs", () => {
     const staff = buildInviteStaffEmail({
       locale: "es",
       firstName: "Luis",
-      roleLabel: "expert",
+      role: "expert",
       appUrl: "https://app.delache.mx",
     });
     expect(staff.html).toContain("/portal/login");
-    expect(staff.html).toContain("expert");
+    expect(staff.html).toContain("Perito");
+    expect(staff.html).not.toContain(">expert<");
     expect(staff.html).toContain("Sin contraseña");
 
     const client = buildInviteClientEmail({

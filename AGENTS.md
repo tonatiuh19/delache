@@ -19,7 +19,6 @@
 - **Always review the chat history before making changes to understand what has already been fixed or implemented, and avoid reintroducing previously resolved issues**
 - **All required API logic should remain inline within api/index.ts, as the application is deployed on Vercel using a serverless architecture**
 - **VERCEL / SHARED: `api/index.ts` must NOT import runtime values from `../shared/*` or `../lib/*` (Vercel ESM cannot resolve those files → 500). Keep `import type` only. Put testable rules in `shared/*.ts` (and email templates in `lib/`) for Vitest + the client, then copy the value implementations into `api/index.ts`. Changing `shared/` without updating the inlined copy will not change production.**
-- **EMAIL / APP URL: Outbound emails (invite, OTP, case status) use `APP_URL` / `VITE_PUBLIC_APP_URL` (then Vercel production domain). Never ship invites with `http://localhost:8080`. Set `APP_URL=https://your-production-domain` in Vercel Production env (and local `.env` for `deploy:prod`).**
 - **TESTING (MANDATORY — NO EXCEPTIONS): Every new or changed product feature MUST ship with automated Vitest coverage that includes happy path AND edge scenarios (validation, auth/self-guards, invalid roles/statuses, empty/whitespace inputs, transition edges). Extract non-trivial rules into `shared/` so they are unit-testable. Run `npm run test` and `npm run typecheck` before considering the work done. UI-only styling without logic may skip tests; if unsure, ask first.**
 - **Never assume complex behavior or requirements. If you're unsure about anything, ask me first so we can build the most robust and issue-proof implementation possible**
 - **NO EXCEPTIONS to these rules**
@@ -112,7 +111,7 @@ Always use these aliases instead of relative imports.
 - Configure theme and design tokens in `client/global.css` and `tailwind.config.ts`
 - **Always follow the color palette defined in `client/global.css`** - use existing theme colors
 - **NEVER use arbitrary Tailwind color classes** (e.g. `text-emerald-500`, `bg-amber-400`, `border-red-500`, `text-violet-600`, `bg-slate-100`) — always use semantic design-system tokens: `primary`, `accent`, `destructive`, `muted`, `secondary`, `foreground`, `background`, `border`, `card`, `input`, `ring`
-- **Color token reference from `global.css`**: `primary` = deep blue (trust/brand ≈ `#0B4EA2`), `accent` = bright blue CTA (≈ `#2979FF`), `destructive` = red (errors/danger), `muted` = neutral gray, `secondary` = light blue-gray. Exception: the dark sidebar (`bg-[#0b0f1a]`) is intentional.
+- **Color token reference from `global.css`**: `primary` = brand gold (≈ `#E6AB40`) with dark `primary-foreground` for contrast, `accent` = near-black ink CTA, `destructive` = red (errors/danger), `muted` / `secondary` = warm neutrals. Gold scale `delache-50`…`delache-950` for surfaces (no navy blues). Dark shells: `bg-delache-950`. Logos: only `public/brand/logo-full.png` + `logo.png` via `BrandLogo`.
 - **Keep designs simple, cool, and engaging** - prioritize clean UX
 
 ## API Development

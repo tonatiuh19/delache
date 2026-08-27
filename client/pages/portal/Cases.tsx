@@ -1,21 +1,31 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFormik } from "formik";
 import * as Yup from "yup";
 import { useTranslation } from "react-i18next";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Plus, RefreshCw, Search } from "lucide-react";
+import { Columns3, LayoutList, Plus, RefreshCw, Search } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
 import PortalListPanel from "@/components/portal/PortalListPanel";
 import ListadoFlagStrip from "@/components/portal/ListadoFlagStrip";
+import CasesPipelineBoard from "@/components/portal/CasesPipelineBoard";
+import CasesPipelineSkeleton from "@/components/portal/CasesPipelineSkeleton";
+import CasesListSkeleton from "@/components/portal/CasesListSkeleton";
 import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import { DataGrid, type DataGridColumn } from "@/components/ui/data-grid";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import { createCase, fetchCases } from "@/store/slices/casesSlice";
+import {
+  createCase,
+  fetchCases,
+  fetchCasesPipeline,
+} from "@/store/slices/casesSlice";
 import { CASE_STATUS_FLOW } from "@shared/caseWorkflow";
+import { canCreateStaffCase } from "@shared/caseVisibilityRules";
 import type { CasePriority, CaseSummary } from "@shared/api";
 import { useGridListState } from "@/hooks/useGridListState";
+import { useCasesViewMode } from "@/hooks/useCasesViewMode";
+import { cn } from "@/lib/utils";
 
 const createSchema = Yup.object({
   title: Yup.string().trim().required(),
@@ -29,27 +39,102 @@ const createSchema = Yup.object({
 export default function CasesPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const dispatch = useAppDispatch();
   const { items, pagination, loading, creating, error } = useAppSelector(
     (s) => s.cases,
   );
+  const role = useAppSelector((s) => s.auth.user?.role);
+  const canCreate = canCreateStaffCase(role);
+  const { view, setViewMode } = useCasesViewMode();
   const [showCreate, setShowCreate] = useState(false);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [status, setStatus] = useState("");
   const [priority, setPriority] = useState("");
+  /** First paint + view switch: show preference-matched skeleton before fetch settles. */
+  const [viewBooting, setViewBooting] = useState(true);
+  const bootViewRef = useRef(view);
   const { page, setPage, sortBy, sortDir, onSort, gridParams } =
     useGridListState("created_at", 20);
 
   useEffect(() => {
-    void dispatch(
-      fetchCases({
-        ...gridParams,
-        q: query.trim() || undefined,
-        status: status || undefined,
-        priority: priority || undefined,
-      }),
-    );
-  }, [dispatch, gridParams, query, status, priority]);
+    const id = window.setTimeout(() => setDebouncedQuery(query), 300);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
+  useEffect(() => {
+    if (searchParams.get("create") !== "1" || !canCreate) return;
+    setShowCreate(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete("create");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, canCreate, setSearchParams]);
+
+  useEffect(() => {
+    if (bootViewRef.current === view) return;
+    bootViewRef.current = view;
+    setViewBooting(true);
+  }, [view]);
+
+  const listParams = useMemo(
+    () => ({
+      ...gridParams,
+      q: debouncedQuery.trim() || undefined,
+      status: status || undefined,
+      priority: priority || undefined,
+    }),
+    [gridParams, debouncedQuery, status, priority],
+  );
+
+  const pipelineParams = useMemo(
+    () => ({
+      q: debouncedQuery.trim() || undefined,
+      status: status || undefined,
+      priority: priority || undefined,
+    }),
+    [debouncedQuery, status, priority],
+  );
+
+  useEffect(() => {
+    if (view !== "list") return;
+    setViewBooting(true);
+    let cancelled = false;
+    void dispatch(fetchCases(listParams)).finally(() => {
+      if (!cancelled) setViewBooting(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch, view, listParams]);
+
+  useEffect(() => {
+    if (view !== "pipeline") return;
+    setViewBooting(true);
+    let cancelled = false;
+    void dispatch(fetchCasesPipeline(pipelineParams)).finally(() => {
+      if (!cancelled) setViewBooting(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch, view, pipelineParams]);
+
+  /** Refresh when returning to the tab (e.g. completed gates in another tab). */
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      if (view === "pipeline") {
+        void dispatch(
+          fetchCasesPipeline({ ...pipelineParams, resetColumns: false }),
+        );
+      } else {
+        void dispatch(fetchCases(listParams));
+      }
+    };
+    document.addEventListener("visibilitychange", refresh);
+    return () => document.removeEventListener("visibilitychange", refresh);
+  }, [dispatch, view, listParams, pipelineParams]);
 
   const formik = useFormik({
     initialValues: {
@@ -73,14 +158,13 @@ export default function CasesPage() {
       if (createCase.fulfilled.match(result)) {
         helpers.resetForm();
         setShowCreate(false);
-        void dispatch(
-          fetchCases({
-            ...gridParams,
-            q: query.trim() || undefined,
-            status: status || undefined,
-            priority: priority || undefined,
-          }),
-        );
+        if (view === "list") {
+          void dispatch(fetchCases(listParams));
+        } else {
+          void dispatch(
+            fetchCasesPipeline({ ...pipelineParams, resetColumns: false }),
+          );
+        }
       }
     },
   });
@@ -188,6 +272,43 @@ export default function CasesPage() {
     ];
   }, [t]);
 
+  const viewToggle = (
+    <div
+      className="flex shrink-0 rounded-xl border border-input bg-background p-0.5"
+      role="group"
+      aria-label={t("cases.pipeline.viewToggle")}
+    >
+      <button
+        type="button"
+        onClick={() => setViewMode("list")}
+        className={cn(
+          "inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition",
+          view === "list"
+            ? "bg-primary text-primary-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <LayoutList size={14} />
+        <span className="hidden sm:inline">{t("cases.pipeline.viewList")}</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => setViewMode("pipeline")}
+        className={cn(
+          "inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition",
+          view === "pipeline"
+            ? "bg-primary text-primary-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <Columns3 size={14} />
+        <span className="hidden sm:inline">
+          {t("cases.pipeline.viewBoard")}
+        </span>
+      </button>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl">
       <MetaHelmet title={t("portal.cases")} noindex />
@@ -197,18 +318,20 @@ export default function CasesPage() {
         title={t("portal.cases")}
         description={t("cases.subtitle")}
         actions={
-          <button
-            type="button"
-            onClick={() => setShowCreate((v) => !v)}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground shadow-lg shadow-primary/15 transition hover:bg-primary/90"
-          >
-            <Plus size={15} />
-            {t("cases.newCase")}
-          </button>
+          canCreate ? (
+            <button
+              type="button"
+              onClick={() => setShowCreate((v) => !v)}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground shadow-lg shadow-primary/15 transition hover:bg-primary/90"
+            >
+              <Plus size={15} />
+              {t("cases.newCase")}
+            </button>
+          ) : undefined
         }
       />
 
-      {showCreate ? (
+      {showCreate && canCreate ? (
         <motion.form
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -275,13 +398,17 @@ export default function CasesPage() {
             </label>
             <FieldHelper>{t("help.cases.fatality")}</FieldHelper>
           </div>
-          {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}
+          {error ? (
+            <p className="mt-3 text-xs text-destructive">{error}</p>
+          ) : null}
           <button
             type="submit"
             disabled={creating}
             className="mt-4 inline-flex h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-primary-foreground disabled:opacity-60"
           >
-            {creating ? <RefreshCw className="animate-spin" size={16} /> : null}
+            {creating ? (
+              <RefreshCw className="animate-spin" size={16} />
+            ) : null}
             {t("cases.create")}
           </button>
         </motion.form>
@@ -290,8 +417,13 @@ export default function CasesPage() {
       <PortalListPanel
         toolbar={
           <div className="space-y-2">
-            <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
-              <div className="relative">
+            {error && !creating ? (
+              <p className="rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {t("cases.loadFailed")}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="relative min-w-[12rem] flex-1">
                 <Search
                   size={16}
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
@@ -321,80 +453,104 @@ export default function CasesPage() {
                   </option>
                 ))}
               </select>
-            <select
-              value={priority}
-              onChange={(e) => {
-                setPriority(e.target.value);
-                setPage(1);
-              }}
-              className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
-            >
-              <option value="">{t("cases.filterAllPriorities")}</option>
-              {(["low", "normal", "high", "urgent"] as const).map((p) => (
-                <option key={p} value={p}>
-                  {t(`cases.priority.${p}`)}
-                </option>
-              ))}
-            </select>
+              <select
+                value={priority}
+                onChange={(e) => {
+                  setPriority(e.target.value);
+                  setPage(1);
+                }}
+                className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
+              >
+                <option value="">{t("cases.filterAllPriorities")}</option>
+                {(["low", "normal", "high", "urgent"] as const).map((p) => (
+                  <option key={p} value={p}>
+                    {t(`cases.priority.${p}`)}
+                  </option>
+                ))}
+              </select>
+              {viewToggle}
             </div>
-            <FieldHelper>{t("help.cases.search")}</FieldHelper>
+            <FieldHelper>
+              {view === "pipeline"
+                ? t("help.cases.pipeline")
+                : t("help.cases.search")}
+            </FieldHelper>
           </div>
         }
       >
-        <DataGrid<CaseSummary>
-          data={items}
-          columns={columns}
-          rowKey={(c) => c.publicUuid}
-          sortBy={sortBy}
-          sortDir={sortDir}
-          onSort={onSort}
-          pagination={pagination}
-          onPageChange={setPage}
-          isLoading={loading}
-          emptyMessage={t("cases.empty")}
-          noBleeding
-          onRowClick={(c) => navigate(`/portal/cases/${c.publicUuid}`)}
-          showingLabel={({ from, to, total }) =>
-            t("grid.showing", { from, to, total })
-          }
-          pageLabel={({ page: p, totalPages }) =>
-            t("grid.pageOf", { page: p, totalPages })
-          }
-          mobileCard={(c) => (
-            <Link
-              to={`/portal/cases/${c.publicUuid}`}
-              className="block rounded-xl border border-border bg-background p-4"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-md bg-secondary px-2 py-0.5 text-[10px] font-bold text-primary">
-                  {c.caseNumber}
-                </span>
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
-                  {t(`cases.status.${c.status}`, { defaultValue: c.status })}
-                </span>
-              </div>
-              <p className="mt-2 text-sm font-semibold">{c.title}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {[
-                  c.listado?.processPoint != null
-                    ? t("process.pointLabel", { point: c.listado.processPoint })
-                    : null,
-                  c.courtName,
-                  c.propertyCity,
-                  c.primaryExpertName,
-                  c.lawFirmName,
-                ]
-                  .filter(Boolean)
-                  .join(" · ") || t("cases.noLocation")}
-              </p>
-              {c.listado ? (
-                <div className="mt-2">
-                  <ListadoFlagStrip listado={c.listado} compact />
+        {viewBooting ? (
+          view === "pipeline" ? (
+            <CasesPipelineSkeleton />
+          ) : (
+            <CasesListSkeleton />
+          )
+        ) : view === "pipeline" ? (
+          <CasesPipelineBoard
+            q={debouncedQuery}
+            statusFilter={status}
+            priority={priority}
+            viewerRole={role}
+          />
+        ) : (
+          <DataGrid<CaseSummary>
+            data={items}
+            columns={columns}
+            rowKey={(c) => c.publicUuid}
+            sortBy={sortBy}
+            sortDir={sortDir}
+            onSort={onSort}
+            pagination={pagination}
+            onPageChange={setPage}
+            isLoading={loading}
+            emptyMessage={t("cases.empty")}
+            noBleeding
+            onRowClick={(c) => navigate(`/portal/cases/${c.publicUuid}`)}
+            showingLabel={({ from, to, total }) =>
+              t("grid.showing", { from, to, total })
+            }
+            pageLabel={({ page: p, totalPages }) =>
+              t("grid.pageOf", { page: p, totalPages })
+            }
+            mobileCard={(c) => (
+              <Link
+                to={`/portal/cases/${c.publicUuid}`}
+                className="block rounded-xl border border-border bg-background p-4"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-md bg-secondary px-2 py-0.5 text-[10px] font-bold text-primary">
+                    {c.caseNumber}
+                  </span>
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+                    {t(`cases.status.${c.status}`, {
+                      defaultValue: c.status,
+                    })}
+                  </span>
                 </div>
-              ) : null}
-            </Link>
-          )}
-        />
+                <p className="mt-2 text-sm font-semibold">{c.title}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {[
+                    c.listado?.processPoint != null
+                      ? t("process.pointLabel", {
+                          point: c.listado.processPoint,
+                        })
+                      : null,
+                    c.courtName,
+                    c.propertyCity,
+                    c.primaryExpertName,
+                    c.lawFirmName,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || t("cases.noLocation")}
+                </p>
+                {c.listado ? (
+                  <div className="mt-2">
+                    <ListadoFlagStrip listado={c.listado} compact />
+                  </div>
+                ) : null}
+              </Link>
+            )}
+          />
+        )}
       </PortalListPanel>
     </div>
   );

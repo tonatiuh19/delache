@@ -4,9 +4,11 @@ import { useTranslation } from "react-i18next";
 import { Briefcase, Bell, LogOut, Menu, UserRound, X } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import { ClientShellSkeleton } from "@/components/portal/PortalSkeletons";
+import BrandLogo from "@/components/BrandLogo";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchMe, logout } from "@/store/slices/authSlice";
 import { fetchClientNotifications } from "@/store/slices/clientSlice";
+import { useNotificationPolling } from "@/hooks/useNotificationPolling";
 import AppVersionLabel from "@/components/AppVersionLabel";
 import { cn } from "@/lib/utils";
 
@@ -22,11 +24,10 @@ export default function ClientLayout() {
     if (token && !user) void dispatch(fetchMe());
   }, [token, user, dispatch]);
 
-  useEffect(() => {
-    if (token && user?.actor === "law_firm") {
-      void dispatch(fetchClientNotifications());
-    }
-  }, [token, user, dispatch]);
+  useNotificationPolling(
+    Boolean(token && user?.actor === "law_firm"),
+    fetchClientNotifications,
+  );
 
   useEffect(() => {
     if (!loading && !token) navigate("/client/login", { replace: true });
@@ -117,10 +118,8 @@ export default function ClientLayout() {
             >
               <Menu size={18} />
             </button>
+            <BrandLogo variant="full" size="sm" />
             <div>
-              <div className="text-[11px] font-extrabold tracking-[0.28em] text-primary">
-                DELACHE
-              </div>
               <div className="text-xs text-muted-foreground">
                 {t("client.portalTitle")}
               </div>

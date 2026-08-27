@@ -2,15 +2,28 @@ import { describe, expect, it } from "vitest";
 import {
   DMS_MAX_BULK_FILES,
   DMS_MAX_BULK_TOTAL_BYTES,
+  DMS_MAX_FILE_BYTES,
+  DMS_SHOW_SIZE_STABILIZATION_LEGEND,
+  VERCEL_SAFE_JSON_UPLOAD_BYTES,
+  classifyDmsFiles,
+  dmsMaxFileSizeMb,
   estimateBase64DecodedBytes,
   initialOcrStatusForMime,
+  isBlobTokenMissingError,
   isOcrableMime,
   isPreviewableMime,
+  shouldUseDirectBlobUpload,
+  shouldUseJsonDocumentUpload,
   truncateOcrText,
   validateBulkDocuments,
 } from "./documentDmsRules";
 
 describe("documentDmsRules", () => {
+  it("exposes max size helpers for UI copy", () => {
+    expect(dmsMaxFileSizeMb()).toBe(15);
+    expect(DMS_SHOW_SIZE_STABILIZATION_LEGEND).toBe(true);
+    expect(DMS_MAX_FILE_BYTES).toBe(15 * 1024 * 1024);
+  });
   it("classifies OCR and preview MIME types", () => {
     expect(isOcrableMime("application/pdf")).toBe(true);
     expect(isOcrableMime("image/png")).toBe(true);
@@ -83,5 +96,37 @@ describe("documentDmsRules", () => {
     ]);
     expect(result.ok).toBe(false);
     if (result.ok === false) expect(result.code).toBe("too_large");
+  });
+
+  it("classifies local files and routes large ones to direct blob", () => {
+    expect(shouldUseDirectBlobUpload(VERCEL_SAFE_JSON_UPLOAD_BYTES)).toBe(false);
+    expect(shouldUseDirectBlobUpload(VERCEL_SAFE_JSON_UPLOAD_BYTES + 1)).toBe(
+      true,
+    );
+    expect(
+      shouldUseJsonDocumentUpload([
+        { size: 1024 },
+        { size: VERCEL_SAFE_JSON_UPLOAD_BYTES },
+      ]),
+    ).toBe(false);
+    expect(shouldUseJsonDocumentUpload([{ size: 1024 }])).toBe(true);
+    expect(isBlobTokenMissingError("BLOB_READ_WRITE_TOKEN not configured")).toBe(
+      true,
+    );
+    const classified = classifyDmsFiles([
+      { name: "ok.pdf", size: 1024, type: "application/pdf" },
+      { name: "empty.pdf", size: 0, type: "application/pdf" },
+      { name: "huge.pdf", size: DMS_MAX_FILE_BYTES + 1, type: "application/pdf" },
+      { name: "bad.exe", size: 10, type: "application/x-msdownload" },
+      ...Array.from({ length: DMS_MAX_BULK_FILES }, (_, i) => ({
+        name: `extra-${i}.pdf`,
+        size: 10,
+        type: "application/pdf",
+      })),
+    ]);
+    expect(classified.accepted[0]?.name).toBe("ok.pdf");
+    expect(classified.rejected.map((r) => r.reason)).toEqual(
+      expect.arrayContaining(["empty", "too_large", "unsupported_type", "too_many"]),
+    );
   });
 });

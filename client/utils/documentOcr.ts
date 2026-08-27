@@ -1,9 +1,4 @@
-import {
-  DMS_MAX_BULK_FILES,
-  DMS_MAX_FILE_BYTES,
-  isAllowedDmsMime,
-  isOcrableMime,
-} from "@shared/documentDmsRules";
+import { classifyDmsFiles, isOcrableMime } from "@shared/documentDmsRules";
 
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -19,11 +14,7 @@ export function fileToBase64(file: File): Promise<string> {
 }
 
 export function filterDmsFiles(files: FileList | File[]): File[] {
-  const list = Array.from(files);
-  return list
-    .filter((f) => f.size > 0 && f.size <= DMS_MAX_FILE_BYTES)
-    .filter((f) => isAllowedDmsMime(f.type || "application/octet-stream"))
-    .slice(0, DMS_MAX_BULK_FILES);
+  return classifyDmsFiles(Array.from(files)).accepted as File[];
 }
 
 /** Extract text from PDF via pdf.js (client). */

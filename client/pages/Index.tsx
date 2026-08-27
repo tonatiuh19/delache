@@ -33,6 +33,7 @@ import {
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
 import MetaHelmet from "@/components/MetaHelmet";
+import BrandLogo from "@/components/BrandLogo";
 import { buildOrganizationJsonLd, buildWebSiteJsonLd } from "@/lib/siteMeta";
 
 const services = [
@@ -106,21 +107,15 @@ const capabilities = [
 const scrollToSection = (id: string) =>
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
 
-function Logo({ light = false }: { light?: boolean }) {
+function Logo() {
   return (
     <button
+      type="button"
       onClick={() => scrollToSection("inicio")}
-      className={`flex items-center gap-3 ${light ? "text-white" : "text-slate-950"}`}
+      className="inline-flex items-center"
       aria-label="DELACHE inicio"
     >
-      <span
-        className={`grid h-9 w-9 place-items-center rounded-xl ${light ? "bg-white text-[#0b4ea2]" : "bg-[#0b4ea2] text-white"}`}
-      >
-        <span className="h-4 w-4 rotate-45 border-[3px] border-current" />
-      </span>
-      <span className="text-[15px] font-extrabold tracking-[0.28em]">
-        DELACHE
-      </span>
+      <BrandLogo variant="full" size="lg" />
     </button>
   );
 }
@@ -132,11 +127,11 @@ function AppDashboard() {
         initial={{ opacity: 0, y: 30, rotateX: 8 }}
         animate={{ opacity: 1, y: 0, rotateX: 0 }}
         transition={{ duration: 0.9 }}
-        className="dashboard-shell relative overflow-hidden rounded-[26px] border border-white/15 bg-[#101c31] p-3 shadow-[0_35px_100px_rgba(2,12,35,.45)] sm:p-4"
+        className="dashboard-shell relative overflow-hidden rounded-[26px] border border-white/15 bg-delache-950 p-3 shadow-[0_35px_100px_rgba(26,20,8,.55)] sm:p-4"
       >
         <div className="flex items-center justify-between border-b border-white/10 px-2 pb-3 text-white/50">
           <div className="flex items-center gap-2 text-[10px] font-semibold tracking-wide">
-            <span className="grid h-6 w-6 place-items-center rounded-lg bg-[#2979ff]">
+            <span className="grid h-6 w-6 place-items-center rounded-lg bg-[#E6AB40]">
               <Fingerprint size={13} />
             </span>{" "}
             DELACHE OS
@@ -144,7 +139,7 @@ function AppDashboard() {
           <div className="flex items-center gap-3">
             <Search size={14} />
             <Bell size={14} />
-            <span className="h-5 w-5 rounded-full bg-gradient-to-br from-cyan-300 to-blue-600" />
+            <span className="h-5 w-5 rounded-full bg-gradient-to-br from-[#F0C76A] to-[#E6AB40]" />
           </div>
         </div>
         <div className="flex gap-3 pt-3">
@@ -159,7 +154,7 @@ function AppDashboard() {
             ].map((item, i) => (
               <div
                 key={item}
-                className={`flex items-center gap-2 rounded-lg px-2 py-2 ${i === 0 ? "bg-[#2979ff]/20 text-[#71a7ff]" : ""}`}
+                className={`flex items-center gap-2 rounded-lg px-2 py-2 ${i === 0 ? "bg-[#E6AB40]/20 text-[#F0C76A]" : ""}`}
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-current" />
                 {item}
@@ -216,7 +211,7 @@ function AppDashboard() {
                         animate={{ height: `${height}%` }}
                         transition={{ delay: 0.4 + i * 0.04, duration: 0.5 }}
                         key={i}
-                        className={`flex-1 rounded-t-sm ${i > 8 ? "bg-[#2979ff]" : "bg-[#2979ff]/30"}`}
+                        className={`flex-1 rounded-t-sm ${i > 8 ? "bg-[#E6AB40]" : "bg-[#E6AB40]/30"}`}
                       />
                     ),
                   )}
@@ -253,9 +248,9 @@ function AppDashboard() {
                 </div>
               </div>
             </div>
-            <div className="flex items-center justify-between rounded-xl border border-[#2979ff]/20 bg-[#2979ff]/10 p-3">
+            <div className="flex items-center justify-between rounded-xl border border-[#E6AB40]/20 bg-[#E6AB40]/10 p-3">
               <div className="flex items-center gap-2">
-                <div className="grid h-7 w-7 place-items-center rounded-lg bg-[#2979ff]/20 text-[#71a7ff]">
+                <div className="grid h-7 w-7 place-items-center rounded-lg bg-[#E6AB40]/20 text-[#F0C76A]">
                   <MapPin size={13} />
                 </div>
                 <div>
@@ -323,7 +318,7 @@ export default function Index() {
   ];
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[#fafbfc] text-[#111827]">
+    <div className="min-h-screen overflow-hidden bg-delache-50 text-foreground">
       <MetaHelmet
         title="Peritajes eléctricos de precisión"
         description="Transformamos el proceso de los peritajes eléctricos con ingeniería especializada, procesos judiciales estandarizados y tecnología propia. Precisión, trazabilidad y certeza."
@@ -348,7 +343,7 @@ export default function Index() {
               <button
                 key={id}
                 onClick={() => scrollToSection(id)}
-                className="transition hover:text-[#0b4ea2]"
+                className="transition hover:text-[#E6AB40]"
               >
                 {label}
               </button>
@@ -357,13 +352,13 @@ export default function Index() {
           <div className="flex items-center gap-2 sm:gap-3">
             <Link
               to="/client/login"
-              className="hidden rounded-full border border-slate-200 bg-white px-4 py-2.5 text-[12px] font-semibold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-[#0b4ea2] sm:block"
+              className="hidden rounded-full border border-slate-200 bg-white px-4 py-2.5 text-[12px] font-semibold text-slate-700 transition hover:border-primary/30 hover:bg-secondary hover:text-[#E6AB40] sm:block"
             >
               {t("home.accessClient")}
             </Link>
             <button
               onClick={() => scrollToSection("contacto")}
-              className="hidden rounded-full bg-[#0b4ea2] px-5 py-2.5 text-[12px] font-semibold text-white shadow-lg shadow-blue-900/15 transition hover:-translate-y-0.5 hover:bg-[#083e82] sm:block"
+              className="hidden rounded-full bg-[#E6AB40] px-5 py-2.5 text-[12px] font-semibold text-[#0F172A] shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-[#C9922A] sm:block"
             >
               Solicitar asesoría{" "}
               <ArrowUpRight className="ml-1 inline" size={14} />
@@ -410,7 +405,7 @@ export default function Index() {
                 scrollToSection("contacto");
                 setMobileOpen(false);
               }}
-              className="mt-2 w-full rounded-xl bg-[#0b4ea2] py-3 text-sm font-semibold text-white"
+              className="mt-2 w-full rounded-xl bg-[#E6AB40] py-3 text-sm font-semibold text-[#0F172A]"
             >
               Solicitar asesoría
             </button>
@@ -419,19 +414,19 @@ export default function Index() {
       </header>
 
       <main id="inicio">
-        <section className="hero-grid relative isolate min-h-[760px] overflow-hidden bg-[#f5f8fc] pt-32 lg:min-h-[850px] lg:pt-40">
-          <div className="hero-orb absolute -right-40 top-12 -z-10 h-[540px] w-[540px] rounded-full bg-blue-200/40 blur-3xl" />
+        <section className="hero-grid relative isolate min-h-[760px] overflow-hidden bg-delache-50 pt-32 lg:min-h-[850px] lg:pt-40">
+          <div className="hero-orb absolute -right-40 top-12 -z-10 h-[540px] w-[540px] rounded-full bg-primary/25 blur-3xl" />
           <div className="mx-auto grid max-w-7xl items-center gap-16 px-5 pb-24 sm:px-8 lg:grid-cols-[.9fr_1.1fr] lg:px-10 lg:pb-36">
             <motion.div
               initial={{ opacity: 0, x: -24 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.7 }}
             >
-              <div className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.22em] text-[#0b4ea2]">
-                <span className="h-2 w-2 rounded-full bg-[#2979ff] shadow-[0_0_0_5px_rgba(41,121,255,.12)]" />{" "}
+              <div className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.22em] text-[#E6AB40]">
+                <span className="h-2 w-2 rounded-full bg-[#E6AB40] shadow-[0_0_0_5px_rgba(230,171,64,.16)]" />{" "}
                 Ingeniería + Tecnología
               </div>
-              <h1 className="max-w-[680px] text-[clamp(3.6rem,7vw,6.5rem)] font-semibold leading-[.94] tracking-[-.075em] text-[#0e1b31]">
+              <h1 className="max-w-[680px] text-[clamp(3.6rem,7vw,6.5rem)] font-semibold leading-[.94] tracking-[-.075em] text-delache-ink">
                 Peritajes
                 <br />
                 <span className="hero-gradient">de precisión.</span>
@@ -444,7 +439,7 @@ export default function Index() {
               <div className="mt-10 flex flex-wrap items-center gap-4">
                 <button
                   onClick={() => scrollToSection("contacto")}
-                  className="group rounded-full bg-[#0b4ea2] px-6 py-3.5 text-sm font-semibold text-white shadow-xl shadow-blue-900/20 transition hover:-translate-y-1 hover:bg-[#083e82]"
+                  className="group rounded-full bg-[#E6AB40] px-6 py-3.5 text-sm font-semibold text-[#0F172A] shadow-xl shadow-black/15 transition hover:-translate-y-1 hover:bg-[#C9922A]"
                 >
                   Solicitar asesoría{" "}
                   <ArrowRight
@@ -454,9 +449,9 @@ export default function Index() {
                 </button>
                 <button
                   onClick={() => scrollToSection("plataforma")}
-                  className="group flex items-center gap-2 px-2 py-3 text-sm font-semibold text-[#0b4ea2]"
+                  className="group flex items-center gap-2 px-2 py-3 text-sm font-semibold text-[#E6AB40]"
                 >
-                  <span className="grid h-9 w-9 place-items-center rounded-full border border-blue-200 bg-white transition group-hover:bg-blue-50">
+                  <span className="grid h-9 w-9 place-items-center rounded-full border border-primary/30 bg-white transition group-hover:bg-secondary">
                     <Play size={13} fill="currentColor" />
                   </span>{" "}
                   Explorar la plataforma
@@ -480,7 +475,7 @@ export default function Index() {
             </motion.div>
             <AppDashboard />
           </div>
-          <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-[#fafbfc] to-transparent" />
+          <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-delache-50 to-transparent" />
         </section>
 
         <section className="border-b border-slate-100 bg-white py-8">
@@ -517,7 +512,7 @@ export default function Index() {
                   whileHover={{ y: -6 }}
                   transition={{ duration: 0.2 }}
                   key={title}
-                  className={`service-card group ${index === 0 ? "border-[#2979ff]/30 bg-[#f2f7ff]" : ""}`}
+                  className={`service-card group ${index === 0 ? "border-[#E6AB40]/30 bg-[#FBF5E8]" : ""}`}
                 >
                   <div className="flex items-start justify-between">
                     <span className="icon-box">
@@ -533,7 +528,7 @@ export default function Index() {
                   <p className="mt-3 text-sm leading-6 text-slate-500">
                     {text}
                   </p>
-                  <div className="mt-7 flex items-center text-xs font-semibold text-[#0b4ea2] opacity-0 transition group-hover:opacity-100">
+                  <div className="mt-7 flex items-center text-xs font-semibold text-[#E6AB40] opacity-0 transition group-hover:opacity-100">
                     Conocer servicio <ArrowUpRight className="ml-1" size={14} />
                   </div>
                 </motion.div>
@@ -544,18 +539,18 @@ export default function Index() {
 
         <section
           id="plataforma"
-          className="platform-section relative overflow-hidden bg-[#0d1a2e] py-24 text-white sm:py-32"
+          className="platform-section relative overflow-hidden bg-delache-950 py-24 text-white sm:py-32"
         >
-          <div className="absolute right-0 top-0 h-full w-1/2 bg-[radial-gradient(circle_at_70%_30%,rgba(41,121,255,.2),transparent_55%)]" />
+          <div className="absolute right-0 top-0 h-full w-1/2 bg-[radial-gradient(circle_at_70%_30%,rgba(230,171,64,.2),transparent_55%)]" />
           <div className="relative mx-auto max-w-7xl px-5 sm:px-8 lg:px-10">
             <div className="grid items-end gap-10 lg:grid-cols-[.85fr_1.15fr]">
               <div>
-                <p className="eyebrow text-[#72a6ff]">
+                <p className="eyebrow text-[#E6AB40]">
                   DELACHE OS · Plataforma propia
                 </p>
                 <h2 className="mt-5 max-w-xl text-4xl font-semibold leading-tight tracking-[-.04em] sm:text-6xl">
                   La tecnología que impulsa cada{" "}
-                  <span className="text-[#72a6ff]">peritaje.</span>
+                  <span className="text-[#E6AB40]">peritaje.</span>
                 </h2>
               </div>
               <p className="max-w-md text-sm leading-7 text-white/50 lg:pb-2">
@@ -568,7 +563,7 @@ export default function Index() {
               <div className="platform-window rounded-[24px] border border-white/10 bg-white/[.045] p-3 shadow-2xl sm:p-5">
                 <div className="flex items-center justify-between border-b border-white/10 pb-4">
                   <div className="flex items-center gap-2 text-xs font-medium">
-                    <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#2979ff]">
+                    <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#E6AB40]">
                       <PanelTop size={14} />
                     </span>{" "}
                     Centro de operaciones
@@ -585,10 +580,10 @@ export default function Index() {
                       Mapa de inspecciones
                     </div>
                     <div className="map-art relative mt-4 h-44 overflow-hidden rounded-lg">
-                      <div className="absolute left-[31%] top-[32%] animate-pulse rounded-full bg-blue-400 p-1.5 shadow-[0_0_0_7px_rgba(41,121,255,.16)]">
+                      <div className="absolute left-[31%] top-[32%] animate-pulse rounded-full bg-primary p-1.5 shadow-[0_0_0_7px_rgba(230,171,64,.16)]">
                         <MapPin size={12} />
                       </div>
-                      <div className="absolute left-[62%] top-[56%] rounded-full bg-blue-400 p-1.5 shadow-[0_0_0_7px_rgba(41,121,255,.16)]">
+                      <div className="absolute left-[62%] top-[56%] rounded-full bg-primary p-1.5 shadow-[0_0_0_7px_rgba(230,171,64,.16)]">
                         <MapPin size={12} />
                       </div>
                       <div className="absolute left-[45%] top-[72%] rounded-full bg-emerald-400 p-1.5" />
@@ -609,7 +604,7 @@ export default function Index() {
                           <span
                             key={i}
                             style={{ height: `${h}%` }}
-                            className="flex-1 rounded-t bg-gradient-to-t from-[#2979ff] to-[#62b0ff] opacity-70"
+                            className="flex-1 rounded-t bg-gradient-to-t from-[#E6AB40] to-[#F0C76A] opacity-70"
                           />
                         ),
                       )}
@@ -620,14 +615,14 @@ export default function Index() {
                       Estado de expedientes
                     </div>
                     <div className="mt-3 flex items-center gap-4">
-                      <div className="relative h-14 w-14 rounded-full border-[7px] border-[#2979ff] border-r-white/10 border-b-white/10">
+                      <div className="relative h-14 w-14 rounded-full border-[7px] border-[#E6AB40] border-r-white/10 border-b-white/10">
                         <span className="absolute inset-0 grid place-items-center text-[11px] font-semibold">
                           76%
                         </span>
                       </div>
                       <div className="space-y-1.5 text-[9px] text-white/45">
                         <div>
-                          <i className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-[#2979ff]" />{" "}
+                          <i className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-[#E6AB40]" />{" "}
                           En proceso <b className="ml-2 text-white">38</b>
                         </div>
                         <div>
@@ -646,9 +641,9 @@ export default function Index() {
                     <motion.div
                       whileHover={{ x: 5 }}
                       key={label as string}
-                      className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[.035] p-3.5 transition hover:border-[#2979ff]/40 hover:bg-[#2979ff]/10"
+                      className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[.035] p-3.5 transition hover:border-[#E6AB40]/40 hover:bg-[#E6AB40]/10"
                     >
-                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white/[.07] text-[#72a6ff]">
+                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white/[.07] text-[#E6AB40]">
                         <CapabilityIcon size={15} />
                       </span>
                       <span className="text-xs text-white/70">
@@ -691,7 +686,7 @@ export default function Index() {
                 >
                   <div className="mb-4 flex items-center gap-3">
                     <span
-                      className={`grid h-9 w-9 place-items-center rounded-full text-xs font-bold ${index === 0 ? "bg-[#0b4ea2] text-white" : "bg-[#edf4ff] text-[#0b4ea2]"}`}
+                      className={`grid h-9 w-9 place-items-center rounded-full text-xs font-bold ${index === 0 ? "bg-[#E6AB40] text-[#0F172A]" : "bg-[#FBF5E8] text-[#E6AB40]"}`}
                     >
                       {String(index + 1).padStart(2, "0")}
                     </span>
@@ -713,8 +708,8 @@ export default function Index() {
 
         <section id="nosotros" className="section-space">
           <div className="mx-auto grid max-w-7xl gap-16 px-5 sm:px-8 lg:grid-cols-[.9fr_1.1fr] lg:items-center lg:px-10">
-            <div className="about-art relative min-h-[440px] overflow-hidden rounded-[28px] bg-[#eaf2fc] p-8">
-              <div className="absolute -right-24 -top-20 h-72 w-72 rounded-full bg-blue-200/50 blur-2xl" />
+            <div className="about-art relative min-h-[440px] overflow-hidden rounded-[28px] bg-delache-100 p-8">
+              <div className="absolute -right-24 -top-20 h-72 w-72 rounded-full bg-primary/30 blur-2xl" />
               <div className="absolute bottom-8 left-8 right-8 rounded-2xl border border-white bg-white/70 p-5 shadow-xl backdrop-blur">
                 <div className="flex items-center justify-between">
                   <div>
@@ -727,16 +722,14 @@ export default function Index() {
                       Es el estándar.
                     </p>
                   </div>
-                  <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#0b4ea2] text-white">
+                  <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#E6AB40] text-[#0F172A]">
                     <Sparkles size={18} />
                   </span>
                 </div>
               </div>
               <div className="absolute left-1/2 top-[42%] -translate-x-1/2 -translate-y-1/2">
-                <div className="grid h-48 w-48 place-items-center rounded-full border border-blue-300/50 bg-white/40 shadow-[0_0_0_24px_rgba(255,255,255,.25),0_0_0_48px_rgba(176,208,244,.18)]">
-                  <div className="grid h-24 w-24 place-items-center rounded-3xl bg-[#0b4ea2] text-white shadow-2xl shadow-blue-900/30">
-                    <span className="h-10 w-10 rotate-45 border-[5px] border-white" />
-                  </div>
+                <div className="grid h-48 w-48 place-items-center rounded-full border border-primary/40 bg-white/40 shadow-[0_0_0_24px_rgba(255,255,255,.25),0_0_0_48px_rgba(230,171,64,.18)]">
+                  <BrandLogo variant="full" size="xl" className="h-32 sm:h-36" />
                 </div>
               </div>
             </div>
@@ -761,7 +754,7 @@ export default function Index() {
                   "Equipo multidisciplinario",
                 ].map((item) => (
                   <div key={item} className="flex gap-3">
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-blue-50 text-[#0b4ea2]">
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-secondary text-[#E6AB40]">
                       <CircleCheck size={15} />
                     </span>
                     <div>
@@ -781,21 +774,21 @@ export default function Index() {
 
         <section
           id="contacto"
-          className="bg-[#0b4ea2] py-24 text-white sm:py-28"
+          className="bg-delache-950 py-24 text-white sm:py-28"
         >
           <div className="mx-auto grid max-w-7xl gap-14 px-5 sm:px-8 lg:grid-cols-[1fr_.8fr] lg:px-10">
             <div>
-              <p className="eyebrow text-blue-200">
+              <p className="eyebrow text-primary">
                 Hablemos de tu próximo caso
               </p>
               <h2 className="mt-5 max-w-2xl text-4xl font-semibold leading-[1.05] tracking-[-.05em] sm:text-6xl">
                 La certeza empieza con una conversación.
               </h2>
-              <p className="mt-7 max-w-md text-sm leading-7 text-blue-100/70">
+              <p className="mt-7 max-w-md text-sm leading-7 text-white/70">
                 Cuéntanos brevemente sobre tu proyecto. Nuestro equipo se pondrá
                 en contacto contigo.
               </p>
-              <div className="mt-10 space-y-4 text-sm text-blue-100/80">
+              <div className="mt-10 space-y-4 text-sm text-white/80">
                 <div className="flex items-center gap-3">
                   <Globe2 size={16} /> Ciudad de México · Cobertura nacional
                 </div>
@@ -823,7 +816,7 @@ export default function Index() {
                   <button
                     type="button"
                     onClick={() => setSent(false)}
-                    className="mt-6 text-sm font-semibold text-[#0b4ea2]"
+                    className="mt-6 text-sm font-semibold text-[#E6AB40]"
                   >
                     Enviar otra solicitud
                   </button>
@@ -831,7 +824,7 @@ export default function Index() {
               ) : (
                 <>
                   <div className="mb-6">
-                    <p className="text-xs font-bold uppercase tracking-widest text-[#0b4ea2]">
+                    <p className="text-xs font-bold uppercase tracking-widest text-[#E6AB40]">
                       Solicitar asesoría
                     </p>
                     <h3 className="mt-2 text-2xl font-semibold tracking-tight">
@@ -874,7 +867,7 @@ export default function Index() {
                       placeholder="Cuéntanos sobre tu caso..."
                     />
                   </label>
-                  <button className="mt-5 w-full rounded-xl bg-[#0b4ea2] py-3.5 text-sm font-semibold text-white transition hover:bg-[#083e82]">
+                  <button className="mt-5 w-full rounded-xl bg-[#E6AB40] py-3.5 text-sm font-semibold text-[#0F172A] transition hover:bg-[#C9922A]">
                     Enviar solicitud{" "}
                     <ArrowRight className="ml-2 inline" size={16} />
                   </button>
@@ -884,10 +877,10 @@ export default function Index() {
           </div>
         </section>
       </main>
-      <footer className="bg-[#081426] py-12 text-white">
+      <footer className="bg-delache-950 py-12 text-white">
         <div className="mx-auto max-w-7xl px-5 sm:px-8 lg:px-10">
           <div className="flex flex-col justify-between gap-8 border-b border-white/10 pb-10 sm:flex-row sm:items-center">
-            <Logo light />
+            <Logo />
             <div className="flex flex-wrap gap-x-6 gap-y-3 text-xs text-white/45">
               {navItems.map(([label, id]) => (
                 <button

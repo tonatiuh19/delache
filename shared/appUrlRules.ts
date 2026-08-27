@@ -35,27 +35,38 @@ function withHttps(hostOrUrl: string): string {
 export function isProductionRuntime(env: AppUrlEnv): boolean {
   return (
     env.VERCEL_ENV === "production" ||
-    (env.NODE_ENV === "production" && env.VERCEL_ENV !== "preview" && env.VERCEL_ENV !== "development")
+    (env.NODE_ENV === "production" &&
+      env.VERCEL_ENV !== "preview" &&
+      env.VERCEL_ENV !== "development")
   );
+}
+
+function shouldSkipLocalhostCandidate(env: AppUrlEnv): boolean {
+  // On Vercel (prod or preview), never trust a localhost APP_URL / Vite URL —
+  // those are almost always leftover local .env values.
+  if (env.VERCEL_ENV === "production" || env.VERCEL_ENV === "preview") {
+    return true;
+  }
+  return isProductionRuntime(env);
 }
 
 /**
  * Resolve the public origin for email CTAs and absolute links.
  * Preference: APP_URL → PUBLIC_APP_URL → VITE_PUBLIC_APP_URL →
  * Vercel production domain → Vercel deployment URL → localhost (dev only).
+ * Localhost candidates are skipped on Vercel production/preview.
  */
 export function resolvePublicAppUrl(
   env: AppUrlEnv,
   opts: { fallbackLocalhost?: string } = {},
 ): string {
-  const explicit = [
-    env.APP_URL,
-    env.PUBLIC_APP_URL,
-    env.VITE_PUBLIC_APP_URL,
-  ];
+  const skipLocal = shouldSkipLocalhostCandidate(env);
+  const explicit = [env.APP_URL, env.PUBLIC_APP_URL, env.VITE_PUBLIC_APP_URL];
   for (const candidate of explicit) {
     if (typeof candidate === "string" && candidate.trim()) {
-      return withHttps(candidate);
+      const origin = withHttps(candidate);
+      if (skipLocal && isLocalhostAppUrl(origin)) continue;
+      return origin;
     }
   }
 
@@ -71,10 +82,6 @@ export function resolvePublicAppUrl(
   }
 
   const local = opts.fallbackLocalhost ?? "http://localhost:8080";
-  if (isProductionRuntime(env)) {
-    // Last resort — callers should refuse to send emails with this.
-    return normalizeAppOrigin(local);
-  }
   return normalizeAppOrigin(local);
 }
 
@@ -85,4 +92,30 @@ export function isUnsafePublicAppUrlForEmail(
 ): boolean {
   if (!isLocalhostAppUrl(url)) return false;
   return isProductionRuntime(env) || env.VERCEL_ENV === "preview";
+}
+
+/**
+ * Public origin for static assets embedded in emails (logo, etc.).
+ * Email clients cannot load localhost images — when `appUrl` is local,
+ * fall back to the production site (or an explicit override).
+ */
+export const DEFAULT_EMAIL_ASSET_ORIGIN = "https://www.delache.mx";
+
+export function resolveEmailAssetBaseUrl(
+  appUrl: string,
+  opts: { publicAssetOrigin?: string | null } = {},
+): string {
+  const origin = normalizeAppOrigin(appUrl);
+  if (!isLocalhostAppUrl(origin)) return origin;
+
+  const override =
+    typeof opts.publicAssetOrigin === "string"
+      ? opts.publicAssetOrigin.trim()
+      : "";
+  if (override) {
+    const resolved = withHttps(override);
+    if (!isLocalhostAppUrl(resolved)) return resolved;
+  }
+
+  return DEFAULT_EMAIL_ASSET_ORIGIN;
 }

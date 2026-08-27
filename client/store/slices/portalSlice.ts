@@ -1,4 +1,6 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
+import { logout } from "./authSlice";
+import { completeReviewRequest } from "./casesSlice";
 import type {
   CalendarEventItem,
   CaseNumberSettings,
@@ -18,6 +20,8 @@ import type {
   LawFirmSummary,
   NotificationItem,
   PaginationInfo,
+  PendingReviewQueueItem,
+  PendingReviewsResponse,
   ReportsKpiResponse,
   TeamListQuery,
   TeamListResponse,
@@ -44,6 +48,8 @@ interface PortalState {
   searchResults: GlobalSearchHit[];
   searchQuery: string;
   kpis: ReportsKpiResponse | null;
+  pendingReviews: PendingReviewQueueItem[];
+  pendingReviewsTotal: number;
   loadingStats: boolean;
   loadingEvents: boolean;
   loadingInvoices: boolean;
@@ -54,6 +60,8 @@ interface PortalState {
   loadingDocuments: boolean;
   loadingSearch: boolean;
   loadingKpis: boolean;
+  loadingPendingReviews: boolean;
+  pendingReviewsError: string | null;
   savingSettings: boolean;
   creating: boolean;
   updatingMember: boolean;
@@ -77,7 +85,11 @@ const initialState: PortalState = {
   searchResults: [],
   searchQuery: "",
   kpis: null,
+  pendingReviews: [],
+  pendingReviewsTotal: 0,
   loadingStats: false,
+  loadingPendingReviews: false,
+  pendingReviewsError: null,
   loadingEvents: false,
   loadingInvoices: false,
   loadingMembers: false,
@@ -99,6 +111,26 @@ function rejectMsg(err: unknown, fallback: string) {
       ?.error || fallback
   );
 }
+
+export const fetchPendingReviews = createAsyncThunk(
+  "portal/fetchPendingReviews",
+  async (args: { limit?: number } = {}, { rejectWithValue }) => {
+    try {
+      const params =
+        args?.limit != null ? { limit: args.limit } : undefined;
+      const { data } = await api.get<PendingReviewsResponse>(
+        "/api/reviews/pending",
+        { params },
+      );
+      return data;
+    } catch (err: unknown) {
+      return rejectWithValue(
+        (err as { response?: { data?: { error?: string } } })?.response?.data
+          ?.error || "reviews_failed",
+      );
+    }
+  },
+);
 
 export const fetchDashboardStats = createAsyncThunk(
   "portal/fetchDashboardStats",
@@ -470,6 +502,43 @@ const portalSlice = createSlice({
         state.loadingStats = false;
         state.error = (action.payload as string) || "stats_failed";
       })
+      .addCase(fetchPendingReviews.pending, (state, action) => {
+        const countOnly = action.meta.arg?.limit === 1;
+        if (!countOnly) {
+          state.loadingPendingReviews = true;
+          state.pendingReviewsError = null;
+        }
+      })
+      .addCase(fetchPendingReviews.fulfilled, (state, action) => {
+        const countOnly = action.meta.arg?.limit === 1;
+        if (!countOnly) {
+          state.loadingPendingReviews = false;
+          state.pendingReviewsError = null;
+          state.pendingReviews = action.payload.reviews ?? [];
+        }
+        state.pendingReviewsTotal = action.payload.total ?? 0;
+      })
+      .addCase(fetchPendingReviews.rejected, (state, action) => {
+        const countOnly = action.meta.arg?.limit === 1;
+        if (countOnly) return;
+        state.loadingPendingReviews = false;
+        const msg = (action.payload as string) || "reviews_failed";
+        state.pendingReviewsError = msg;
+        if (msg === "Insufficient permissions") {
+          state.pendingReviews = [];
+          state.pendingReviewsTotal = 0;
+        }
+      })
+      .addCase(completeReviewRequest.fulfilled, (state, action) => {
+        const completedId = action.payload.id;
+        const before = state.pendingReviews.length;
+        state.pendingReviews = state.pendingReviews.filter(
+          (r) => r.id !== completedId,
+        );
+        if (state.pendingReviews.length < before && state.pendingReviewsTotal > 0) {
+          state.pendingReviewsTotal -= 1;
+        }
+      })
       .addCase(fetchCalendarEvents.pending, (state) => {
         state.loadingEvents = true;
       })
@@ -533,8 +602,14 @@ const portalSlice = createSlice({
             new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
         );
       })
+      .addCase(createCalendarEvent.rejected, (state, action) => {
+        state.error = (action.payload as string) || "calendar_create_failed";
+      })
       .addCase(createInvoice.fulfilled, (state, action) => {
         state.invoices = [action.payload, ...state.invoices];
+      })
+      .addCase(createInvoice.rejected, (state, action) => {
+        state.error = (action.payload as string) || "invoice_create_failed";
       })
       .addCase(recordPayment.fulfilled, (state, action) => {
         state.invoices = state.invoices.map((inv) =>
@@ -543,8 +618,14 @@ const portalSlice = createSlice({
             : inv,
         );
       })
+      .addCase(recordPayment.rejected, (state, action) => {
+        state.error = (action.payload as string) || "payment_failed";
+      })
       .addCase(inviteTeamMember.fulfilled, (state, action) => {
         state.members = [action.payload, ...state.members];
+      })
+      .addCase(inviteTeamMember.rejected, (state, action) => {
+        state.error = (action.payload as string) || "invite_failed";
       })
       .addCase(fetchTeamMemberDetail.pending, (state) => {
         state.loadingMemberDetail = true;
@@ -636,6 +717,9 @@ const portalSlice = createSlice({
           a.name.localeCompare(b.name),
         );
       })
+      .addCase(createLawFirm.rejected, (state, action) => {
+        state.error = (action.payload as string) || "law_firm_create_failed";
+      })
       .addCase(fetchDocumentsIndex.pending, (state) => {
         state.loadingDocuments = true;
       })
@@ -670,7 +754,8 @@ const portalSlice = createSlice({
       .addCase(fetchReportsKpis.rejected, (state, action) => {
         state.loadingKpis = false;
         state.error = (action.payload as string) || "kpis_failed";
-      });
+      })
+      .addCase(logout.fulfilled, () => initialState);
   },
 });
 

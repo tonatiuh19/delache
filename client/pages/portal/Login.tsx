@@ -5,36 +5,26 @@ import { useTranslation } from "react-i18next";
 import { ArrowLeft } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import OtpLoginForm from "@/components/auth/OtpLoginForm";
-
-function BrandMark() {
-  return (
-    <span className="grid h-9 w-9 place-items-center rounded-xl bg-white text-primary">
-      <span className="h-4 w-4 rotate-45 border-[3px] border-current" />
-    </span>
-  );
-}
+import BrandLogo from "@/components/BrandLogo";
 
 function StaffLoginVisual() {
   const { t } = useTranslation();
   return (
-    <div className="relative hidden min-h-screen overflow-hidden bg-[#09172b] lg:flex lg:flex-col lg:justify-between lg:p-12 xl:p-16">
-      <div className="login-glow absolute -left-40 top-[-12%] h-[620px] w-[620px] rounded-full bg-accent/25 blur-[100px]" />
-      <div className="absolute bottom-[-20%] right-[-10%] h-[500px] w-[500px] rounded-full bg-accent/10 blur-[100px]" />
-      <div className="relative z-10 flex items-center gap-3 text-white">
-        <BrandMark />
-        <span className="text-[15px] font-extrabold tracking-[.28em]">
-          {t("common.appName")}
-        </span>
+    <div className="relative hidden min-h-screen overflow-hidden bg-delache-950 lg:flex lg:flex-col lg:justify-between lg:p-12 xl:p-16">
+      <div className="login-glow absolute -left-40 top-[-12%] h-[620px] w-[620px] rounded-full bg-primary/25 blur-[100px]" />
+      <div className="absolute bottom-[-20%] right-[-10%] h-[500px] w-[500px] rounded-full bg-primary/10 blur-[100px]" />
+      <div className="relative z-10 flex items-center text-white">
+        <BrandLogo variant="full" size="lg" />
       </div>
       <div className="relative z-10 max-w-xl py-12">
-        <div className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.22em] text-[#82b5ff]">
-          <span className="h-2 w-2 rounded-full bg-[#55d7b0] shadow-[0_0_0_5px_rgba(85,215,176,.12)]" />{" "}
+        <div className="mb-8 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.22em] text-primary">
+          <span className="h-2 w-2 rounded-full bg-primary shadow-[0_0_0_5px_rgba(230,171,64,.16)]" />{" "}
           {t("auth.privatePortal")}
         </div>
         <h1 className="font-[Manrope] text-5xl font-semibold leading-[1.02] tracking-[-.065em] text-white xl:text-7xl">
           {t("auth.visualHeadline")}
         </h1>
-        <p className="mt-7 max-w-md text-base leading-7 text-blue-100/55">
+        <p className="mt-7 max-w-md text-base leading-7 text-white/55">
           {t("auth.visualBody")}
         </p>
         <div className="relative mt-14 h-[235px] max-w-[500px]">
@@ -46,7 +36,7 @@ function StaffLoginVisual() {
           >
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div className="flex items-center gap-2 text-[10px] text-white/60">
-                <span className="grid h-6 w-6 place-items-center rounded-lg bg-accent">
+                <span className="grid h-6 w-6 place-items-center rounded-lg bg-primary text-primary-foreground">
                   <Fingerprint size={12} />
                 </span>{" "}
                 {t("auth.visualCardTitle")}
@@ -75,7 +65,7 @@ function StaffLoginVisual() {
                   <span
                     style={{ height: `${height}%` }}
                     key={index}
-                    className="flex-1 rounded-t bg-gradient-to-t from-accent to-[#79b4ff] opacity-70"
+                    className="flex-1 rounded-t bg-gradient-to-t from-delache-600 to-delache-400 opacity-70"
                   />
                 ),
               )}
@@ -85,7 +75,7 @@ function StaffLoginVisual() {
             initial={{ opacity: 0, x: 18 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.25, duration: 0.7 }}
-            className="absolute bottom-0 right-0 rounded-2xl border border-white/15 bg-[#142844]/90 p-4 shadow-2xl backdrop-blur-xl"
+            className="absolute bottom-0 right-0 rounded-2xl border border-white/15 bg-delache-900/90 p-4 shadow-2xl backdrop-blur-xl"
           >
             <div className="flex items-center gap-3">
               <div className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-400/15 text-emerald-300">
@@ -132,14 +122,10 @@ export default function PortalLogin() {
         <div className="flex items-center justify-between lg:justify-end">
           <Link
             to="/"
-            className="flex items-center gap-3 text-foreground lg:hidden"
+            className="inline-flex items-center text-foreground lg:hidden"
+            aria-label={t("common.appName")}
           >
-            <span className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-              <span className="h-3.5 w-3.5 rotate-45 border-2 border-current" />
-            </span>
-            <span className="text-sm font-extrabold tracking-[.24em]">
-              {t("common.appName")}
-            </span>
+            <BrandLogo variant="full" size="sm" />
           </Link>
           <Link
             to="/"

@@ -11,8 +11,8 @@ export const SITE_TWITTER_HANDLE =
   "@delache";
 
 /** Brand theme colors for theme-color meta */
-export const THEME_COLOR_DARK = "#071426";
-export const THEME_COLOR_LIGHT = "#0b4ea2";
+export const THEME_COLOR_DARK = "#1A1408";
+export const THEME_COLOR_LIGHT = "#E6AB40";
 export const THEME_COLOR = THEME_COLOR_LIGHT;
 
 export const DEFAULT_LOCALE = "es_MX";

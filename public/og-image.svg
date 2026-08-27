@@ -1,12 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#071426"/>
-      <stop offset="100%" stop-color="#0b4ea2"/>
+      <stop offset="0%" stop-color="#1A1408"/>
+      <stop offset="100%" stop-color="#3D2C0C"/>
     </linearGradient>
   </defs>
   <rect width="1200" height="630" fill="url(#bg)"/>
-  <rect x="560" y="210" width="80" height="80" fill="none" stroke="#72a6ff" stroke-width="10" transform="rotate(45 600 250)"/>
-  <text x="600" y="380" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="12">DELACHE</text>
-  <text x="600" y="440" text-anchor="middle" fill="#72a6ff" font-family="Arial, sans-serif" font-size="28">Peritajes eléctricos de precisión</text>
+  <rect x="520" y="160" width="160" height="160" rx="36" fill="#000000"/>
+  <polygon points="640,190 700,280 670,280 720,360 580,280 620,280" fill="#E6AB40" stroke="#ffffff" stroke-width="4"/>
+  <text x="600" y="420" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="56" font-weight="700" letter-spacing="10">DELACHE</text>
+  <text x="600" y="475" text-anchor="middle" fill="#E6AB40" font-family="Arial, sans-serif" font-size="26">Peritajes eléctricos de precisión</text>
 </svg>

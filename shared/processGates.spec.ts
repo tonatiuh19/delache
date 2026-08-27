@@ -90,8 +90,66 @@ describe("process alignment", () => {
       }),
     );
     for (const key of progressKeys) {
+      if (key === "gatesOk" || key === "holdResumeStatus") continue;
       expect(LISTADO_COLUMNS).toContain(key);
     }
+  });
+
+  it("sets gatesOk from the current process point", () => {
+    const blocked = buildListadoProgress({
+      status: "intake",
+      input: { documentCategories: ["lawsuit"] },
+    });
+    expect(blocked.gatesOk).toBe(false);
+    expect(blocked.intakeComplete).toBe(false);
+
+    const ready = buildListadoProgress({
+      status: "intake",
+      input: { documentCategories: intakeDocs },
+    });
+    expect(ready.gatesOk).toBe(true);
+    expect(ready.intakeComplete).toBe(true);
+
+    const assignmentBlocked = buildListadoProgress({
+      status: "assignment",
+      input: { documentCategories: intakeDocs, hasPrimaryExpert: false },
+    });
+    expect(assignmentBlocked.gatesOk).toBe(false);
+    expect(assignmentBlocked.primaryExpert).toBe(false);
+
+    const assignmentReady = buildListadoProgress({
+      status: "assignment",
+      input: { documentCategories: intakeDocs, hasPrimaryExpert: true },
+    });
+    expect(assignmentReady.gatesOk).toBe(true);
+
+    const questionnaireBlocked = buildListadoProgress({
+      status: "questionnaire",
+      input: {
+        documentCategories: [...intakeDocs, "questionnaire"],
+        hasPrimaryExpert: true,
+        hasPropertyGps: false,
+        hasStreetView: false,
+        questionnaireStatus: "draft",
+      },
+    });
+    expect(questionnaireBlocked.gatesOk).toBe(false);
+
+    const accountingBlocked = buildListadoProgress({
+      status: "accounting",
+      input: {
+        documentCategories: intakeDocs,
+        hasUnpaidInvoices: true,
+      },
+    });
+    expect(accountingBlocked.gatesOk).toBe(false);
+
+    const onHold = buildListadoProgress({
+      status: "on_hold",
+      input: { documentCategories: [] },
+    });
+    expect(onHold.processPoint).toBeNull();
+    expect(onHold.gatesOk).toBe(true);
   });
 });
 
@@ -516,5 +574,15 @@ describe("evaluateProcessGates", () => {
     expect(listado.finalReleased).toBe(true);
     expect(listado.attendedWithReport).toBe(true);
     expect(listado.clock10DueAt).toBe("2026-08-20T00:00:00.000Z");
+  });
+
+  it("passes holdResumeStatus through listado for on_hold cases", () => {
+    const listado = buildListadoProgress({
+      status: "on_hold",
+      input: { documentCategories: [] },
+      holdResumeStatus: "inspection",
+    });
+    expect(listado.holdResumeStatus).toBe("inspection");
+    expect(listado.gatesOk).toBe(true);
   });
 });

@@ -9,6 +9,7 @@ import PortalPageHeader from "@/components/portal/PortalPageHeader";
 import PortalListPanel from "@/components/portal/PortalListPanel";
 import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import TeamMemberSheet from "@/components/portal/TeamMemberSheet";
+import LocalEmailCtaLegend from "@/components/portal/LocalEmailCtaLegend";
 import { DataGrid, type DataGridColumn } from "@/components/ui/data-grid";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -199,6 +200,9 @@ export default function TeamPage() {
           >
             <div className="sm:col-span-2">
               <SectionHelper>{t("help.team.section")}</SectionHelper>
+            </div>
+            <div className="sm:col-span-2">
+              <LocalEmailCtaLegend />
             </div>
             <div className="sm:col-span-2">
               <input

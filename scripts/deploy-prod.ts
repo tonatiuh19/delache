@@ -256,18 +256,6 @@ async function main() {
   await assertRequiredSchema();
   console.log("✅ Required schema present.\n");
 
-  const publicAppUrl =
-    process.env.APP_URL?.trim() ||
-    process.env.PUBLIC_APP_URL?.trim() ||
-    process.env.VITE_PUBLIC_APP_URL?.trim() ||
-    "";
-  if (!publicAppUrl || /localhost|127\.0\.0\.1/i.test(publicAppUrl)) {
-    throw new Error(
-      "Set APP_URL or VITE_PUBLIC_APP_URL in .env to your public https domain (e.g. https://app.delache.mx) before production deploy. Welcome/invite emails use this URL.",
-    );
-  }
-  console.log(`✅ Public app URL for emails: ${publicAppUrl.replace(/\/$/, "")}\n`);
-
   // Short-lived connection — do not hold open across vercel --prod
   // (TiDB Serverless closes idle sockets → "connection is in closed state").
   const currentVersion = await readAppVersion();
@@ -293,20 +281,12 @@ async function main() {
       `VITE_APP_VERSION=${deployVersion}`,
       "--build-env",
       `APP_VERSION=${deployVersion}`,
-      "--build-env",
-      `VITE_PUBLIC_APP_URL=${publicAppUrl.replace(/\/$/, "")}`,
-      "--env",
-      `VITE_PUBLIC_APP_URL=${publicAppUrl.replace(/\/$/, "")}`,
-      "--env",
-      `APP_URL=${publicAppUrl.replace(/\/$/, "")}`,
       ...vercelArgs,
     ],
     {
       ...process.env,
       VITE_APP_VERSION: deployVersion,
       APP_VERSION: deployVersion,
-      VITE_PUBLIC_APP_URL: publicAppUrl.replace(/\/$/, ""),
-      APP_URL: publicAppUrl.replace(/\/$/, ""),
     },
   );
 

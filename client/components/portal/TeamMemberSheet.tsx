@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
+import LocalEmailCtaLegend from "@/components/portal/LocalEmailCtaLegend";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearSelectedMember,
@@ -251,15 +252,18 @@ export default function TeamMemberSheet({
                 </p>
                 <div className="grid gap-2">
                   {detail.status === "invited" ? (
-                    <button
-                      type="button"
-                      disabled={updatingMember}
-                      onClick={() => void onResendInvite()}
-                      className="inline-flex h-11 items-center gap-2 rounded-xl border border-border bg-card px-3 text-sm font-semibold transition hover:bg-secondary disabled:opacity-50"
-                    >
-                      <Mail size={16} className="text-accent" />
-                      {t("team.resendInvite")}
-                    </button>
+                    <>
+                      <LocalEmailCtaLegend />
+                      <button
+                        type="button"
+                        disabled={updatingMember}
+                        onClick={() => void onResendInvite()}
+                        className="inline-flex h-11 items-center gap-2 rounded-xl border border-border bg-card px-3 text-sm font-semibold transition hover:bg-secondary disabled:opacity-50"
+                      >
+                        <Mail size={16} className="text-accent" />
+                        {t("team.resendInvite")}
+                      </button>
+                    </>
                   ) : null}
                   <button
                     type="button"

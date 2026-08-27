@@ -6,34 +6,35 @@
 
 @layer base {
   :root {
-    --background: 210 33% 99%;
+    /* Brand primary #E6AB40; ink foreground for contrast on gold */
+    --background: 40 30% 98%;
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
-    --primary: 214 87% 34%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 214 62% 96%;
-    --secondary-foreground: 214 87% 34%;
-    --muted: 210 25% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 214 100% 58%;
+    --primary: 39 77% 58%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 40 55% 94%;
+    --secondary-foreground: 39 55% 32%;
+    --muted: 40 20% 95%;
+    --muted-foreground: 30 8% 40%;
+    --accent: 0 0% 7%;
     --accent-foreground: 0 0% 100%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 24% 91%;
-    --input: 214 24% 91%;
-    --ring: 214 87% 34%;
+    --border: 40 18% 88%;
+    --input: 40 18% 88%;
+    --ring: 39 77% 58%;
     --radius: 0.9rem;
     --sidebar-background: 210 33% 99%;
     --sidebar-foreground: 222 47% 11%;
-    --sidebar-primary: 214 87% 34%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 214 62% 96%;
-    --sidebar-accent-foreground: 214 87% 34%;
-    --sidebar-border: 214 24% 91%;
-    --sidebar-ring: 214 87% 34%;
+    --sidebar-primary: 39 77% 58%;
+    --sidebar-primary-foreground: 222 47% 11%;
+    --sidebar-accent: 40 55% 94%;
+    --sidebar-accent-foreground: 39 55% 32%;
+    --sidebar-border: 40 18% 88%;
+    --sidebar-ring: 39 77% 58%;
   }
 
   * {
@@ -58,7 +59,7 @@
 
 @layer components {
   .hero-gradient {
-    background: linear-gradient(110deg, #0b4ea2 10%, #2979ff 75%);
+    background: linear-gradient(110deg, #e6ab40 10%, #c9922a 75%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -73,7 +74,7 @@
     padding: 7rem 0;
   }
   .eyebrow {
-    color: #0b4ea2;
+    color: #e6ab40;
     font-size: 0.65rem;
     font-weight: 800;
     letter-spacing: 0.22em;
@@ -96,7 +97,7 @@
   }
   .service-card {
     min-height: 300px;
-    border: 1px solid #e5eaf1;
+    border: 1px solid #ebe4d6;
     border-radius: 1.5rem;
     background: #fff;
     padding: 1.5rem;
@@ -106,8 +107,8 @@
       transform 0.25s;
   }
   .service-card:hover {
-    border-color: #b9d2f8;
-    box-shadow: 0 20px 45px rgba(11, 78, 162, 0.1);
+    border-color: #e6c98a;
+    box-shadow: 0 20px 45px rgba(230, 171, 64, 0.12);
   }
   .icon-box {
     display: grid;
@@ -115,38 +116,38 @@
     width: 2.75rem;
     place-items: center;
     border-radius: 0.8rem;
-    background: #eaf2ff;
-    color: #0b4ea2;
+    background: #fbf5e8;
+    color: #c9922a;
   }
   .dashboard-shell {
     background-image:
       radial-gradient(
         circle at 70% -30%,
-        rgba(41, 121, 255, 0.3),
+        rgba(230, 171, 64, 0.28),
         transparent 45%
       ),
-      linear-gradient(135deg, #162842, #0b1527);
+      linear-gradient(135deg, #2e2414, #1a1408);
   }
   .platform-window {
     background-image: radial-gradient(
       circle at 20% 0%,
-      rgba(41, 121, 255, 0.12),
+      rgba(230, 171, 64, 0.14),
       transparent 35%
     );
   }
   .map-art {
-    background-color: #182c46;
+    background-color: #1a1408;
     background-image:
       linear-gradient(
         125deg,
         transparent 42%,
-        rgba(92, 157, 209, 0.2) 43%,
+        rgba(230, 171, 64, 0.22) 43%,
         transparent 44%
       ),
       linear-gradient(
         30deg,
         transparent 48%,
-        rgba(92, 157, 209, 0.16) 49%,
+        rgba(230, 171, 64, 0.16) 49%,
         transparent 50%
       ),
       repeating-linear-gradient(
@@ -172,13 +173,20 @@
       box-shadow 0.2s;
   }
   .contact-input:focus {
-    border-color: #2979ff;
-    box-shadow: 0 0 0 3px rgba(41, 121, 255, 0.12);
+    border-color: #e6ab40;
+    box-shadow: 0 0 0 3px rgba(230, 171, 64, 0.18);
   }
 }
 
 @media (max-width: 640px) {
   .section-space {
     padding: 5rem 0;
+  }
+}
+
+@layer utilities {
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 }
