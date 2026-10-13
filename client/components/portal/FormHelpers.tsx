@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils";
 import { useFormHelpersEnabled } from "@/hooks/useFormHelpers";
 
 /**
- * Compact under-field legend. Hidden when the user disables helpers in Profile.
+ * Legacy under-field tip. Tip helpers were removed from product UI;
+ * components remain for rare reuse and stay gated (default OFF).
  */
 export function FieldHelper({
   children,
@@ -43,7 +44,7 @@ export function FieldHelper({
 }
 
 /**
- * Soft section callout for multi-field forms (assignments, evidence, etc.).
+ * Legacy section tip. Same gating as FieldHelper (default OFF).
  */
 export function SectionHelper({
   children,

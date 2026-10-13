@@ -7,6 +7,17 @@ export const OTP_RATE_LIMIT_MAX_ATTEMPTS = 5;
 /** Separate IP spray limit (tighter window still uses same helper). */
 export const OTP_IP_RATE_LIMIT_MAX_ATTEMPTS = 20;
 
+/**
+ * Vitest must not hit sticky DB rate buckets (shared TiDB IP keys → flaky 429).
+ * Mirrors optimum-credit: tests never send real OTP email and must not block on
+ * production-like rate limits. Callers still create OTP rows; sendEmail no-ops.
+ */
+export function shouldEnforceOtpRateLimits(
+  vitestFlag: string | undefined,
+): boolean {
+  return vitestFlag !== "true";
+}
+
 export type OtpRateLimitBucket = {
   count: number;
   windowStartedAt: number;
@@ -26,7 +37,7 @@ export type OtpRateLimitScope = "email" | "ip";
 
 export function buildOtpRateLimitKey(opts: {
   scope: OtpRateLimitScope;
-  portal: "staff" | "client";
+  portal: "staff" | "client" | "unified";
   value: string;
 }): string {
   const normalized = opts.value.trim().toLowerCase();

@@ -2,7 +2,6 @@ import type { UserRole } from "./api";
 
 export const STAFF_ROLES: readonly UserRole[] = [
   "admin",
-  "case_coordinator",
   "expert",
   "legal",
   "logistics",

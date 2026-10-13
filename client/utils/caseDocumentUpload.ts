@@ -65,26 +65,24 @@ export async function uploadOneCaseDocument(opts: {
       storageKey: blob.url,
       fileSizeBytes: file.size,
     };
-    const path =
-      actor === "law_firm"
-        ? `/api/client/cases/${publicUuid}/documents/from-blob`
-        : `/api/cases/${publicUuid}/documents/from-blob`;
-    const { data } = await api.post<{ document: CaseDocumentItem }>(path, body);
+    const { data } = await api.post<{ document: CaseDocumentItem }>(
+      `/api/cases/${publicUuid}/documents/from-blob`,
+      body,
+    );
     return data.document;
   }
 
   const data = await fileToBase64(file);
-  const path =
-    actor === "law_firm"
-      ? `/api/client/cases/${publicUuid}/documents`
-      : `/api/cases/${publicUuid}/documents`;
-  const { data: res } = await api.post<{ document: CaseDocumentItem }>(path, {
-    title,
-    category,
-    fileName: file.name,
-    contentType,
-    data,
-  });
+  const { data: res } = await api.post<{ document: CaseDocumentItem }>(
+    `/api/cases/${publicUuid}/documents`,
+    {
+      title,
+      category,
+      fileName: file.name,
+      contentType,
+      data,
+    },
+  );
   return res.document;
 }
 

@@ -35,7 +35,7 @@ export function sessionExpiresAt(ttlDays: number): Date {
   return new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000);
 }
 
-/** MySQL DATETIME in UTC (TiDB/Cloud sessions use UTC NOW()). */
+/** MySQL DATETIME in UTC. Session checks compare with UTC_TIMESTAMP(). */
 export function toMysqlDateTimeUtc(date: Date): string {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }

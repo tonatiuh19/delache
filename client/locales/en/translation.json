@@ -11,11 +11,22 @@
     "cancel": "Cancel",
     "continue": "Continue",
     "back": "Back",
+    "retry": "Try again",
     "errorGeneric": "Something went wrong. Please try again."
+  },
+  "datePicker": {
+    "pickDate": "Pick a date",
+    "pickDateTime": "Pick date and time",
+    "calendarLabel": "Calendar",
+    "clear": "Clear date",
+    "time": "Time",
+    "hour": "Hour",
+    "minute": "Minute",
+    "done": "Done"
   },
   "dev": {
     "localEmailCtaTitle": "Local development — email links",
-    "localEmailCtaBody": "You are on localhost. Invite and notification emails use this origin in their CTA buttons (e.g. portal login). Recipients opening that link will see “connection refused”. Set VITE_PUBLIC_APP_URL to your public app URL before sending real invites."
+    "localEmailCtaBody": "You are on localhost. Invite and notification emails use this origin in their CTA buttons (e.g. /login). Recipients opening that link will see “connection refused”. Set VITE_PUBLIC_APP_URL to your public app URL before sending real invites."
   },
   "home": {
     "accessClient": "Law firm access",
@@ -28,6 +39,7 @@
     "emailPlaceholder": "name@company.com",
     "continueWithEmail": "Continue with email",
     "secureNote": "No passwords. Encrypted, secure access.",
+    "sessionRestoreFailed": "We couldn't confirm your session. Your login is still saved on this device.",
     "otpTitle": "Confirm your identity.",
     "otpSubtitle": "We sent a 6-digit code to",
     "otpLabel": "Access code",
@@ -38,6 +50,9 @@
     "successTitle": "You’re all set.",
     "successSubtitle": "Your access was verified successfully.",
     "privatePortal": "Private portal",
+    "unifiedPortal": "Secure access",
+    "unifiedLoginSubtitle": "Staff and law-firm contacts use the same sign-in. We send a one-time code and open the right workspace.",
+    "unifiedVisualBody": "One sign-in for DELACHE staff and invited law firms. Your email decides whether you land in operations or the firm desk.",
     "clientPortal": "Law firm portal",
     "clientLoginTitle": "Law firm access.",
     "clientLoginSubtitle": "Sign in with your firm email. We’ll send a one-time access code.",
@@ -58,6 +73,7 @@
     "invalidEmail": "Enter a valid email",
     "invalidCode": "Code must be 6 digits",
     "accountNotFound": "No account found for this email. Ask an admin to invite you.",
+    "emailActorConflict": "This email is registered as both staff and despacho. Contact an admin to resolve before signing in.",
     "accountInactive": "This account is inactive. Contact an administrator.",
     "loginNotAllowed": "Login is not allowed for this account.",
     "rateLimited": "Too many verification requests. Please wait a few minutes and try again.",
@@ -93,6 +109,8 @@
     "logout": "Log out",
     "comingSoonTitle": "Portal under construction",
     "comingSoonBody": "We’re preparing your operations center.",
+    "shellDescription": "Staff operations portal for DELACHE case management.",
+    "placeholderBody": "This section is not available yet.",
     "profile": "Profile"
   },
   "cases": {
@@ -106,11 +124,73 @@
     "involvesFatality": "This matter involves a fatality",
     "involvesFatalityBadge": "Fatality matter",
     "create": "Create case",
+    "externalReferenceLabel": "External reference",
+    "plaintiffLabel": "Plaintiff",
+    "defendantLabel": "Defendant",
+    "lawFirmLabel": "Law firm (despacho)",
+    "createSheet": {
+      "title": "Create on behalf of despacho",
+      "description": "Primary intake is done by the law firm. Use this only when coordination creates the case for them: folio, deadline, the four initial documents, and a note.",
+      "badgePoint1": "Starts at Point 1",
+      "badgeOpensDetail": "Opens case after create",
+      "sectionEssentials": "Essentials",
+      "sectionCourt": "Court & parties",
+      "titlePlaceholder": "e.g. Short circuit — Reforma 120",
+      "titleRequired": "A case title is required.",
+      "courtPlaceholder": "Juzgado name (autofills from despacho when set)",
+      "courtHint": "Optional override. If empty, the API uses the despacho’s default juzgado.",
+      "externalPlaceholder": "Firm or court docket #",
+      "lawFirmPlaceholder": "Select despacho…",
+      "lawFirmQuickAdd": "+ Quick-add new despacho",
+      "quickAddTitle": "New despacho",
+      "quickAddNameRequired": "Despacho name is required.",
+      "ownerRequiredHint": "Primary owner is required — they receive the portal invite.",
+      "devFill": "Fill test data",
+      "cancel": "Cancel",
+      "lawFirmRequired": "Select the law firm."
+    },
+    "intakeCreate": {
+      "pageTitle": "New case",
+      "stepLabel": "Step 1. Intake",
+      "infoTitle": "Case information",
+      "folioLabel": "Folio / case name *",
+      "folioPlaceholder": "e.g. DEL-2025-0029 or Terreno El Roble",
+      "deadlineLabel": "Deadline *",
+      "deadlinePlaceholder": "Select a date",
+      "docsTitle": "Initial documents",
+      "upload": "Upload file",
+      "replace": "Replace file",
+      "extraLabel": "Additional files (optional)",
+      "extraCount": "{{count}} files",
+      "fileHint": "PDF, JPG, PNG. Maximum size per file: 10 MB.",
+      "requiredDocsTitle": "Required documents",
+      "acceptedTypesTitle": "Accepted file types",
+      "acceptedTypes": "PDF, JPG, PNG",
+      "acceptedSize": "Maximum size per file: 10 MB.",
+      "notesTitle": "Notes or comments (optional)",
+      "notesPlaceholder": "Write your comments here…",
+      "send": "Send",
+      "saved": "Intake saved",
+      "saveFailed": "Could not save intake",
+      "readOnly": "The law firm can review this intake. Staff can correct the folio, deadline, files, and note.",
+      "uploadPartial": "The case was created, but some files did not upload",
+      "error": {
+        "title": "A folio or case name is required.",
+        "deadline": "A deadline is required.",
+        "note": "The note cannot exceed 500 characters.",
+        "documents": "Upload the lawsuit, medical record, CFE report, and preliminary photos.",
+        "fileType": "Only PDF, JPG, and PNG files are accepted.",
+        "fileSize": "Each file must be 10 MB or smaller."
+      }
+    },
     "searchPlaceholder": "Search by number, title, court, city, firm, or expert…",
     "empty": "No cases yet. Create the first one.",
     "noLocation": "No location",
     "filterAllStatuses": "All statuses",
     "filterAllPriorities": "All priorities",
+    "filtersButton": "Filters",
+    "filtersTitle": "Filters",
+    "filtersClear": "Clear",
     "colCaseNumber": "Case",
     "colTitle": "Title",
     "colStatus": "Status",
@@ -139,12 +219,13 @@
       "moveFailed": "Could not update status",
       "refreshing": "Refreshing…",
       "lock": {
-        "role": "Only coordinators and admins can drag cases",
+        "role": "Only admins can drag cases",
         "transition": "This status change is not allowed from the workflow rules",
         "gates": "Complete the current process point first (open the case for details)"
       }
     },
-    "flagsFailed": "Could not update the fatality flag. Try again.",
+    "flagsFailed": "Could not update case flags. Try again.",
+    "flagsSaveSuccess": "Case flags saved",
     "documentCategory": "Document category",
     "categoryFailed": "Could not update the document category. Try again.",
     "priority": {
@@ -154,23 +235,202 @@
       "urgent": "Urgent"
     },
     "status": {
-      "intake": "Intake",
-      "assignment": "Assignment",
-      "questionnaire": "Questionnaire",
-      "legal_review_questionnaire": "Legal review",
-      "additional_docs": "Documents",
-      "court_acceptance": "Court acceptance",
-      "logistics": "Logistics",
-      "inspection": "Inspection",
-      "technical_report": "Technical report",
-      "legal_validation": "Legal validation",
-      "court_delivery": "Court delivery",
-      "accounting": "Accounting",
+      "intake": "Intake · receive expediente",
+      "assignment": "Assignment · team & handoff",
+      "questionnaire": "Questionnaire · GPS & Street View",
+      "legal_review_questionnaire": "Legal review · questionnaire",
+      "additional_docs": "Additional documents",
+      "court_acceptance": "Court acceptance · protesta",
+      "field_ops": "Field ops · inspection",
+      "technical_report": "Technical report · dictamen",
+      "validation_delivery": "Validation & court delivery",
+      "accounting": "Accounting · close-out",
       "completed": "Completed",
       "on_hold": "On hold",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "logistics": "Field ops · inspection",
+      "inspection": "Field ops · inspection",
+      "legal_validation": "Validation & court delivery",
+      "court_delivery": "Validation & court delivery"
     },
     "backToList": "Back to cases",
+    "header": {
+      "inProgress": "In progress",
+      "responsible": "Case owner",
+      "globalDeadline": "Global deadline"
+    },
+    "stepTree": {
+      "label": "Process steps",
+      "eyebrow": "10-point workflow",
+      "hint": "Your role’s steps only — open one, then a section to work.",
+      "overview": "Overview",
+      "current": "Current step",
+      "toggleGroup": "Expand court clock steps",
+      "openMenu": "Process menu",
+      "closeMenu": "Close process menu"
+    },
+    "subsectionNav": {
+      "label": "Step sections",
+      "eyebrow": "Current step"
+    },
+    "stepOwnership": {
+      "label": "Step ownership",
+      "eyebrow": "Who owns this"
+    },
+    "subsection": {
+      "intake": "Intake",
+      "location": "Property location",
+      "documents": "Documents",
+      "workflow": "Case flow",
+      "notes": "Notes",
+      "assignments": "Assignments",
+      "questionnaire": "Questionnaire",
+      "reviews": "Legal reviews",
+      "completeness": "Document checklist",
+      "deadlines": "Deadlines",
+      "inspections": "Inspections",
+      "evidence": "Evidence",
+      "logistics": "Logistics",
+      "reports": "Technical report",
+      "audit": "Audit log",
+      "finance": "Finance & billing"
+    },
+    "stepHero": {
+      "eyebrow": "Step detail",
+      "pendingToAdvance": "Pending to advance",
+      "pendingCount": "{{count}} pending",
+      "waitingCount": "{{count}} waiting on others",
+      "yourTasks": "Your tasks",
+      "waitingOnOthers": "Waiting on others",
+      "gatesClear": "Requirements for this step are complete.",
+      "advanceHint": "An admin can advance workflow when ready."
+    },
+    "stickyAdvance": {
+      "eyebrow": "Ready to advance",
+      "ready": "Process gates are clear for this case.",
+      "toStatus": "Next: {{status}}",
+      "openWorkflow": "Workflow",
+      "cta": "Advance"
+    },
+    "protesta": {
+      "eyebrow": "P6 · Protesta",
+      "title": "Choose how the protesta will be filed",
+      "hint": "The 10-business-day clock starts when the protesta document is filed — not when modality is selected.",
+      "modality": {
+        "virtual": "Virtual",
+        "presencial": "In person"
+      },
+      "modalityHint": {
+        "virtual": "Upload the signed digital protesta",
+        "presencial": "Print, wet-sign, then scan upload"
+      },
+      "scanPath": "Print → wet signature → scan upload to complete the clock.",
+      "virtualPath": "Upload the signed protesta PDF to start the clock.",
+      "clockStarted": "Protesta filed — clock is running.",
+      "clockPending": "Clock starts when the protesta artifact is filed."
+    },
+    "p9": {
+      "eyebrow": "P9 · Validation & delivery",
+      "title": "Firm → court → ratification",
+      "hint": "Complete each milestone in order. Nested SLA runs inside the protesta / field clock.",
+      "stepLabel": "Step {{n}}",
+      "step": {
+        "firm_review": "Law firm approves the technical report",
+        "court_filing": "Court filing uploaded",
+        "ratification": "Ratification scheduled or completed",
+        "final_released": "Final fee released"
+      }
+    },
+    "sla": {
+      "due": "Due {{date}}"
+    },
+    "softParallel": {
+      "inspectionLocked": "Inspection can only be marked complete while the case is in field ops (P7).",
+      "evidenceLocked": "Field evidence uploads are only allowed during field ops (P7). Prep notes can wait until then.",
+      "tripLocked": "Logistics trips can be drafted from assignment through field ops only.",
+      "tripDraftOk": "Soft parallel: draft trips are allowed before field ops; hard gates still block status advance.",
+      "logisticsReadOnly": "Trip readiness is visible for field ops. Logistics staff manage bookings."
+    },
+    "anticipoCue": {
+      "title": "Anticipo ready",
+      "body": "QA passed — advance fee can be collected.",
+      "cta": "Open finance"
+    },
+    "overview": {
+      "title": "Overview",
+      "actionRequired": "Action required",
+      "blocked": "Blocked",
+      "continue": "Continue",
+      "noActiveStep": "No active process step",
+      "terminalState": "This case is closed or on hold. Open a step from the menu for history.",
+      "progress": "Progress",
+      "stepsCompleted": "{{done}} of {{total}} steps",
+      "documents": "Documents",
+      "documentsBody": "{{count}} files on case",
+      "openDocuments": "View documents",
+      "inspection": "Inspection",
+      "inspectionScheduled": "Inspection scheduled or completed",
+      "inspectionNotScheduled": "Not scheduled yet",
+      "openInspection": "Open inspection step",
+      "finance": "Finance",
+      "financePending": "Outstanding invoices",
+      "financeClear": "No unpaid invoices flagged",
+      "openAccounting": "Open accounting step",
+      "expertLine": "Primary expert: {{name}}"
+    },
+    "kpi": {
+      "stripLabel": "Summary",
+      "stripHint": "Quick counts — tap a tile to filter or jump.",
+      "expand": "Show summary",
+      "collapse": "Hide summary",
+      "active": "Active cases",
+      "activeHint": "Open expedientes in your visibility",
+      "dueSoon": "Due soon",
+      "dueSoonHint": "Deadlines at risk",
+      "inReview": "In review",
+      "inReviewHint": "Pending review requests",
+      "completedMonth": "Completed",
+      "completedHint": "Closed cases in scope",
+      "cta": {
+        "active": "Open board",
+        "dueSoon": "View calendar",
+        "inReview": "Open review queue",
+        "completed": "Filter completed"
+      }
+    },
+    "actionQueue": {
+      "title": "Needs attention",
+      "subtitle": "Cases with open process gates in your visibility",
+      "atPoint": "At process point {{point}}"
+    },
+    "preview": {
+      "progress": "Listado progress",
+      "blocked": "Gates not satisfied",
+      "blockedHint": "Complete requirements before advancing.",
+      "continueStep": "Continue this step",
+      "openCase": "Open expediente"
+    },
+    "action": {
+      "continueStep": {
+        "questionnaire": "Continue questionnaire",
+        "assignment": "Open assignment",
+        "intake": "Continue intake",
+        "legal_review_questionnaire": "Open legal review",
+        "additional_docs": "View documents",
+        "court_acceptance": "Open court clock",
+        "field_ops": "Open field ops",
+        "technical_report": "Open report",
+        "validation_delivery": "Open validation & delivery",
+        "accounting": "Open accounting",
+        "logistics": "Open field ops",
+        "inspection": "Open field ops",
+        "legal_validation": "Open validation & delivery",
+        "court_delivery": "Open validation & delivery"
+      },
+      "openStep": {
+        "questionnaire": "Open questionnaire step"
+      }
+    },
     "notFound": "Case not found",
     "loadFailed": "Could not load cases. Try again.",
     "workflow": "Case workflow",
@@ -178,7 +438,7 @@
     "reasonPlaceholder": "Reason for change (optional)",
     "workflowGatesHint": "Complete the items above (or in the process timeline) before advancing. You can still pause or cancel.",
     "noTransitions": "No transitions available",
-    "statusReadOnly": "Only coordinators and admins can change case status.",
+    "statusReadOnly": "Only admins can change case status.",
     "timeline": "Timeline",
     "notes": "Notes",
     "notePlaceholder": "Write an internal note…",
@@ -190,6 +450,7 @@
     "unassignSaveFailed": "Could not remove the assignment",
     "unassignSaveSuccess": "Assignment removed",
     "expertDeliveryDate": "Expert delivery date",
+    "expertDeliveryManagedAside": "Delivery date is managed in the action panel on the right after the primary expert is assigned.",
     "expertDeliveryActionTitle": "Delivery action item",
     "expertDeliveryActionHint": "Notify {{name}} when this expediente must be delivered.",
     "expertDeliverySave": "Save delivery date",
@@ -199,6 +460,42 @@
     "expertDeliverySaveFailed": "Could not save the delivery date",
     "questionnaireSaveFailed": "Could not save the questionnaire",
     "questionnaireSaveSuccess": "Questionnaire saved",
+    "questionnaireAttachTitle": "Defendant questionnaire PDF and Word",
+    "questionnaireAttachHint": "Upload both the PDF and the Word file. The editor below is the live draft on this side.",
+    "questionnaireEditorTitle": "Questionnaire editor",
+    "questionnaireEditorPlaceholder": "Write the questionnaire here. Save sends this text with the PDF and Word files.",
+    "dictamenDueLabel": "Dictamen due date",
+    "dictamenDueSave": "Save due date",
+    "dictamenDueSaved": "Dictamen due date saved",
+    "dictamenDueFailed": "Could not save the dictamen due date",
+    "intakeCard": {
+      "upload": "Upload file",
+      "approve": "Mark complete",
+      "reject": "Reject",
+      "viewFile": "View file",
+      "empty": "No file yet",
+      "status": {
+        "complete": "Complete",
+        "rejected": "Observed",
+        "review": "In review",
+        "pending": "Pending"
+      }
+    },
+    "protestaAttachTitle": "Protesta PDF",
+    "protestaAttachHint": "Upload the protesta del cargo (Miro sample 10). The 10-day clock starts when this file is on record.",
+    "reportAttachTitle": "Technical report PDF",
+    "reportAttachHint": "Upload the dictamen técnico PDF (Miro sample 11). Required — chapter text fields do not replace the file.",
+    "reportPdfRequired": "Upload the technical report PDF before submitting for review.",
+    "reportSubmitHint": "Optional short conclusions for the review trail. The PDF is the source of truth.",
+    "courtFilingAttachTitle": "Court filing PDF",
+    "courtFilingAttachHint": "Upload ingreso al juzgado (Miro sample 12).",
+    "ratificationAttachTitle": "Ratification PDF",
+    "ratificationAttachHint": "Upload ratificación / comparecencia (Miro sample 13). Schedule alone does not clear this gate.",
+    "categoryAttach": {
+      "required": "Required file",
+      "onFile": "On file",
+      "uploadSuccess": "Document uploaded"
+    },
     "inspectionSaveFailed": "Could not save the inspection",
     "inspectionSaveSuccess": "Inspection scheduled",
     "measurementSaveFailed": "Could not save the measurement",
@@ -219,6 +516,10 @@
     "docsBlockingTitle": "Blocking this process point",
     "docsBlockingHint": "These categories are required before status can advance. Upload with the matching tag, or retag an existing file below.",
     "docsBlockingCount": "{{count}} document type(s) still missing",
+    "docsPanelHint": "Pick a type, drag files in, or use Attach on each missing item.",
+    "docsRequiredLabel": "Required now",
+    "docsAttachFiles": "Attach files",
+    "docsSizeLimit": "Up to {{mb}} MB per file",
     "docsPointClear": "No document gaps for this point",
     "docsStatusMissing": "Missing",
     "docsStatusOnFile": "On file",
@@ -233,11 +534,34 @@
     "open": "Open",
     "deadlines": "Deadlines",
     "deadlineType": {
-      "expert_delivery": "Expert delivery"
+      "expert_delivery": "Expert delivery",
+      "intake_correction": "Intake correction (3 business days)",
+      "questionnaire": "Questionnaire",
+      "legal_review": "Legal review",
+      "inspection": "Inspection",
+      "technical_report": "Technical report",
+      "external_legal_validation": "External legal validation",
+      "court_delivery": "Court delivery",
+      "payment": "Payment",
+      "custom": "Custom",
+      "court_acceptance_window": "Court acceptance window"
     },
     "assignments": "Assignments",
-    "assignmentHowItWorks": "Coordinators and admins assign people here. Choose a member, pick their role on this case, and mark primary for the lead expert (or coordinator). Only assigned staff (plus admins/coordinators) can open the case afterward. Advancing to the next process point still requires the checklist above — assignment alone does not skip document gates.",
+    "assignmentHowItWorks": "P2 requires a primary expert (perito responsable). Other roles are optional but recommended for later points. Admins also confirm document handoff after the expert is assigned.",
     "selectMember": "Select member",
+    "selectMemberPlaceholder": "Select a matching teammate…",
+    "assignmentRoleLabel": "Assignment role",
+    "assignmentRoleRequiredSuffix": "required for P2",
+    "assignmentRoleTier": {
+      "required": "Required to leave P2",
+      "recommended": "Recommended (optional)",
+      "optional": "Other"
+    },
+    "requiredPrimaryExpertTitle": "Primary expert required",
+    "requiredPrimaryExpertHint": "Miro / process P2: assign one primary expert (perito responsable) before the case can leave assignment. Handoff confirmation comes next.",
+    "primaryExpertForced": "Primary expert (required for this role)",
+    "assignPrimaryExpert": "Assign primary expert",
+    "noMembersForRole": "No active teammates with this role",
     "primaryAssignment": "Primary assignment",
     "assign": "Assign",
     "unassign": "Remove",
@@ -248,7 +572,7 @@
     "powerLinePlaceholder": "Power line verification",
     "observationsPlaceholder": "Technical observations",
     "saveQuestionnaire": "Save questionnaire",
-    "questionnaireLocked": "This questionnaire is in legal review or closed. Request changes before editing.",
+    "questionnaireLocked": "This questionnaire is in QA, legal review, or closed. Request changes before editing.",
     "inspections": "Inspections",
     "inspectionNotes": "Inspection notes",
     "scheduleInspection": "Schedule inspection",
@@ -304,6 +628,93 @@
     "investigationSummary": "Investigation summary",
     "conclusions": "Conclusions",
     "submitReport": "Submit for review",
+    "defendantQuestionnaire": "Defendant questionnaire body",
+    "defendantQuestionnairePlaceholder": "Full defendant cuestionario text (minimum length required on submit)",
+    "plaintiffQuestionnaireOutline": "Plaintiff questionnaire outline",
+    "plaintiffQuestionnaireOutlinePlaceholder": "Key points from the actor questionnaire for legal cross-check",
+    "streetViewPreexistencePlaceholder": "Street View preexistence conclusion",
+    "streetViewPreexistence": {
+      "preexists": "Line/structure pre-existed",
+      "not_preexists": "No pre-existence evidence",
+      "inconclusive": "Inconclusive from imagery"
+    },
+    "chronologyTitle": "Event chronology",
+    "chronologyHint": "Ordered timeline supporting the defendant questionnaire.",
+    "chronologyEventPlaceholder": "Event description",
+    "chronologyAdd": "Add event",
+    "chronologyRemove": "Remove",
+    "defendantReportChapter": "Defendant questionnaire chapter",
+    "plaintiffReportChapter": "Plaintiff questionnaire chapter",
+    "photoCatalogPlaceholder": "Photo catalog JSON (array of { id, caption, evidenceRef })",
+    "photoCatalogHint": "Optional structured catalog linking dictamen photos to evidence rows.",
+    "photoCatalogInvalid": "Photo catalog must be valid JSON.",
+    "recommendedAssignmentsTitle": "Recommended roles still open",
+    "recommendedAssignmentsHint": "Optional for leaving P2 — consider assigning later: {{roles}}",
+    "handoffPendingTitle": "Confirm documents reached the expert",
+    "handoffPendingHint": "An admin must confirm the intake package was delivered intact to the primary expert before leaving assignment.",
+    "handoffWaitingExpertTitle": "Waiting for document handoff confirmation",
+    "handoffWaitingExpertHint": "An admin has not yet confirmed that intake documents reached you intact. You can review assignments, but the case cannot advance past assignment until handoff is confirmed.",
+    "handoffWaitingObserverTitle": "Document handoff pending",
+    "handoffWaitingObserverHint": "An admin must confirm intake documents were delivered to the primary expert before this case can leave assignment.",
+    "handoffConfirmAction": "Confirm handoff",
+    "handoffConfirmSuccess": "Document handoff confirmed",
+    "handoffConfirmFailed": "Could not confirm handoff",
+    "handoffConfirmedAt": "Handoff confirmed {{date}}",
+    "expedientePendingTitle": "Approve expediente",
+    "expedientePendingReadyHint": "All four intake documents are approved. Confirm the package to unlock assignment.",
+    "expedientePendingDocsHint": "Approve each intake document (lawsuit, medical record, CFE report, preliminary photos) before approving the expediente.",
+    "expedientePendingObserverHint": "An admin must approve each intake document and then approve the expediente before the case can leave intake.",
+    "expedienteApproveAction": "Approve expediente",
+    "expedienteApproveSuccess": "Expediente approved",
+    "expedienteApproveFailed": "Could not approve expediente",
+    "expedienteApprovedAt": "Expediente approved {{date}}",
+    "documentApproveAction": "Approve",
+    "documentRejectAction": "Request correction",
+    "documentRejectPrompt": "Reason for correction (optional):",
+    "documentApproveSuccess": "Document approved",
+    "documentApproveFailed": "Could not approve document",
+    "documentRejectSuccess": "Correction requested",
+    "documentRejectFailed": "Could not request correction",
+    "docStatus": {
+      "draft": "Draft",
+      "uploaded": "Uploaded",
+      "under_review": "Under review",
+      "approved": "Approved",
+      "rejected": "Correction requested",
+      "archived": "Archived"
+    },
+    "externalCourtDeadline": "External court deadline",
+    "externalCourtDeadlineHint": "Optional. Leave empty to use process SLAs only.",
+    "externalCourtDeadlineClear": "Clear external deadline",
+    "externalCourtDeadlineSave": "Save deadline",
+    "externalCourtDeadlineSaveSuccess": "External court deadline saved",
+    "externalCourtDeadlineSaveFailed": "Could not save external court deadline",
+    "documentLockedBadge": "Locked",
+    "documentLockedHint": "This file is locked until DELACHE requests a correction.",
+    "documentCorrectionNeeded": "Correction requested",
+    "documentCorrectionNeededHint": "Re-upload this category to replace the rejected file.",
+    "uploadCategoryLockedTitle": "Category locked",
+    "uploadCategoryLockedHint": "A file for this category is already submitted. Wait for a correction request, or pick another category.",
+    "ratificationScheduledTitle": "Ratification hearing",
+    "ratificationScheduledHint": "Optional planning only — upload the ratification PDF to satisfy the process gate.",
+    "ratificationScheduledAt": "Scheduled date & time",
+    "ratificationScheduledSave": "Save schedule",
+    "ratificationScheduledSaveSuccess": "Ratification schedule saved",
+    "ratificationScheduledSaveFailed": "Could not save ratification schedule",
+    "financePanelHelper": "Case invoices, advance/final listado flags, and quick payment capture.",
+    "financePanelHint": "Track advance and final invoices tied to this expediente.",
+    "financeOpenFull": "Open full finance view",
+    "financeFlagOn": "Complete",
+    "financeFlagOff": "Pending",
+    "noInvoices": "No invoices on this case yet.",
+    "evidenceProtocolTitle": "Inspection evidence protocol",
+    "evidenceProtocolHint": "Capture each category during field work. Covered items reflect uploads and measurements on this case.",
+    "evidenceGroup": {
+      "measurements": "Measurements",
+      "network": "Network & structures",
+      "environment": "Site & surroundings",
+      "risk": "Risk observations"
+    },
     "reportStatus": {
       "draft": "Draft",
       "grammar_qa": "Grammar QA",
@@ -377,11 +788,117 @@
       "invoice": "Invoice",
       "receipt": "Receipt",
       "logistics": "Logistics",
+      "street_view": "Street View / preexistence",
       "other": "Other"
+    },
+    "pdfStep": {
+      "statusTitle": "Case status",
+      "onSendTitle": "On send",
+      "acceptedFormats": "Accepted file types",
+      "saveDraft": "Save draft",
+      "send": "Send",
+      "draftSaved": "Draft saved",
+      "sent": "Case updated",
+      "noNextStatus": "No next status available",
+      "inProgress": "In progress",
+      "pending": "Pending",
+      "notesTitle": "Notes or comments (optional)",
+      "notesPlaceholder": "Write your notes or comments here…",
+      "summary": {
+        "folio": "Case folio",
+        "lawFirm": "Law firm that sent it",
+        "sentAt": "Sent at",
+        "deadline": "Deadline",
+        "expert": "Assigned expert",
+        "unassigned": "Unassigned",
+        "expertRole": "Electrical expert"
+      },
+      "editor": {
+        "bold": "Bold",
+        "italic": "Italic",
+        "bulletList": "Bullet list",
+        "orderedList": "Numbered list",
+        "undo": "Undo",
+        "redo": "Redo"
+      },
+      "questionnaire": {
+        "title": "Step 2. Prepare questionnaire",
+        "subtitle": "Locate the site, upload Street View and the questionnaire (DOCX and PDF), edit the document, and send.",
+        "formats": "JPG, PNG, PDF, DOCX",
+        "onSend": "The case status will move to the next process step.",
+        "locationTitle": "Incident location",
+        "locationHint": "Use the case location section if you need to correct the address or GPS.",
+        "locationEditHint": "Lat/Lng come from the saved case location.",
+        "streetViewTitle": "Preexistence / Street View",
+        "questionnaireTitle": "Questionnaire",
+        "bothFilesHint": "Both DOCX and PDF are required. The live editor generates a DOCX on save if you did not upload one.",
+        "editorTitle": "Questionnaire editor",
+        "badFile": "Only DOCX or PDF are accepted for the questionnaire."
+      },
+      "assignment": {
+        "title": "Step 3. Assignment",
+        "subtitle": "Final questionnaire review and expert assignment",
+        "formats": "Questionnaire: DOCX (Word)",
+        "onSend": "The law firm will be notified and the case will advance.",
+        "send": "Send to law firm",
+        "questionnaireReview": "Questionnaire for review"
+      },
+      "legalReview": {
+        "title": "Step 4. Legal review",
+        "subtitle": "Final questionnaire review by the law firm",
+        "formats": "DOCX • max 10 MB",
+        "onSend": "The administrator will be notified and the case will continue.",
+        "send": "Send final version",
+        "questionnaireCard": "Questionnaire for legal review"
+      },
+      "protesta": {
+        "title": "Step 5. Acceptance and protesta",
+        "subtitle": "The expert accepts the role, chooses a modality, and uploads signed documentation.",
+        "formats": "PDF, JPG or PNG • max 10 MB",
+        "onSend": "The expert will be notified and the case advances once the signed protesta is on file."
+      },
+      "fieldOps": {
+        "title": "Step 6. Logistics and inspection",
+        "subtitle": "Expert travel documents and required field evidence.",
+        "formats": "PDF, JPG, PNG",
+        "onSend": "On continue, the case moves to the technical report.",
+        "send": "Save and continue",
+        "evidenceTitle": "Evidence required for field inspection",
+        "evidenceHint": "Upload each evidence type separately. Each tile can hold multiple files.",
+        "readOnly": "Read only"
+      },
+      "evidence": {
+        "distances": "Distances (horizontal, vertical, between poles)",
+        "facadePole": "Facade and pole plate",
+        "electricalStructure": "Electrical structure",
+        "condition": "Condition: conductor, poles, sidewalk, property",
+        "oversize": "Oversize analysis"
+      },
+      "report": {
+        "title": "Step 7. Technical report",
+        "subtitle": "Upload the technical report PDF, submit conclusions, and obtain internal approval.",
+        "formats": "PDF · technical report",
+        "onSend": "Once approved internally, the case moves to firm validation and court delivery.",
+        "send": "Send to firm validation"
+      },
+      "validation": {
+        "title": "Step 8. Validation and delivery",
+        "subtitle": "Law firm validates the report; then upload court filing and ratification PDFs.",
+        "formats": "PDF · court filing · ratification",
+        "onSend": "With firm approval, filing, and ratification on file, the case moves to billing.",
+        "send": "Continue to billing"
+      },
+      "accounting": {
+        "title": "Step 9. Billing and close",
+        "subtitle": "Record advance and final payments. Unpaid invoices block case completion.",
+        "formats": "Payment receipts · advance + final",
+        "onSend": "When advance and final are paid, the case can be closed.",
+        "send": "Close case"
+      }
     },
     "questionnaireStatus": {
       "draft": "Draft",
-      "submitted": "Submitted",
+      "grammar_qa": "Grammar QA",
       "legal_review": "Legal review",
       "changes_requested": "Changes requested",
       "approved": "Approved",
@@ -416,6 +933,36 @@
     "auditLogs": "Audit log",
     "noAuditLogs": "No audit entries yet"
   },
+  "missionControl": {
+    "eyebrow": "Mission control",
+    "openQueue": "Open my queue",
+    "focus": {
+      "admin_overview": {
+        "title": "Keep the portfolio moving",
+        "subtitle": "Watch blockers, holds, and overdue clocks across every role."
+      },
+      "assign_handoff": {
+        "title": "Assign and hand off",
+        "subtitle": "Staff experts, confirm document handoff, and chase despacho docs."
+      },
+      "questionnaire_qa": {
+        "title": "Questionnaire and field work",
+        "subtitle": "GPS, Street View, protesta, field ops, and dictamen — your expediente."
+      },
+      "legal_review": {
+        "title": "Legal review queue",
+        "subtitle": "Approve or return questionnaires within the 2-day SLA."
+      },
+      "field_ops": {
+        "title": "Field ops travel",
+        "subtitle": "Plan trips and keep logistics ready for inspections in flight."
+      },
+      "billing": {
+        "title": "Anticipo and finiquito",
+        "subtitle": "Capture payments so accounting can clear completed cases."
+      }
+    }
+  },
   "dashboard": {
     "eyebrow": "Operations overview",
     "subtitle": "Open cases, priorities, and recent activity at a glance.",
@@ -431,12 +978,24 @@
     "quickActionsHint": "Jump to the work that matches your role.",
     "cta": {
       "cases": "My cases",
-      "createCase": "New case",
+      "createCase": "Create on behalf",
       "calendar": "Calendar",
       "documents": "Documents",
       "finance": "Finance",
       "team": "Team",
-      "notifications": "Notifications"
+      "notifications": "Notifications",
+      "reviews": "Review queue",
+      "pipeline": "Cases pipeline",
+      "fieldOps": "Field ops"
+    },
+    "ctaPrimaryHint": "Primary for your role",
+    "personaBadge": {
+      "ops": "Ops desk",
+      "expert": "Expert desk",
+      "legal": "Legal desk",
+      "logistics": "Logistics desk",
+      "accountant": "Collections desk",
+      "default": "Your desk"
     },
     "myLoadTitle": "My workload",
     "myLoadHint": "Metrics are limited to cases assigned to you.",
@@ -494,9 +1053,17 @@
     "lawFirmSaveFailed": "Could not create law firm",
     "lawFirmsTitle": "Law firms",
     "lawFirmsHint": "Create law firms to link external portal users.",
+    "lawFirmsOwnerHint": "Creating a despacho always invites a primary owner. Prefer Equipo when inviting into an existing firm.",
     "lawFirmName": "Law firm name",
+    "ownerEmail": "Owner email",
+    "firmContactEmail": "Firm contact email (optional)",
     "state": "State",
-    "createLawFirm": "Create law firm"
+    "defaultCourtName": "Default juzgado",
+    "defaultCourtNamePlaceholder": "e.g. Juzgado Primero Civil…",
+    "defaultCourtNameHint": "Used to autofill court name when the despacho (or staff on their behalf) creates an expediente without typing juzgado.",
+    "createLawFirm": "Create law firm",
+    "appVersionTitle": "Application version",
+    "appVersionHint": "Build currently running in this environment."
   },
   "calendar": {
     "eyebrow": "Operations agenda",
@@ -559,6 +1126,22 @@
     "invite": "Invite member",
     "resendInvite": "Resend invite email",
     "selectLawFirm": "Select law firm",
+    "firmModeExisting": "Attach to existing despacho",
+    "firmModeCreate": "Create new despacho",
+    "createFirmOwnerHint": "This person becomes the primary owner of the new despacho.",
+    "despachoInviteSent": "Despacho invite sent",
+    "despachoInviteSentHint": "Switched to the despacho roster — contacts are listed there after invite.",
+    "staffListHint": "DELACHE staff accounts. Use the Despacho tab for external firm contacts.",
+    "firmListHint": "External despacho contacts across all firms. Soft-deleted emails can be re-invited to reactivate.",
+    "rosterStaff": "Staff",
+    "rosterFirm": "Despacho",
+    "colFirm": "Firm",
+    "memberRole": {
+      "owner": "Owner",
+      "admin": "Firm admin",
+      "member": "Member",
+      "viewer": "Viewer"
+    },
     "searchPlaceholder": "Search by name or email…",
     "empty": "No members yet.",
     "colRole": "Role",
@@ -589,7 +1172,6 @@
     },
     "role": {
       "admin": "Admin",
-      "case_coordinator": "Coordinator",
       "expert": "Expert",
       "legal": "Legal",
       "logistics": "Logistics",
@@ -604,38 +1186,6 @@
     "markRead": "Mark read",
     "markAllRead": "Mark all read"
   },
-  "client": {
-    "portalTitle": "Law firm portal",
-    "cases": "My cases",
-    "notifications": "Notifications",
-    "notificationsSubtitle": "Case status updates, delivered reports, and shared alerts.",
-    "subtitle": "Submit new matters and track status.",
-    "submitCase": "Submit new case",
-    "submit": "Submit",
-    "caseSaveFailed": "Could not create the case — your entries were kept",
-    "empty": "You have not submitted any cases yet.",
-    "plaintiff": "Plaintiff",
-    "defendant": "Defendant",
-    "sharedNotes": "Shared notes",
-    "noNotes": "No shared notes",
-    "reports": "Reports",
-    "noReports": "No reports available yet",
-    "approveReport": "Approve",
-    "requestChanges": "Request changes",
-    "rejectReport": "Reject",
-    "reportStatus": {
-      "draft": "Draft",
-      "grammar_qa": "Grammar QA",
-      "technical_director": "Technical director",
-      "approved_internal": "Approved internally",
-      "external_review": "External review",
-      "changes_requested": "Changes requested",
-      "approved": "Approved",
-      "rejected": "Rejected",
-      "delivered": "Delivered"
-    },
-    "profile": "Profile"
-  },
   "documents": {
     "eyebrow": "Evidence & files",
     "hint": "Search, preview, and OCR documents across all cases. Drag and drop on a case to bulk upload.",
@@ -643,6 +1193,8 @@
     "search": "Search",
     "empty": "No documents found.",
     "preview": "Preview",
+    "removeDraft": "Remove",
+    "stagedHint": "Nothing is uploaded until you press Send.",
     "dropHint": "Drag & drop files here, or click to browse",
     "dropNow": "Drop files to upload",
     "dropLimits": "Up to {{max}} files · PDF, images, Word · {{mb}}MB each",
@@ -661,11 +1213,15 @@
       "too_many": "too many files"
     },
     "openExternal": "Open original",
+    "download": "Download",
     "previewFailed": "Could not render this PDF in-app.",
+    "previewIframeHint": "Showing the browser PDF viewer as a fallback.",
     "noPreview": "No in-app preview for this file type.",
     "unknownType": "Unknown type",
     "ocrTitle": "OCR / extracted text",
     "ocrEmpty": "No OCR text yet. Run OCR to extract searchable text.",
+    "ocrExpand": "Show",
+    "ocrCollapse": "Hide",
     "runOcr": "Run OCR",
     "prevPage": "Previous page",
     "nextPage": "Next page",
@@ -723,15 +1279,24 @@
     "geocodeFailed": "Geocoding failed — try a fuller address or paste lat,lng",
     "invalidGpsText": "Enter decimal GPS (19.43, -99.13) or DMS (16°26'47.1\"N, 92°43'40.7\"W)",
     "gpsNeedBoth": "Enter both latitude and longitude, or leave both empty",
-    "applyGpsToProperty": "Apply GPS to property fields"
+    "applyGpsToProperty": "Apply GPS to property fields",
+    "permissionModal": {
+      "titleProperty": "Pin this property from your phone",
+      "titleEvidence": "Tag this evidence with GPS",
+      "bodyProperty": "Allow location so Delache can fill latitude and longitude automatically for the expediente map and Street View checks.",
+      "bodyEvidence": "Allow location to stamp this photo or measurement with where it was taken in the field.",
+      "bulletPrivacy": "We only use the reading for this case — nothing runs in the background.",
+      "bulletAccuracy": "Best outdoors with high-accuracy GPS. You can still edit coordinates by hand.",
+      "allow": "Allow location",
+      "notNow": "Not now",
+      "locating": "Getting location…"
+    }
   },
   "profile": {
     "eyebrow": "Your account",
     "title": "Profile",
-    "subtitle": "Manage how DELACHE guides you while you work.",
-    "helpersIntro": "Field helpers explain what to enter in each form. They stay on by default and can be turned off anytime.",
-    "showHelpers": "Show form helpers",
-    "showHelpersHint": "When enabled, short tips appear under inputs across cases, finance, team, calendar, and client forms.",
+    "subtitle": "Your Delache account details.",
+    "accountHint": "Role assignments and notifications are managed by your administrator. Case steps show numbered sections and ownership chips in place — no extra coaching panels.",
     "saveFailed": "Couldn’t save preferences. Try again."
   },
   "help": {
@@ -745,8 +1310,10 @@
       "court": "Official court or juzgado name if known; leave blank if not assigned yet.",
       "city": "City where the property or incident is located — used for logistics and maps.",
       "priority": "Urgent for imminent hearings or safety risk; High for tight deadlines; Normal otherwise.",
+      "externalReference": "Optional firm or court docket number for cross-reference.",
+      "lawFirm": "The client despacho that owns the matter (not the court). Pick an existing firm or quick-add one.",
       "search": "Filter the grid by case number, title, court, city, firm, or expert.",
-      "pipeline": "Pipeline view groups expedientes by current status. Coordinators/admins can drag one step forward only when process gates for the current point are complete; blocked columns show a lock hint. Others open the case to advance. Filters and search apply to every column.",
+      "pipeline": "Pipeline view groups expedientes by current status. Admins can drag one step forward only when process gates for the current point are complete; blocked columns show a lock hint. Others open the case to advance. Filters and search apply to every column.",
       "fatality": "Check only when the lawsuit involves a death. This unlocks the death-certificate requirement — do not infer it from uploaded files."
     },
     "clientCases": {
@@ -767,12 +1334,12 @@
       "search": "Search by invoice number or amount."
     },
     "team": {
-      "section": "Invite staff or law-firm users. Law-firm invites require selecting their firm.",
-      "email": "Must be unique. Invitation OTP is emailed to this address.",
+      "section": "Invite staff or despacho users. Despacho invites attach to an existing firm or create one with this person as owner.",
+      "email": "Unique across staff and despacho. Invitation OTP is emailed here.",
       "firstName": "Given name as it should appear in the portal and emails.",
       "lastName": "Family name as it should appear in the portal and emails.",
-      "role": "Admin manages team/settings; coordinator runs cases; expert does field work; legal/logistics/accountant have scoped access. Law firm user accesses the client portal.",
-      "lawFirm": "Required for law-firm users — picks which firm they belong to."
+      "role": "Admin runs cases and manages team/settings; expert does field work; legal/logistics/accountant have scoped access. Law firm user is an external despacho contact (never staff.legal).",
+      "lawFirm": "For despacho users: pick an existing firm or create a new one inline."
     },
     "calendar": {
       "section": "Schedule inspections, meetings, or deadlines. Link a case when the event is case-specific.",
@@ -787,22 +1354,25 @@
     },
     "settings": {
       "caseNumber": "Tokens like {YYYY} and {SEQ} control how new case numbers are generated.",
-      "lawFirm": "Register firms before inviting their portal users."
+      "lawFirm": "Register a firm with a primary owner invite, or create+invite from Equipo."
     },
     "caseDetail": {
       "location": "Fill address fields for logistics; use GPS or geocode so maps and Street View work.",
       "workflow": "Forward status buttons stay disabled until the current process point gates are complete. Pause and cancel remain available. Add a reason for audits.",
       "notes": "Internal notes stay with staff. Keep facts short and dated.",
-      "assignments": "Assign the right role. Mark one primary owner for accountability. Set a delivery date for the primary expert — it becomes an action item and notifies them.",
+      "assignments": "P2 (Miro): assign a primary expert first — that is the only role that blocks leaving assignment. Then confirm document handoff. Other roles are recommended, not required.",
+      "assignmentRoleTier": "Required = primary expert. Recommended = coordinator, QA, legal, logistics, accountant. Other = technical director / observer.",
+      "assignMemberFilter": "The member list only shows teammates whose staff role matches the assignment role you picked.",
       "expertDelivery": "Optional when assigning the primary expert. Creates a deadline on the case and calendar, and includes the date in the assignment notification.",
-      "questionnaire": "Capture site GPS, Street View link, power-line context, and observations before inspection.",
+      "expertDeliveryOnAssign": "Optional on first primary-expert assign. Creates the case deadline and includes the date in the assignment email. After assign, edit it in the delivery action panel.",
+      "questionnaire": "Upload the defendant questionnaire PDF, then capture GPS, Street View URL + preexistence, and optional chronology/notes.",
       "reviewRequests": "Open review stages with a clear due date and assignee.",
       "inspections": "Schedule the visit; add notes the field team will see on-site.",
       "measurements": "Record numeric readings with units and pole IDs when applicable.",
       "evidence": "Title photos clearly; GPS tags strengthen chain of custody.",
       "logistics": "Log trips and expenses against the case for reimbursement tracking.",
-      "report": "Summarize findings and conclusions for legal delivery — be precise and neutral.",
-      "documentCategory": "Tag each file with the process category the 12-point gates check (lawsuit, protesta, ratification…).",
+      "report": "Upload the dictamen técnico PDF, then optionally add short conclusions before submitting for QA.",
+      "documentCategory": "Tag each file with the process category the 10-point gates check (lawsuit, protesta, ratification…).",
       "documentCategoryClient": "Choose the intake or additional-doc type this file satisfies (lawsuit, medical record, croquis…).",
       "documentsPanel": "Checklist shows what blocks the current point. The top picker only tags the next upload; use Change category on each file to fix a wrong tag."
     },
@@ -818,7 +1388,10 @@
     }
   },
   "process": {
-    "eyebrow": "12-point process",
+    "eyebrow": "10-point process",
+    "guidance": {
+      "eyebrow": "Guidance"
+    },
     "title": "Electrical expert-witness workflow",
     "helper": "Each point has one accountable role, required artifacts, and (where noted) a business-day clock. The 3-day law-firm review sits inside the 10-day clock that starts when protesta is filed.",
     "current": "Current: point {{point}} — {{name}}",
@@ -827,22 +1400,25 @@
     "nestedSla": "inside the 10-day clock",
     "insideClock": "Inside point {{point}} clock",
     "blockedTitle": "Cannot leave this point yet",
-    "blockedHowTo": "Complete the items below, then a coordinator or admin can advance the workflow.",
+    "blockedHowTo": "Complete the items below, then an admin can advance the workflow.",
     "blockedHowToOps": "Complete the items below, then advance the workflow from Status controls.",
     "blockedHowToUploader": "Upload or backfill the missing documents in Documents (quick links below).",
-    "blockedHowToWaitAssignment": "A coordinator or admin must assign a primary expert before this point can advance.",
+    "blockedHowToWaitAssignment": "An admin must assign a primary expert before this point can advance.",
     "blockedHowToWait": "Waiting on other roles to complete the items below. You cannot advance status from your role.",
+    "blockedHowToPrepParallel": "Admins must finish the waiting items. Meanwhile you can prep questionnaire, GPS, and Street View (soft parallel) — use the links below.",
     "blockedNeedsAssignment": "Open Assignments on this case and set a primary expert.",
     "blockedDocsOwner": "Intake documents are usually uploaded by the law firm in the client portal (Documents). Staff can backfill here if needed.",
     "gatesClear": "Requirements for this point are complete.",
     "gatesClearAdvance": "You can advance the status from the workflow controls.",
-    "gatesClearWaitOps": "Waiting for a coordinator or admin to advance the status.",
+    "gatesClearWaitOps": "Waiting for an admin to advance the status.",
     "ownershipTitle": "Who owns this point",
     "yourActionTitle": "What you should do",
+    "yourTasksTitle": "Your tasks",
+    "waitingOnOthersTitle": "Waiting on others",
     "yourAction": {
       "ops": "Point {{point}} — {{name}}. Coordinate the work below, then advance when gates are clear.",
-      "uploader": "Point {{point}} — {{name}}. You can help complete document or field requirements. Status advance stays with coordinators/admins.",
-      "assignee": "Point {{point}} — {{name}}. Focus on your assigned work. Coordinators/admins move status when ready.",
+      "uploader": "Point {{point}} — {{name}}. You can help complete document or field requirements. Status advance stays with admins.",
+      "assignee": "Point {{point}} — {{name}}. Focus on your assigned work. Admins move status when ready.",
       "viewer": "Point {{point}} — {{name}}. This stage is owned by other roles; use the checklist to see what is still missing."
     },
     "ownershipIntro": "Point {{point}} — {{name}}. RACI below shows who does the work and who advances.",
@@ -853,9 +1429,9 @@
       "I": "Informed"
     },
     "actor": {
-      "law_firm": "Law firm (client portal)",
-      "coordinator": "Case coordinator",
-      "expert": "Assigned expert (perito)",
+      "law_firm": "Law firm",
+      "coordinator": "Coordinator",
+      "expert": "Assigned expert",
       "questionnaire_author": "Questionnaire author",
       "qa": "QA / grammar review",
       "legal_internal": "Internal legal",
@@ -865,9 +1441,9 @@
       "admin": "Platform admin"
     },
     "advanceYouCan": "Your role can change case status when gates are clear.",
-    "advanceOnlyOps": "Only coordinators and admins can move the case to the next status.",
-    "advanceOnlyOpsShort": "Only coordinators/admins change case status.",
-    "assignmentHow": "Assignment: coordinators/admins add staff with a role (expert, logistics, …). Mark one primary expert — that person owns the expediente after P2. Secondary assignments support reviews and field work.",
+    "advanceOnlyOps": "Only admins can move the case to the next status.",
+    "advanceOnlyOpsShort": "Only admins change case status.",
+    "assignmentHow": "Assignment: admins add staff with a role (expert, logistics, …). Mark one primary expert — that person owns the expediente after P2. Secondary assignments support reviews and field work.",
     "assignmentLater": "Primary expert assignment happens at point 2 (Assignment). Intake documents come first.",
     "quickLink": {
       "documents": "Go to documents",
@@ -885,36 +1461,30 @@
         "name": "Intake"
       },
       "2": {
-        "name": "Assignment"
+        "name": "Prepare questionnaire"
       },
       "3": {
-        "name": "Questionnaire & advance"
+        "name": "Assignment"
       },
       "4": {
-        "name": "Internal legal review"
+        "name": "Legal review"
       },
       "5": {
         "name": "Law-firm documents"
       },
       "6": {
-        "name": "Protesta & 10-day clock"
+        "name": "Protesta"
       },
       "7": {
-        "name": "Logistics"
+        "name": "Logistics and inspection"
       },
       "8": {
-        "name": "Field inspection"
-      },
-      "9": {
         "name": "Technical report"
       },
+      "9": {
+        "name": "Validation & delivery"
+      },
       "10": {
-        "name": "Law-firm validation"
-      },
-      "11": {
-        "name": "Filing & ratification"
-      },
-      "12": {
         "name": "Collections"
       }
     },
@@ -937,13 +1507,19 @@
       "assignment": {
         "primary_expert": "Assign a primary expert"
       },
+      "handoff": {
+        "documents_confirmed": "Admin confirms documents reached primary expert"
+      },
+      "court": {
+        "ratification_scheduled": "Schedule ratification hearing (comparecencia)"
+      },
       "location": {
         "gps": "Property GPS coordinates",
         "street_view": "Street View / preexistence check"
       },
       "questionnaire": {
         "approved": "Questionnaire approved by QA",
-        "ready": "Questionnaire submitted for internal legal review",
+        "ready": "Questionnaire passed grammar QA (advance released)",
         "legal_approved": "Questionnaire approved by internal legal"
       },
       "logistics": {
@@ -976,6 +1552,14 @@
     }
   },
   "listado": {
+    "badge": {
+      "activo": "Active",
+      "en_revision": "In review",
+      "en_espera": "Waiting",
+      "vencido": "Overdue",
+      "cerrado": "Closed",
+      "pagado": "Paid"
+    },
     "flag": {
       "intakeComplete": "Intake complete",
       "primaryExpert": "Primary expert assigned",
@@ -1011,6 +1595,91 @@
       "attendedWithReport": "Attended",
       "finalReleased": "Final out",
       "finalPaid": "Final paid"
+    }
+  },
+  "despacho": {
+    "portalTitle": "Law firm portal",
+    "cases": "My cases",
+    "notifications": "Notifications",
+    "notificationsSubtitle": "Case status updates, delivered reports, and shared alerts.",
+    "subtitle": "Create expedientes and track status with DELACHE.",
+    "submitCase": "Create expediente",
+    "submit": "Create",
+    "caseSaveFailed": "Could not create the case — your entries were kept",
+    "empty": "No expedientes yet. Create the first one.",
+    "plaintiff": "Plaintiff",
+    "defendant": "Defendant",
+    "sharedNotes": "Shared notes",
+    "noNotes": "No shared notes",
+    "reports": "Reports",
+    "noReports": "No reports available yet",
+    "approveReport": "Approve",
+    "requestChanges": "Request changes",
+    "rejectReport": "Reject",
+    "reportStatus": {
+      "draft": "Draft",
+      "grammar_qa": "Grammar QA",
+      "technical_director": "Technical director",
+      "approved_internal": "Approved internally",
+      "external_review": "External review",
+      "changes_requested": "Changes requested",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "delivered": "Delivered"
+    },
+    "profile": "Profile",
+    "panel": {
+      "title": "Law firm desk",
+      "subtitle": "Manage your cases and check their status.",
+      "roleBanner": "Role: Law firm — limited access",
+      "roleBannerHint": "You can create Step 1 and track progress read-only. Point actions (doc corrections, legal review, report) open from the case.",
+      "viewerBanner": "Role: Viewer — read only",
+      "viewerBannerHint": "You can track expedientes but cannot create cases, upload documents, or review reports.",
+      "viewerBadge": "Viewer",
+      "viewerDetailHint": "Your firm role is viewer. Document uploads and report actions are disabled.",
+      "searchPlaceholder": "Search folio or address…",
+      "newCase": "New case",
+      "tableSearch": "Search the list…",
+      "allStatuses": "All statuses",
+      "colFolio": "Folio",
+      "colName": "Case name",
+      "colDeadline": "Deadline",
+      "colStep": "Current step",
+      "colReview": "Review status",
+      "showing": "Showing {{shown}} of {{total}} cases",
+      "seguimientoTitle": "Case tracking",
+      "seguimientoEmptyTitle": "Select a case",
+      "seguimientoEmptyHint": "Choose a row on the left to see read-only progress.",
+      "readOnly": "Read only",
+      "deadline": "Deadline",
+      "tabProgress": "Process progress",
+      "tabInfo": "General information",
+      "pillDone": "Done",
+      "pillInProgress": "In review",
+      "pillPending": "Pending",
+      "currentStepHint": "Current step {{n}}",
+      "adminObservation": "Administrator note",
+      "openActions": "Open case actions →",
+      "backToPanel": "Back to desk",
+      "createOnlyPaso1": "As a law firm you only create Step 1 (intake). The rest of the process is read-only tracking.",
+      "detailActionsHint": "Tracking is read-only. Here you can fix rejected documents and respond to reviews when applicable."
+    },
+    "team": {
+      "nav": "Firm team",
+      "eyebrow": "Despacho roster",
+      "title": "Firm team",
+      "subtitle": "People who can access this despacho’s expedientes.",
+      "subtitleNamed": "People at {{name}}.",
+      "invite": "Invite colleague",
+      "sendInvite": "Send invite",
+      "empty": "No firm members yet.",
+      "primary": "Primary",
+      "memberRole": {
+        "owner": "Owner",
+        "admin": "Admin",
+        "member": "Member",
+        "viewer": "Viewer"
+      }
     }
   }
 }

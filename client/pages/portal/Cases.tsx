@@ -1,53 +1,49 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useFormik } from "formik";
-import * as Yup from "yup";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { motion } from "framer-motion";
-import { Columns3, LayoutList, Plus, RefreshCw, Search } from "lucide-react";
+import { Columns3, LayoutList, Plus, Search } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
 import PortalListPanel from "@/components/portal/PortalListPanel";
 import ListadoFlagStrip from "@/components/portal/ListadoFlagStrip";
+import CaseOwnershipBadges from "@/components/portal/CaseOwnershipBadges";
+import CasesKpiStrip from "@/components/portal/cases/CasesKpiStrip";
+import CasesFiltersButton from "@/components/portal/cases/CasesFiltersButton";
 import CasesPipelineBoard from "@/components/portal/CasesPipelineBoard";
 import CasesPipelineSkeleton from "@/components/portal/CasesPipelineSkeleton";
 import CasesListSkeleton from "@/components/portal/CasesListSkeleton";
-import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import { DataGrid, type DataGridColumn } from "@/components/ui/data-grid";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import {
-  createCase,
-  fetchCases,
-  fetchCasesPipeline,
-} from "@/store/slices/casesSlice";
-import { CASE_STATUS_FLOW } from "@shared/caseWorkflow";
+import { fetchCases, fetchCasesPipeline } from "@/store/slices/casesSlice";
 import { canCreateStaffCase } from "@shared/caseVisibilityRules";
-import type { CasePriority, CaseSummary } from "@shared/api";
+import {
+  casesKpiInPageAction,
+  casesKpiIsSelected,
+  parseCasesKpiParam,
+  type CasesKpiKey,
+} from "@shared/casesKpiRules";
+import type { CaseSummary } from "@shared/api";
 import { useGridListState } from "@/hooks/useGridListState";
 import { useCasesViewMode } from "@/hooks/useCasesViewMode";
 import { cn } from "@/lib/utils";
-
-const createSchema = Yup.object({
-  title: Yup.string().trim().required(),
-  courtName: Yup.string().trim(),
-  propertyCity: Yup.string().trim(),
-  priority: Yup.mixed<CasePriority>()
-    .oneOf(["low", "normal", "high", "urgent"])
-    .required(),
-});
+import DespachoCasesHome from "@/components/portal/DespachoCasesHome";
 
 export default function CasesPage() {
+  const actor = useAppSelector((s) => s.auth.user?.actor);
+  if (actor === "law_firm") return <DespachoCasesHome />;
+  return <StaffCasesPage />;
+}
+
+function StaffCasesPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const dispatch = useAppDispatch();
-  const { items, pagination, loading, creating, error } = useAppSelector(
-    (s) => s.cases,
-  );
+  const { items, pagination, loading, creating, error } =
+    useAppSelector((s) => s.cases);
   const role = useAppSelector((s) => s.auth.user?.role);
   const canCreate = canCreateStaffCase(role);
   const { view, setViewMode } = useCasesViewMode();
-  const [showCreate, setShowCreate] = useState(false);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [status, setStatus] = useState("");
@@ -65,11 +61,42 @@ export default function CasesPage() {
 
   useEffect(() => {
     if (searchParams.get("create") !== "1" || !canCreate) return;
-    setShowCreate(true);
+    navigate("/portal/cases/new", { replace: true });
+  }, [searchParams, canCreate, navigate]);
+
+  const selectedKpi = parseCasesKpiParam(searchParams.get("kpi"));
+
+  useEffect(() => {
+    const action = selectedKpi ? casesKpiInPageAction(selectedKpi) : null;
+    if (!action) return;
+    setStatus(action.statusFilter);
+    if (action.view) setViewMode(action.view);
+    setPage(1);
+  }, [selectedKpi, setViewMode, setPage]);
+
+  const handleKpiSelect = (key: CasesKpiKey) => {
+    const action = casesKpiInPageAction(key);
+    if (!action) return;
     const next = new URLSearchParams(searchParams);
-    next.delete("create");
+    next.set("kpi", key);
     setSearchParams(next, { replace: true });
-  }, [searchParams, canCreate, setSearchParams]);
+    setStatus(action.statusFilter);
+    if (action.view) setViewMode(action.view);
+    setPage(1);
+    window.requestAnimationFrame(() => {
+      document.getElementById("cases-list")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  };
+
+  const kpiSelected = (key: CasesKpiKey) =>
+    casesKpiIsSelected(key, {
+      kpiParam: selectedKpi,
+      statusFilter: status,
+      view,
+    });
 
   useEffect(() => {
     if (bootViewRef.current === view) return;
@@ -120,54 +147,15 @@ export default function CasesPage() {
     };
   }, [dispatch, view, pipelineParams]);
 
-  /** Refresh when returning to the tab (e.g. completed gates in another tab). */
-  useEffect(() => {
-    const refresh = () => {
-      if (document.visibilityState !== "visible") return;
-      if (view === "pipeline") {
-        void dispatch(
-          fetchCasesPipeline({ ...pipelineParams, resetColumns: false }),
-        );
-      } else {
-        void dispatch(fetchCases(listParams));
-      }
-    };
-    document.addEventListener("visibilitychange", refresh);
-    return () => document.removeEventListener("visibilitychange", refresh);
-  }, [dispatch, view, listParams, pipelineParams]);
-
-  const formik = useFormik({
-    initialValues: {
-      title: "",
-      courtName: "",
-      propertyCity: "",
-      priority: "normal" as CasePriority,
-      involvesFatality: false,
-    },
-    validationSchema: createSchema,
-    onSubmit: async (values, helpers) => {
-      const result = await dispatch(
-        createCase({
-          title: values.title.trim(),
-          courtName: values.courtName.trim() || undefined,
-          propertyCity: values.propertyCity.trim() || undefined,
-          priority: values.priority,
-          involvesFatality: values.involvesFatality,
-        }),
+  const refreshCases = () => {
+    if (view === "list") {
+      void dispatch(fetchCases(listParams));
+    } else {
+      void dispatch(
+        fetchCasesPipeline({ ...pipelineParams, resetColumns: false }),
       );
-      if (createCase.fulfilled.match(result)) {
-        helpers.resetForm();
-        setShowCreate(false);
-        if (view === "list") {
-          void dispatch(fetchCases(listParams));
-        } else {
-          void dispatch(
-            fetchCasesPipeline({ ...pipelineParams, resetColumns: false }),
-          );
-        }
-      }
-    },
-  });
+    }
+  };
 
   const columns = useMemo((): DataGridColumn<CaseSummary>[] => {
     return [
@@ -245,7 +233,7 @@ export default function CasesPage() {
         wrap: true,
         render: (c) =>
           c.listado ? (
-            <ListadoFlagStrip listado={c.listado} compact />
+            <ListadoFlagStrip listado={c.listado} status={c.status} compact />
           ) : (
             "—"
           ),
@@ -273,11 +261,7 @@ export default function CasesPage() {
   }, [t]);
 
   const viewToggle = (
-    <div
-      className="flex shrink-0 rounded-xl border border-input bg-background p-0.5"
-      role="group"
-      aria-label={t("cases.pipeline.viewToggle")}
-    >
+    <div className="inline-flex h-11 shrink-0 items-center rounded-xl border border-border bg-muted/40 p-1">
       <button
         type="button"
         onClick={() => setViewMode("list")}
@@ -310,7 +294,7 @@ export default function CasesPage() {
   );
 
   return (
-    <div className="mx-auto max-w-7xl">
+    <div className="min-w-0 w-full max-w-full">
       <MetaHelmet title={t("portal.cases")} noindex />
 
       <PortalPageHeader
@@ -321,7 +305,7 @@ export default function CasesPage() {
           canCreate ? (
             <button
               type="button"
-              onClick={() => setShowCreate((v) => !v)}
+              onClick={() => navigate("/portal/cases/new")}
               className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground shadow-lg shadow-primary/15 transition hover:bg-primary/90"
             >
               <Plus size={15} />
@@ -331,90 +315,18 @@ export default function CasesPage() {
         }
       />
 
-      {showCreate && canCreate ? (
-        <motion.form
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          onSubmit={formik.handleSubmit}
-          className="mt-6 rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6"
-        >
-          <SectionHelper>{t("help.cases.createSection")}</SectionHelper>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="text-xs font-semibold text-muted-foreground sm:col-span-2">
-              {t("cases.titleLabel")}
-              <input
-                name="title"
-                value={formik.values.title}
-                onChange={formik.handleChange}
-                className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.cases.title")}</FieldHelper>
-            </label>
-            <label className="text-xs font-semibold text-muted-foreground">
-              {t("cases.courtLabel")}
-              <input
-                name="courtName"
-                value={formik.values.courtName}
-                onChange={formik.handleChange}
-                className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.cases.court")}</FieldHelper>
-            </label>
-            <label className="text-xs font-semibold text-muted-foreground">
-              {t("cases.cityLabel")}
-              <input
-                name="propertyCity"
-                value={formik.values.propertyCity}
-                onChange={formik.handleChange}
-                className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.cases.city")}</FieldHelper>
-            </label>
-            <label className="text-xs font-semibold text-muted-foreground">
-              {t("cases.priorityLabel")}
-              <select
-                name="priority"
-                value={formik.values.priority}
-                onChange={formik.handleChange}
-                className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              >
-                {(["low", "normal", "high", "urgent"] as const).map((p) => (
-                  <option key={p} value={p}>
-                    {t(`cases.priority.${p}`)}
-                  </option>
-                ))}
-              </select>
-              <FieldHelper>{t("help.cases.priority")}</FieldHelper>
-            </label>
-            <label className="inline-flex items-center gap-2 text-xs font-semibold text-foreground sm:col-span-2">
-              <input
-                type="checkbox"
-                name="involvesFatality"
-                checked={formik.values.involvesFatality}
-                onChange={formik.handleChange}
-                className="h-4 w-4 rounded border-input"
-              />
-              {t("cases.involvesFatality")}
-            </label>
-            <FieldHelper>{t("help.cases.fatality")}</FieldHelper>
-          </div>
-          {error ? (
-            <p className="mt-3 text-xs text-destructive">{error}</p>
-          ) : null}
-          <button
-            type="submit"
-            disabled={creating}
-            className="mt-4 inline-flex h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-primary-foreground disabled:opacity-60"
-          >
-            {creating ? (
-              <RefreshCw className="animate-spin" size={16} />
-            ) : null}
-            {t("cases.create")}
-          </button>
-        </motion.form>
-      ) : null}
+      <CasesKpiStrip
+        className="mt-4"
+        selectedKpi={
+          (["active", "dueSoon", "inReview", "completed"] as const).find(
+            (k) => kpiSelected(k),
+          ) ?? null
+        }
+        onKpiSelect={handleKpiSelect}
+      />
 
       <PortalListPanel
+        id="cases-list"
         toolbar={
           <div className="space-y-2">
             {error && !creating ? (
@@ -422,8 +334,8 @@ export default function CasesPage() {
                 {t("cases.loadFailed")}
               </p>
             ) : null}
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="relative min-w-[12rem] flex-1">
+            <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative min-w-0 w-full flex-1">
                 <Search
                   size={16}
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
@@ -438,43 +350,22 @@ export default function CasesPage() {
                   className="h-11 w-full rounded-xl border border-input bg-background pl-10 pr-3 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
                 />
               </div>
-              <select
-                value={status}
-                onChange={(e) => {
-                  setStatus(e.target.value);
-                  setPage(1);
-                }}
-                className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
-              >
-                <option value="">{t("cases.filterAllStatuses")}</option>
-                {[...CASE_STATUS_FLOW, "on_hold", "cancelled"].map((s) => (
-                  <option key={s} value={s}>
-                    {t(`cases.status.${s}`, { defaultValue: s })}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={priority}
-                onChange={(e) => {
-                  setPriority(e.target.value);
-                  setPage(1);
-                }}
-                className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
-              >
-                <option value="">{t("cases.filterAllPriorities")}</option>
-                {(["low", "normal", "high", "urgent"] as const).map((p) => (
-                  <option key={p} value={p}>
-                    {t(`cases.priority.${p}`)}
-                  </option>
-                ))}
-              </select>
-              {viewToggle}
+              <div className="flex shrink-0 items-center gap-2">
+                <CasesFiltersButton
+                  status={status}
+                  priority={priority}
+                  onStatusChange={(value) => {
+                    setStatus(value);
+                    setPage(1);
+                  }}
+                  onPriorityChange={(value) => {
+                    setPriority(value);
+                    setPage(1);
+                  }}
+                />
+                {viewToggle}
+              </div>
             </div>
-            <FieldHelper>
-              {view === "pipeline"
-                ? t("help.cases.pipeline")
-                : t("help.cases.search")}
-            </FieldHelper>
           </div>
         }
       >
@@ -536,15 +427,15 @@ export default function CasesPage() {
                       : null,
                     c.courtName,
                     c.propertyCity,
-                    c.primaryExpertName,
                     c.lawFirmName,
                   ]
                     .filter(Boolean)
                     .join(" · ") || t("cases.noLocation")}
                 </p>
+                <CaseOwnershipBadges caseItem={c} className="mt-2" max={3} />
                 {c.listado ? (
                   <div className="mt-2">
-                    <ListadoFlagStrip listado={c.listado} compact />
+                    <ListadoFlagStrip listado={c.listado} status={c.status} compact />
                   </div>
                 ) : null}
               </Link>

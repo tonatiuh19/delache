@@ -12,6 +12,7 @@ export const USER_ERROR_CODES = [
   "UPLOAD_FAILED",
   "OTP_RATE_LIMITED",
   "OTP_ACCOUNT_NOT_FOUND",
+  "OTP_EMAIL_ACTOR_CONFLICT",
   "OTP_EMAIL_SEND_FAILED",
   "TEAM_SELF_STATUS",
   "TEAM_LAW_FIRM_REQUIRED",
@@ -34,6 +35,7 @@ export const ERROR_ALIASES: Record<string, UserErrorCode> = {
   "Could not send verification email. Please try again.":
     "OTP_EMAIL_SEND_FAILED",
   account_not_found: "OTP_ACCOUNT_NOT_FOUND",
+  email_actor_conflict: "OTP_EMAIL_ACTOR_CONFLICT",
   rate_limited: "OTP_RATE_LIMITED",
   self_status_change: "TEAM_SELF_STATUS",
   law_firm_required: "TEAM_LAW_FIRM_REQUIRED",

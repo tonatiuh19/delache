@@ -1,17 +1,12 @@
 import { useTranslation } from "react-i18next";
-import { Info, UserRound } from "lucide-react";
+import { UserRound } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
-import { Switch } from "@/components/ui/switch";
-import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import {
-  clearAuthError,
-  updatePreferences,
-} from "@/store/slices/authSlice";
-import { isShowFormHelpersEnabled } from "@shared/formHelperRules";
+import { useAppSelector } from "@/store/hooks";
 
 /**
- * Self-serve profile preferences (staff + law-firm). Helpers toggle defaults ON.
+ * Self-serve profile (staff + law-firm).
+ * Process guidance panel and tip helpers were removed — no preference toggles.
  */
 export default function ProfilePreferences({
   titleKey,
@@ -21,11 +16,7 @@ export default function ProfilePreferences({
   eyebrowKey: string;
 }) {
   const { t } = useTranslation();
-  const dispatch = useAppDispatch();
   const user = useAppSelector((s) => s.auth.user);
-  const updatingPrefs = useAppSelector((s) => s.auth.updatingPrefs);
-  const error = useAppSelector((s) => s.auth.error);
-  const helpersOn = isShowFormHelpersEnabled(user?.showFormHelpers);
 
   if (!user) return null;
 
@@ -51,44 +42,8 @@ export default function ProfilePreferences({
           </div>
         </div>
 
-        <div className="space-y-4 p-5">
-          <div
-            role="note"
-            className="flex gap-2.5 rounded-xl border border-border/80 bg-secondary/50 px-3 py-2.5 text-[12px] leading-relaxed text-muted-foreground"
-          >
-            <Info
-              size={15}
-              className="mt-0.5 shrink-0 text-primary"
-              aria-hidden
-            />
-            <p>{t("profile.helpersIntro")}</p>
-          </div>
-
-          <div className="flex items-start justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-foreground">
-                {t("profile.showHelpers")}
-              </p>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                {t("profile.showHelpersHint")}
-              </p>
-            </div>
-            <Switch
-              checked={helpersOn}
-              disabled={updatingPrefs}
-              onCheckedChange={(checked) => {
-                dispatch(clearAuthError());
-                void dispatch(updatePreferences({ showFormHelpers: checked }));
-              }}
-              aria-label={t("profile.showHelpers")}
-            />
-          </div>
-
-          {error ? (
-            <p className="text-xs text-destructive" role="alert">
-              {t("profile.saveFailed", { defaultValue: error })}
-            </p>
-          ) : null}
+        <div className="p-5">
+          <p className="text-sm text-muted-foreground">{t("profile.accountHint")}</p>
         </div>
       </section>
     </div>

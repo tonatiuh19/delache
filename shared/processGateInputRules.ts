@@ -11,6 +11,7 @@ import {
 
 export type ProcessGateInputSource = {
   documentCategories: readonly string[];
+  approvedDocumentCategories?: readonly string[];
   evidenceCategories?: readonly string[];
   measurementTypes?: readonly string[];
   hasPrimaryExpert: boolean;
@@ -19,6 +20,9 @@ export type ProcessGateInputSource = {
   streetViewValidatedAt?: unknown;
   propertyLat?: unknown;
   propertyLng?: unknown;
+  documentsHandoffConfirmedAt?: unknown;
+  expedienteApprovedAt?: unknown;
+  ratificationScheduledAt?: unknown;
   involvesFatality?: boolean;
   inspectionComplete: boolean;
   reportStatus?: string | null;
@@ -44,6 +48,7 @@ export function buildProcessGateInputFromSource(
   const documentCategories = source.documentCategories;
   return {
     documentCategories,
+    approvedDocumentCategories: source.approvedDocumentCategories ?? [],
     evidenceCategories: mergeEvidenceCategories(
       source.evidenceCategories ?? [],
       source.measurementTypes ?? [],
@@ -57,6 +62,13 @@ export function buildProcessGateInputFromSource(
       source.propertyLat,
       source.propertyLng,
     ),
+    questionnaireContentJson: source.questionnaireContentJson,
+    documentsHandoffConfirmed: Boolean(source.documentsHandoffConfirmedAt),
+    expedienteApproved: Boolean(source.expedienteApprovedAt),
+    ratificationScheduledAt:
+      source.ratificationScheduledAt != null
+        ? String(source.ratificationScheduledAt)
+        : null,
     plaintiffQuestionnairePresent: documentCategories.includes(
       "plaintiff_questionnaire",
     ),

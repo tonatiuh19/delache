@@ -3,9 +3,10 @@ import { useFormik } from "formik";
 import * as Yup from "yup";
 import { useTranslation } from "react-i18next";
 import MetaHelmet from "@/components/MetaHelmet";
+import AppVersionLabel from "@/components/AppVersionLabel";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
-import { SectionHelper } from "@/components/portal/FormHelpers";
 import { ContentPageSkeleton } from "@/components/portal/PortalSkeletons";
+import LocalEmailCtaLegend from "@/components/portal/LocalEmailCtaLegend";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   createLawFirm,
@@ -16,7 +17,7 @@ import {
 import { notifyThunkSave } from "@/utils/formSave";
 
 export default function SettingsPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const dispatch = useAppDispatch();
   const { caseNumberSettings, lawFirms, loadingSettings, savingSettings, error } =
     useAppSelector((s) => s.portal);
@@ -47,8 +48,22 @@ export default function SettingsPage() {
   });
 
   const firmForm = useFormik({
-    initialValues: { name: "", email: "", city: "", state: "" },
-    validationSchema: Yup.object({ name: Yup.string().trim().required() }),
+    initialValues: {
+      name: "",
+      email: "",
+      city: "",
+      state: "",
+      defaultCourtName: "",
+      ownerEmail: "",
+      ownerFirstName: "",
+      ownerLastName: "",
+    },
+    validationSchema: Yup.object({
+      name: Yup.string().trim().required(),
+      ownerEmail: Yup.string().email().required(),
+      ownerFirstName: Yup.string().trim().required(),
+      ownerLastName: Yup.string().trim().required(),
+    }),
     onSubmit: async (values, helpers) => {
       const result = await dispatch(
         createLawFirm({
@@ -56,6 +71,11 @@ export default function SettingsPage() {
           email: values.email.trim() || undefined,
           city: values.city.trim() || undefined,
           state: values.state.trim() || undefined,
+          defaultCourtName: values.defaultCourtName.trim() || undefined,
+          ownerEmail: values.ownerEmail.trim(),
+          ownerFirstName: values.ownerFirstName.trim(),
+          ownerLastName: values.ownerLastName.trim(),
+          preferredLanguage: i18n.language,
         }),
       );
       if (
@@ -94,10 +114,6 @@ export default function SettingsPage() {
         className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6"
       >
         <h2 className="text-sm font-bold">{t("settings.caseNumberTitle")}</h2>
-        <SectionHelper className="mt-2">{t("help.settings.caseNumber")}</SectionHelper>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {t("settings.caseNumberHint")}
-        </p>
         <label className="mt-4 block text-xs font-semibold text-muted-foreground">
           {t("settings.formatLabel")}
           <input
@@ -132,10 +148,10 @@ export default function SettingsPage() {
         className="space-y-3 rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6"
       >
         <h2 className="text-sm font-bold">{t("settings.lawFirmsTitle")}</h2>
-        <SectionHelper className="mt-2">{t("help.settings.lawFirm")}</SectionHelper>
         <p className="text-xs text-muted-foreground">
-          {t("settings.lawFirmsHint")}
+          {t("settings.lawFirmsOwnerHint")}
         </p>
+        <LocalEmailCtaLegend />
         <input
           name="name"
           value={firmForm.values.name}
@@ -145,10 +161,34 @@ export default function SettingsPage() {
         />
         <div className="grid gap-3 sm:grid-cols-3">
           <input
+            name="ownerFirstName"
+            value={firmForm.values.ownerFirstName}
+            onChange={firmForm.handleChange}
+            placeholder={t("team.firstName")}
+            className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+          />
+          <input
+            name="ownerLastName"
+            value={firmForm.values.ownerLastName}
+            onChange={firmForm.handleChange}
+            placeholder={t("team.lastName")}
+            className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+          />
+          <input
+            name="ownerEmail"
+            type="email"
+            value={firmForm.values.ownerEmail}
+            onChange={firmForm.handleChange}
+            placeholder={t("settings.ownerEmail")}
+            className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+          />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <input
             name="email"
             value={firmForm.values.email}
             onChange={firmForm.handleChange}
-            placeholder={t("team.emailPlaceholder")}
+            placeholder={t("settings.firmContactEmail")}
             className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
           />
           <input
@@ -166,9 +206,20 @@ export default function SettingsPage() {
             className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
           />
         </div>
+        <input
+          name="defaultCourtName"
+          value={firmForm.values.defaultCourtName}
+          onChange={firmForm.handleChange}
+          placeholder={t("settings.defaultCourtNamePlaceholder")}
+          className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          {t("settings.defaultCourtNameHint")}
+        </p>
         <button
           type="submit"
-          className="h-10 rounded-xl bg-accent px-4 text-xs font-semibold text-accent-foreground"
+          disabled={!firmForm.isValid || firmForm.isSubmitting}
+          className="h-10 rounded-xl bg-accent px-4 text-xs font-semibold text-accent-foreground disabled:opacity-50"
         >
           {t("settings.createLawFirm")}
         </button>
@@ -182,6 +233,16 @@ export default function SettingsPage() {
           ))}
         </ul>
       </form>
+
+      <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6">
+        <h2 className="text-sm font-bold">{t("settings.appVersionTitle")}</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t("settings.appVersionHint")}
+        </p>
+        <p className="mt-3">
+          <AppVersionLabel className="text-sm font-semibold text-foreground" />
+        </p>
+      </section>
     </div>
   );
 }

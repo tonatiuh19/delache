@@ -1,22 +1,39 @@
 import type { CaseStatus, UserRole } from "./api";
 import { canManageAdmin } from "./rbac";
 
-/** Primary forward workflow (Product.md phases 1–12 → completed) */
+/** Primary forward workflow (10 process points → completed). SoT: docs/Proceso_Peritaje_Electrico_10_Puntos.md */
 export const CASE_STATUS_FLOW: CaseStatus[] = [
   "intake",
-  "assignment",
   "questionnaire",
+  "assignment",
   "legal_review_questionnaire",
   "additional_docs",
   "court_acceptance",
-  "logistics",
-  "inspection",
+  "field_ops",
   "technical_report",
-  "legal_validation",
-  "court_delivery",
+  "validation_delivery",
   "accounting",
   "completed",
 ];
+
+/** Map pre-Y (12-point) statuses onto the 10-point flow. */
+export const LEGACY_CASE_STATUS_MAP: Record<string, CaseStatus> = {
+  logistics: "field_ops",
+  inspection: "field_ops",
+  legal_validation: "validation_delivery",
+  court_delivery: "validation_delivery",
+};
+
+export function normalizeCaseStatus(status: string): CaseStatus | null {
+  if (LEGACY_CASE_STATUS_MAP[status]) return LEGACY_CASE_STATUS_MAP[status];
+  if ((CASE_STATUS_FLOW as string[]).includes(status)) {
+    return status as CaseStatus;
+  }
+  if (status === "on_hold" || status === "cancelled") {
+    return status;
+  }
+  return null;
+}
 
 export function isTerminalStatus(status: CaseStatus): boolean {
   return status === "completed" || status === "cancelled";
@@ -26,7 +43,7 @@ export type WorkflowTransitionOpts = {
   role?: UserRole | null;
   /** Workflow status the case left when it went on_hold. */
   lastWorkflowStatus?: CaseStatus | null;
-  /** Last to_status still on the 12-point flow (legacy hold with no from_status). */
+  /** Last to_status still on the 10-point flow (legacy hold with no from_status). */
   fallbackWorkflowStatus?: CaseStatus | null;
 };
 
@@ -39,12 +56,13 @@ export function resolveHoldResumeStatus(
     lastWorkflowToStatus,
     "intake" as const,
   ]) {
+    if (!candidate) continue;
+    const normalized = normalizeCaseStatus(candidate) ?? candidate;
     if (
-      candidate &&
-      CASE_STATUS_FLOW.includes(candidate) &&
-      candidate !== "completed"
+      CASE_STATUS_FLOW.includes(normalized) &&
+      normalized !== "completed"
     ) {
-      return candidate;
+      return normalized;
     }
   }
   return "intake";
@@ -72,11 +90,12 @@ export function getAllowedNextStatuses(
   }
 
   if (current === "legal_review_questionnaire") {
-    return ["additional_docs", "questionnaire", "on_hold", "cancelled"];
+    // Plaintiff questionnaire lives on protesta. Skip the extra docs step.
+    return ["court_acceptance", "questionnaire", "on_hold", "cancelled"];
   }
 
-  if (current === "legal_validation") {
-    return ["court_delivery", "technical_report", "on_hold", "cancelled"];
+  if (current === "validation_delivery") {
+    return ["accounting", "technical_report", "on_hold", "cancelled"];
   }
 
   const idx = CASE_STATUS_FLOW.indexOf(current);
@@ -108,8 +127,8 @@ export function canTransition(
 
 /**
  * Auto-move the case when a review/artifact is sent back.
- * P4/P10 `changes_requested` → P3/P9 so the author can edit.
- * P4/P10 `rejected` (fondo) → `on_hold` (SOP). P9 QA stays put.
+ * P4/P9 `changes_requested` → P3/P8 so the author can edit.
+ * P4/P9 `rejected` (fondo) → `on_hold` (SOP). P8 QA stays put.
  */
 export function caseStatusAfterArtifactReject(opts: {
   caseStatus: CaseStatus;
@@ -119,10 +138,10 @@ export function caseStatusAfterArtifactReject(opts: {
   const atP4 =
     opts.artifact === "questionnaire" &&
     opts.caseStatus === "legal_review_questionnaire";
-  const atP10 =
+  const atP9 =
     opts.artifact === "technical_report" &&
-    opts.caseStatus === "legal_validation";
-  if (!atP4 && !atP10) return null;
+    opts.caseStatus === "validation_delivery";
+  if (!atP4 && !atP9) return null;
   if (opts.outcome === "changes_requested") {
     return atP4 ? "questionnaire" : "technical_report";
   }

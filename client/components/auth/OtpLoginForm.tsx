@@ -22,7 +22,6 @@ import {
 } from "@/store/slices/authSlice";
 import { homePathForActor, setSessionToken } from "@/lib/api";
 import type { AuthActor } from "@shared/authActors";
-import { FieldHelper } from "@/components/portal/FormHelpers";
 
 const emailSchema = Yup.object({
   email: Yup.string().email().required(),
@@ -35,7 +34,8 @@ const otpSchema = Yup.object({
 });
 
 type OtpLoginFormProps = {
-  actor: AuthActor;
+  /** When omitted, OTP tries staff then law_firm (unified /login). */
+  actor?: AuthActor;
   eyebrowKey: string;
   titleKey: string;
   subtitleKey: string;
@@ -61,15 +61,13 @@ export default function OtpLoginForm({
 
   useEffect(() => {
     if (user && token) {
-      if (user.actor !== actor) {
+      if (actor && user.actor !== actor) {
         setSessionToken(null, user.actor);
         return;
       }
       setStep("success");
-      const timer = window.setTimeout(
-        () => navigate(homePathForActor(actor)),
-        900,
-      );
+      const home = homePathForActor(user.actor);
+      const timer = window.setTimeout(() => navigate(home), 900);
       return () => window.clearTimeout(timer);
     }
   }, [user, token, navigate, actor]);
@@ -89,6 +87,7 @@ export default function OtpLoginForm({
       verifyOtp({
         email: otpSentTo || emailForm.values.email,
         code,
+        ...(actor ? { actor } : {}),
       }),
     );
     if (verifyOtp.rejected.match(result)) {
@@ -101,7 +100,13 @@ export default function OtpLoginForm({
     validationSchema: emailSchema,
     onSubmit: async (values) => {
       dispatch(clearAuthError());
-      await dispatch(requestOtp(values.email.trim()));
+      await dispatch(
+        requestOtp(
+          actor
+            ? { email: values.email.trim(), actor }
+            : values.email.trim(),
+        ),
+      );
     },
   });
 
@@ -118,7 +123,9 @@ export default function OtpLoginForm({
     if (!email) return;
     setResent(true);
     otpSubmitLock.current = false;
-    await dispatch(requestOtp(email));
+    await dispatch(
+      requestOtp(actor ? { email, actor } : email),
+    );
     window.setTimeout(() => setResent(false), 3000);
   };
 
@@ -133,22 +140,24 @@ export default function OtpLoginForm({
   const errorMessage =
     error === "account_not_found"
       ? t("auth.accountNotFound")
-      : error === "account_inactive"
-        ? t("auth.accountInactive")
-        : error === "login_not_allowed"
-          ? t("auth.loginNotAllowed")
-          : error === "rate_limited"
-            ? t("auth.rateLimited")
-            : error === "request_failed" ||
-                error === "Could not send verification email. Please try again."
-              ? t("auth.requestFailed")
-              : error === "verify_failed" || error === "Invalid or expired code"
-                ? t("auth.verifyFailed")
-                : error === "Account is not active"
-                  ? t("auth.accountInactive")
-                  : error
-                    ? t("auth.verifyFailed")
-                    : null;
+      : error === "email_actor_conflict"
+        ? t("auth.emailActorConflict")
+        : error === "account_inactive"
+          ? t("auth.accountInactive")
+          : error === "login_not_allowed"
+            ? t("auth.loginNotAllowed")
+            : error === "rate_limited"
+              ? t("auth.rateLimited")
+              : error === "request_failed" ||
+                  error === "Could not send verification email. Please try again."
+                ? t("auth.requestFailed")
+                : error === "verify_failed" || error === "Invalid or expired code"
+                  ? t("auth.verifyFailed")
+                  : error === "Account is not active"
+                    ? t("auth.accountInactive")
+                    : error
+                      ? t("auth.verifyFailed")
+                      : null;
 
   const Icon = icon === "mail" ? Mail : LockKeyhole;
 
@@ -190,7 +199,6 @@ export default function OtpLoginForm({
                   className="h-14 w-full rounded-xl border border-input bg-card pl-11 pr-4 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/50 focus:border-accent focus:ring-4 focus:ring-ring/20"
                 />
               </div>
-              <FieldHelper>{t("help.auth.email")}</FieldHelper>
             </label>
             {emailForm.touched.email && emailForm.errors.email ? (
               <p className="mt-2 text-xs text-destructive">
@@ -279,7 +287,6 @@ export default function OtpLoginForm({
                 placeholder="000000"
                 className="mt-2 h-16 w-full rounded-xl border border-input bg-card text-center text-2xl font-semibold tracking-[.5em] text-foreground outline-none transition placeholder:text-muted-foreground/30 focus:border-accent focus:ring-4 focus:ring-ring/20"
               />
-              <FieldHelper>{t("help.auth.code")}</FieldHelper>
             </label>
             {otpForm.touched.code && otpForm.errors.code ? (
               <p className="mt-2 text-xs text-destructive">

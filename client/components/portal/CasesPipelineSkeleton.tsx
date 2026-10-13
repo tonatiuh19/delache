@@ -33,7 +33,7 @@ function SkeletonCard() {
 
 function SkeletonColumn({ cardCount }: { cardCount: number }) {
   return (
-    <div className="flex w-[min(280px,calc(100vw-2.5rem))] shrink-0 flex-col rounded-2xl border border-border bg-muted/40">
+    <div className="flex min-w-[min(260px,85vw)] w-[min(280px,85vw)] flex-1 shrink-0 flex-col rounded-2xl border border-border bg-muted/40 lg:max-w-[22rem]">
       <div className="border-b border-border px-3 py-2.5">
         <div className="flex items-center justify-between gap-2">
           <Shimmer className="h-3 w-24" />
@@ -56,7 +56,7 @@ export default function CasesPipelineSkeleton() {
 
   return (
     <div
-      className="table-scroll -mx-1 max-w-full px-1 pb-4 pt-1"
+      className="table-scroll -mx-1 min-w-0 w-full max-w-full px-1 pb-4 pt-1"
       role="status"
       aria-busy="true"
       aria-label={t("cases.pipeline.loadingBoard")}

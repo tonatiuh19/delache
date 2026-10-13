@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Check, CircleDot, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,7 @@ import {
 import {
   buildNextStepGuidance,
   canSeeProcessRaciDetail,
+  partitionMissingGatesForViewer,
   processBlockedHowToKey,
   processGateQuickLink,
   processPointRaciBuckets,
@@ -23,7 +25,6 @@ import {
   whoCanAdvanceWorkflow,
 } from "@shared/processGuidanceRules";
 import { canManageCaseAssignments } from "@shared/portalCapabilities";
-import { SectionHelper } from "@/components/portal/FormHelpers";
 
 export function processGateLabel(
   t: (key: string, opts?: { defaultValue?: string }) => string,
@@ -43,15 +44,25 @@ function QuickLinkRow({
   if (links.length === 0) return null;
   return (
     <div className="mt-2 flex flex-wrap gap-2">
-      {links.map((link) => (
-        <a
-          key={link.id}
-          href={link.href}
-          className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-[11px] font-semibold text-foreground transition hover:border-primary hover:text-primary"
-        >
-          {t(`process.quickLink.${link.id}`)}
-        </a>
-      ))}
+      {links.map((link) =>
+        link.href.startsWith("/") ? (
+          <Link
+            key={link.id}
+            to={link.href}
+            className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-[11px] font-semibold text-foreground transition hover:border-primary hover:text-primary"
+          >
+            {t(`process.quickLink.${link.id}`)}
+          </Link>
+        ) : (
+          <a
+            key={link.id}
+            href={link.href}
+            className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-[11px] font-semibold text-foreground transition hover:border-primary hover:text-primary"
+          >
+            {t(`process.quickLink.${link.id}`)}
+          </a>
+        ),
+      )}
     </div>
   );
 }
@@ -79,6 +90,8 @@ export default function ProcessTimeline({
 
   const missing = currentGates?.missing ?? [];
   const gatesOk = currentGates?.ok === true;
+  const { actionable: actionableMissing, waiting: waitingMissing } =
+    partitionMissingGatesForViewer(missing, viewerRole);
   const guidance =
     current != null
       ? buildNextStepGuidance({
@@ -131,9 +144,8 @@ export default function ProcessTimeline({
           </p>
         )}
       </div>
-      <SectionHelper>{t("process.helper")}</SectionHelper>
 
-      <ol className="mt-4 flex gap-2 overflow-x-auto pb-2">
+      <ol className="mobile-scroll-x mt-4 flex gap-2 pb-2">
         {PROCESS_POINT_IDS.map((id) => {
           const done = current != null && id < current;
           const active = id === current;
@@ -253,11 +265,11 @@ export default function ProcessTimeline({
             {t(`process.${blockedKey}`)}
           </p>
           <ul className="mt-1.5 space-y-1 pl-0 text-[11px] text-muted-foreground">
-            {currentGates.missing.map((code) => {
+            {actionableMissing.map((code) => {
               const link = processGateQuickLink(code, viewerRole);
               return (
                 <li key={code} className="flex list-none items-start gap-1">
-                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-muted-foreground" />
+                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-primary" />
                   {link ? (
                     <a
                       href={link.href}
@@ -266,11 +278,19 @@ export default function ProcessTimeline({
                       {processGateLabel(t, code)}
                     </a>
                   ) : (
-                    <span>{processGateLabel(t, code)}</span>
+                    <span className="text-foreground">
+                      {processGateLabel(t, code)}
+                    </span>
                   )}
                 </li>
               );
             })}
+            {waitingMissing.map((code) => (
+              <li key={code} className="flex list-none items-start gap-1">
+                <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-muted-foreground" />
+                <span>{processGateLabel(t, code)}</span>
+              </li>
+            ))}
           </ul>
           {guidance?.needsPrimaryExpert && canManageCaseAssignments(viewerRole) ? (
             <p className="mt-2 text-[11px] font-semibold text-foreground">
@@ -308,6 +328,7 @@ export function buildProcessGateInput(opts: {
   evidenceCategories: readonly string[];
   hasPrimaryExpert: boolean;
   questionnaireStatus?: string | null;
+  questionnaireContentJson?: unknown;
   hasStreetView: boolean;
   hasPropertyGps: boolean;
   plaintiffQuestionnairePresent: boolean;
@@ -316,12 +337,15 @@ export function buildProcessGateInput(opts: {
   logisticsReady: boolean;
   involvesFatality?: boolean;
   hasUnpaidInvoices?: boolean;
+  documentsHandoffConfirmed?: boolean;
+  ratificationScheduledAt?: string | null;
 }): ProcessGateInput {
   return {
     documentCategories: opts.documentCategories,
     evidenceCategories: opts.evidenceCategories,
     hasPrimaryExpert: opts.hasPrimaryExpert,
     questionnaireStatus: opts.questionnaireStatus,
+    questionnaireContentJson: opts.questionnaireContentJson,
     hasStreetView: opts.hasStreetView,
     hasPropertyGps: opts.hasPropertyGps,
     plaintiffQuestionnairePresent: opts.plaintiffQuestionnairePresent,
@@ -330,9 +354,11 @@ export function buildProcessGateInput(opts: {
     reportStatus: opts.reportStatus,
     ratificationPresent: opts.documentCategories.includes("ratification"),
     courtFilingPresent: opts.documentCategories.includes("court_filing"),
+    ratificationScheduledAt: opts.ratificationScheduledAt ?? null,
     logisticsReady: opts.logisticsReady,
     involvesFatality: opts.involvesFatality,
     hasUnpaidInvoices: opts.hasUnpaidInvoices,
+    documentsHandoffConfirmed: opts.documentsHandoffConfirmed,
   };
 }
 

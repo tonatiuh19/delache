@@ -1,5 +1,11 @@
+import { useLocation } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import {
+  isCaseStepPath,
+  isNewCasePath,
+  parseCaseDetailPath,
+} from "@/hooks/usePortalCaseContext";
 
 function DarkSkeleton({
   className,
@@ -13,12 +19,99 @@ function DarkSkeleton({
   );
 }
 
+/** Nuevo expediente: header, form column, required-docs column. */
+export function IntakeCreatePageSkeleton() {
+  return (
+    <div className="min-w-0 w-full max-w-full space-y-6">
+      <div className="space-y-2">
+        <Skeleton className="h-3 w-28" />
+        <Skeleton className="h-8 w-56 max-w-full" />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-12">
+        <div className="min-w-0 space-y-5 lg:col-span-7">
+          <Skeleton className="h-11 w-full rounded-xl" />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Skeleton className="h-11 w-full rounded-xl" />
+            <Skeleton className="h-11 w-full rounded-xl" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 w-full rounded-2xl" />
+            ))}
+          </div>
+          <Skeleton className="h-20 w-full rounded-2xl" />
+          <Skeleton className="h-28 w-full rounded-2xl" />
+          <div className="flex flex-col gap-2 sm:flex-row-reverse">
+            <Skeleton className="h-11 w-full rounded-xl sm:w-32" />
+            <Skeleton className="h-11 w-full rounded-xl sm:w-28" />
+          </div>
+        </div>
+        <div className="grid content-start gap-3 sm:grid-cols-2 lg:col-span-5 lg:grid-cols-1">
+          <Skeleton className="h-44 w-full rounded-2xl" />
+          <Skeleton className="h-28 w-full rounded-2xl" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Resumen: title, step chips, main card, side stats. */
+export function CaseOverviewSkeleton() {
+  return (
+    <div className="min-w-0 w-full max-w-full space-y-6">
+      <div className="space-y-2">
+        <Skeleton className="h-3 w-28" />
+        <Skeleton className="h-8 w-40 max-w-full" />
+      </div>
+      <div className="flex gap-2 overflow-hidden">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <Skeleton key={i} className="h-14 w-16 shrink-0 rounded-xl" />
+        ))}
+      </div>
+      <div className="grid gap-4 lg:grid-cols-12">
+        <Skeleton className="h-80 w-full rounded-2xl lg:col-span-7" />
+        <div className="grid gap-3 sm:grid-cols-2 lg:col-span-5 lg:grid-cols-1">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-24 w-full rounded-2xl" />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function portalContentSkeleton(pathname: string) {
+  if (isNewCasePath(pathname)) return <IntakeCreatePageSkeleton />;
+  if (parseCaseDetailPath(pathname) || isCaseStepPath(pathname)) {
+    return <CaseOverviewSkeleton />;
+  }
+  if (pathname.startsWith("/portal/calendar")) return <CalendarPageSkeleton />;
+  if (pathname.startsWith("/portal/cases")) {
+    return <ContentPageSkeleton variant="list" />;
+  }
+  if (pathname.startsWith("/portal/notifications")) {
+    return <ContentPageSkeleton variant="inbox" withActions />;
+  }
+  if (
+    pathname.startsWith("/portal/settings") ||
+    pathname.startsWith("/portal/profile")
+  ) {
+    return <ContentPageSkeleton variant="form" />;
+  }
+  if (pathname === "/portal" || pathname === "/portal/") {
+    return <DashboardSkeleton />;
+  }
+  return <ContentPageSkeleton variant="list" />;
+}
+
 /** Full portal shell while auth/user resolves (includes sidebar). */
 export function PortalShellSkeleton({
   collapsed = false,
 }: {
   collapsed?: boolean;
 }) {
+  const { pathname } = useLocation();
+
   return (
     <div className="min-h-screen bg-muted/40">
       <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-card/90 px-4 lg:hidden">
@@ -40,7 +133,7 @@ export function PortalShellSkeleton({
         </aside>
 
         <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-          <ContentPageSkeleton variant="dashboard" />
+          {portalContentSkeleton(pathname)}
         </main>
       </div>
     </div>
@@ -138,17 +231,18 @@ export function PageHeaderSkeleton({
 
 export function CardsGridSkeleton({ count = 4 }: { count?: number }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
       {Array.from({ length: count }).map((_, i) => (
         <div
           key={i}
-          className="rounded-2xl border border-border bg-card p-4 shadow-sm"
+          className="rounded-xl border border-border bg-card px-2.5 py-2 shadow-sm sm:px-3 sm:py-2.5"
         >
-          <div className="flex items-center justify-between">
-            <Skeleton className="h-3 w-20" />
-            <Skeleton className="h-4 w-4 rounded" />
+          <div className="flex items-center justify-between gap-1.5">
+            <Skeleton className="h-2.5 w-16" />
+            <Skeleton className="h-3 w-3 rounded" />
           </div>
-          <Skeleton className="mt-4 h-8 w-16" />
+          <Skeleton className="mt-1.5 h-5 w-10" />
+          <Skeleton className="mt-1.5 h-2 w-20" />
         </div>
       ))}
     </div>
@@ -228,7 +322,7 @@ export function ContentPageSkeleton({
   className?: string;
 }) {
   return (
-    <div className={cn("mx-auto w-full max-w-6xl space-y-6", className)}>
+    <div className={cn("min-w-0 w-full max-w-full space-y-6", className)}>
       {withHeader ? <PageHeaderSkeleton withActions={withActions} /> : null}
 
       {variant === "dashboard" ? (
@@ -292,7 +386,7 @@ export function ContentPageSkeleton({
 
 export function CalendarPageSkeleton() {
   return (
-    <div className="space-y-5">
+    <div className="min-w-0 w-full max-w-full space-y-5">
       <PageHeaderSkeleton withActions />
       <div className="flex flex-wrap gap-2">
         {Array.from({ length: 7 }).map((_, i) => (
@@ -342,7 +436,7 @@ export function CalendarPageSkeleton() {
 }
 
 export function CaseDetailSkeleton() {
-  return <ContentPageSkeleton variant="detail" withHeader={false} />;
+  return <CaseOverviewSkeleton />;
 }
 
 export function DashboardSkeleton() {

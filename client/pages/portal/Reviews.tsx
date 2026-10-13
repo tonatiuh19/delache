@@ -32,16 +32,6 @@ export default function ReviewsPage() {
     loadReviews();
   }, [canAccess, loadReviews]);
 
-  useEffect(() => {
-    if (!canAccess) return;
-    const refresh = () => {
-      if (document.visibilityState !== "visible") return;
-      loadReviews();
-    };
-    document.addEventListener("visibilitychange", refresh);
-    return () => document.removeEventListener("visibilitychange", refresh);
-  }, [canAccess, loadReviews]);
-
   if (!canAccess) {
     return <Navigate to="/portal" replace />;
   }
@@ -57,7 +47,7 @@ export default function ReviewsPage() {
     pendingReviewsError !== "Insufficient permissions";
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className="min-w-0 w-full max-w-full">
       <MetaHelmet title={t("portal.reviews")} noindex />
       <PortalPageHeader
         eyebrow={t("reviews.eyebrow")}

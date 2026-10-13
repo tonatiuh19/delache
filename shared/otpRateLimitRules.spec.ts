@@ -4,7 +4,16 @@ import {
   buildOtpRateLimitKey,
   peekOtpRateLimit,
   resolveOtpRateLimit,
+  shouldEnforceOtpRateLimits,
 } from "./otpRateLimitRules";
+
+describe("shouldEnforceOtpRateLimits", () => {
+  it("skips enforcement under VITEST (no real OTP email / no sticky 429)", () => {
+    expect(shouldEnforceOtpRateLimits("true")).toBe(false);
+    expect(shouldEnforceOtpRateLimits(undefined)).toBe(true);
+    expect(shouldEnforceOtpRateLimits("")).toBe(true);
+  });
+});
 
 describe("resolveOtpRateLimit", () => {
   const now = 1_000_000;

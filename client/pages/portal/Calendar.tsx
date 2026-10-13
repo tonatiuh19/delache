@@ -14,10 +14,10 @@ import * as Yup from "yup";
 import MetaHelmet from "@/components/MetaHelmet";
 import MonthCalendar from "@/components/calendar/MonthCalendar";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
-import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import {
   CalendarPageSkeleton,
 } from "@/components/portal/PortalSkeletons";
+import DateTimePicker from "@/components/ui/date-time-picker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -119,7 +119,7 @@ export default function CalendarPage() {
 
   if (loadingEvents && events.length === 0) {
     return (
-      <div className="mx-auto max-w-7xl">
+      <div className="min-w-0 w-full max-w-full">
         <MetaHelmet title={t("portal.calendar")} noindex />
         <CalendarPageSkeleton />
       </div>
@@ -141,7 +141,7 @@ export default function CalendarPage() {
   };
 
   return (
-    <div className="mx-auto max-w-7xl space-y-5">
+    <div className="min-w-0 w-full max-w-full space-y-5">
       <MetaHelmet title={t("portal.calendar")} noindex />
 
       <PortalPageHeader
@@ -311,7 +311,6 @@ export default function CalendarPage() {
                     {t("common.cancel")}
                   </button>
                 </div>
-                <SectionHelper>{t("help.calendar.section")}</SectionHelper>
                 <div>
                   <input
                     name="title"
@@ -320,7 +319,6 @@ export default function CalendarPage() {
                     placeholder={t("calendar.titlePlaceholder")}
                     className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
                   />
-                  <FieldHelper>{t("help.calendar.title")}</FieldHelper>
                 </div>
                 <div>
                   <select
@@ -335,17 +333,15 @@ export default function CalendarPage() {
                       </option>
                     ))}
                   </select>
-                  <FieldHelper>{t("help.calendar.type")}</FieldHelper>
                 </div>
                 <div>
-                  <input
-                    type="datetime-local"
+                  <DateTimePicker
                     name="startsAt"
                     value={form.values.startsAt}
-                    onChange={form.handleChange}
-                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                    onChange={(next) =>
+                      void form.setFieldValue("startsAt", next)
+                    }
                   />
-                  <FieldHelper>{t("help.calendar.startsAt")}</FieldHelper>
                 </div>
                 <div>
                   <input
@@ -355,7 +351,6 @@ export default function CalendarPage() {
                     placeholder={t("calendar.locationPlaceholder")}
                     className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
                   />
-                  <FieldHelper>{t("help.calendar.location")}</FieldHelper>
                 </div>
                 <div>
                   <select
@@ -371,7 +366,6 @@ export default function CalendarPage() {
                       </option>
                     ))}
                   </select>
-                  <FieldHelper>{t("help.calendar.case")}</FieldHelper>
                 </div>
                 <button
                   type="submit"

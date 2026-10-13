@@ -2,6 +2,8 @@
  * Browser geolocation helper for evidence / property GPS capture.
  */
 
+import type { BrowserLocationPermission } from "@shared/locationPermissionRules";
+
 export type GeolocationResult =
   | {
       ok: true;
@@ -19,6 +21,25 @@ export type GeolocationResult =
         | "unknown";
       error: string;
     };
+
+export async function queryLocationPermission(): Promise<BrowserLocationPermission> {
+  if (typeof navigator === "undefined" || !navigator.geolocation) {
+    return "denied";
+  }
+  const perms = navigator.permissions;
+  if (!perms?.query) return "unknown";
+  try {
+    const status = await perms.query({
+      name: "geolocation" as PermissionName,
+    });
+    if (status.state === "granted") return "granted";
+    if (status.state === "denied") return "denied";
+    if (status.state === "prompt") return "prompt";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 export async function requestDevicePosition(opts?: {
   timeoutMs?: number;

@@ -6,11 +6,11 @@ alwaysApply: false
 
 # API / backend
 
-- All route handlers live in `api/index.ts` (serverless — do not split into separate route files for deploy architecture)
-- Extract **testable business rules** into `shared/*.ts` for Vitest. **Do not import runtime values** from `../shared` or `../lib` into `api/index.ts` (Vercel 500). Use `import type` only; inline the function/const bodies in `api/index.ts` and keep them in sync with `shared/` / `lib/`.
-- Only add endpoints when needed: secrets, DB, or server-only logic
-- TypeScript end-to-end; shared contracts in `shared/api.ts`
-- Any `api/index.ts` change → update `swagger.yaml`
-- Fix type errors immediately across api / shared / client
-- Logging in `lib/`: use project logger (not raw `console.log` for permanent debug)
-- Dev: single port **8080** for frontend + backend
+- All route handlers live in `api/index.ts` (serverless monolith — do not runtime-import sibling `api/*.ts`)
+- Shared types: `import type { ... } from "../shared/api"` only
+- Do **not** `import` runtime modules from `../shared/` or `../lib/` (breaks Vercel → ERR_MODULE_NOT_FOUND)
+- Keep inlined logic in sync with `shared/`; gate: `npm run check:api-inline` (also in `deploy:prod`)
+- Update `swagger.yaml` when endpoints change
+- Dev: single port **8080** for frontend + backend (`createServer()` exported for Vitest)
+- HTTP coverage: add `api/**/*.integration.test.ts` or `api/**/*.test.ts` using supertest + `api/testHelpers.ts`
+- Only add endpoints when needed (secrets, DB, server-only logic)

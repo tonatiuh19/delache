@@ -5,7 +5,7 @@ import { buildOrganizationJsonLd, buildWebSiteJsonLd } from "@/lib/siteMeta";
 
 export default function ComingSoon() {
   return (
-    <main className="relative min-h-screen overflow-hidden bg-delache-950 text-white">
+    <main className="relative min-h-screen overflow-x-clip overflow-hidden bg-delache-950 text-white">
       <MetaHelmet
         title="Estamos por llegar"
         description="DELACHE está construyendo una nueva forma de entender los peritajes eléctricos: más precisa, más transparente y completamente conectada. Pronto."

@@ -55,13 +55,10 @@ describe("documentCompleteness", () => {
     const partial = getCourtFilingCompleteness(["protesta"]);
     expect(partial.phase).toBe("court_filing");
     expect(partial.missing).toEqual(["court_filing", "ratification"]);
-    expect(shouldEmitMissingDocumentsAlert("court_delivery", partial)).toBe(
+    expect(shouldEmitMissingDocumentsAlert("validation_delivery", partial)).toBe(
       true,
     );
     expect(shouldEmitMissingDocumentsAlert("court_acceptance", partial)).toBe(
-      false,
-    );
-    expect(shouldEmitMissingDocumentsAlert("legal_validation", partial)).toBe(
       false,
     );
     const done = getCourtFilingCompleteness([
@@ -93,7 +90,7 @@ describe("documentCompleteness", () => {
 
   it("picks active checklist and KPI status membership", () => {
     expect(
-      activeCompletenessForCaseStatus("court_delivery", ["protesta"]).phase,
+      activeCompletenessForCaseStatus("validation_delivery", ["protesta"]).phase,
     ).toBe("court_filing");
     expect(
       activeCompletenessForCaseStatus("additional_docs", []).phase,
@@ -106,9 +103,9 @@ describe("documentCompleteness", () => {
     expect(caseStatusCountsTowardMissingDocsKpi("court_acceptance")).toBe(
       false,
     );
-    expect(
-      activeCompletenessForCaseStatus("legal_validation", ["protesta"]).phase,
-    ).toBe("intake");
+    expect(caseStatusCountsTowardMissingDocsKpi("validation_delivery")).toBe(
+      true,
+    );
     expect(
       activeCompletenessForCaseStatus("additional_docs", [], {
         involvesFatality: true,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
@@ -10,6 +10,8 @@ import {
   ClipboardList,
   FileText,
   FileWarning,
+  Kanban,
+  MapPinned,
   PauseCircle,
   Plus,
   Receipt,
@@ -37,6 +39,7 @@ import {
   type DashboardCtaId,
   type DashboardMetricKey,
 } from "@shared/dashboardPersonaRules";
+import { roleMission } from "@shared/roleMissionRules";
 import { cn } from "@/lib/utils";
 
 const METRIC_ICONS: Record<DashboardMetricKey, LucideIcon> = {
@@ -69,6 +72,9 @@ const CTA_ICONS: Record<DashboardCtaId, LucideIcon> = {
   finance: Receipt,
   team: Users,
   notifications: Bell,
+  reviews: ClipboardList,
+  pipeline: Kanban,
+  fieldOps: MapPinned,
 };
 
 function metricValue(
@@ -142,6 +148,14 @@ function DashboardMetricTile({
 }
 
 export default function PortalDashboard() {
+  const actor = useAppSelector((s) => s.auth.user?.actor);
+  if (actor === "law_firm") {
+    return <Navigate to="/portal/cases" replace />;
+  }
+  return <StaffDashboard />;
+}
+
+function StaffDashboard() {
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const role = useAppSelector((s) => s.auth.user?.role);
@@ -151,6 +165,7 @@ export default function PortalDashboard() {
   const { items, loading: loadingCases } = useAppSelector((s) => s.cases);
 
   const persona = dashboardPersonaKey(role);
+  const mission = useMemo(() => roleMission(role), [role]);
   const metricKeys = useMemo(() => dashboardMetricsForRole(role), [role]);
   const ctas = useMemo(() => dashboardCtasForRole(role), [role]);
   const showOrgKpis = canSeeOrgKpiStrip(role);
@@ -172,7 +187,7 @@ export default function PortalDashboard() {
   );
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="min-w-0 w-full max-w-full space-y-6">
       <MetaHelmet title={t("portal.dashboard")} noindex />
       <PortalPageHeader
         eyebrow={t("dashboard.eyebrow")}
@@ -180,22 +195,88 @@ export default function PortalDashboard() {
         description={t(`dashboard.persona.${persona}`)}
       />
 
-      <section className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5">
-        <h2 className="text-sm font-bold">{t("dashboard.quickActions")}</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {t("dashboard.quickActionsHint")}
-        </p>
-        <div className="mt-3 flex flex-wrap gap-2">
+      {mission ? (
+        <section className="overflow-x-clip rounded-2xl border border-primary/25 bg-gradient-to-br from-primary/10 via-card to-card p-4 shadow-sm sm:p-5">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-primary">
+            {t("missionControl.eyebrow")}
+          </p>
+          <h2 className="mt-1 font-[Manrope] text-lg font-bold text-foreground sm:text-xl">
+            {t(mission.titleKey)}
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            {t(mission.subtitleKey)}
+          </p>
+          <Link
+            to={mission.listHref}
+            className="mt-3 inline-flex h-11 min-h-[44px] items-center rounded-xl bg-accent px-4 text-xs font-semibold text-accent-foreground transition hover:opacity-90"
+          >
+            {t("missionControl.openQueue")} →
+          </Link>
+        </section>
+      ) : null}
+
+      {items.some(
+        (c) => c.listado?.advanceReleased && !c.listado?.advancePaid,
+      ) &&
+      (role === "accountant" || role === "admin") ? (
+        <section className="overflow-x-clip rounded-2xl border border-primary/30 bg-card p-4 shadow-sm sm:p-5">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-primary">
+            {t("cases.anticipoCue.title")}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t("cases.anticipoCue.body")}
+          </p>
+          <Link
+            to="/portal/finance"
+            className="mt-3 inline-flex h-11 min-h-[44px] items-center rounded-xl border border-border bg-background px-4 text-xs font-semibold text-foreground transition hover:border-primary hover:text-primary"
+          >
+            {t("cases.anticipoCue.cta")} →
+          </Link>
+        </section>
+      ) : null}
+
+      <section className="overflow-x-clip rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold">{t("dashboard.quickActions")}</h2>
+          </div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-primary">
+            {t(`dashboard.personaBadge.${persona}`)}
+          </p>
+        </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {ctas.map((cta) => {
             const Icon = CTA_ICONS[cta.id];
+            const primary = Boolean(cta.primary);
             return (
               <Link
-                key={cta.id}
+                key={`${cta.id}-${cta.href}`}
                 to={cta.href}
-                className="inline-flex h-10 items-center gap-2 rounded-xl border border-border bg-background px-3 text-xs font-semibold text-foreground transition hover:border-primary hover:text-primary"
+                className={cn(
+                  "group flex min-h-[52px] items-center gap-3 rounded-2xl border px-3.5 py-3 transition",
+                  primary
+                    ? "border-primary/40 bg-gradient-to-br from-primary/15 via-card to-card shadow-sm hover:border-primary"
+                    : "border-border bg-background hover:border-primary/40 hover:bg-muted/40",
+                )}
               >
-                <Icon size={14} className="text-primary" />
-                {t(`dashboard.cta.${cta.id}`)}
+                <span
+                  className={cn(
+                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border",
+                    primary
+                      ? "border-primary/30 bg-primary text-primary-foreground"
+                      : "border-border bg-card text-primary",
+                  )}
+                >
+                  <Icon size={18} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold text-foreground">
+                    {t(`dashboard.cta.${cta.id}`)}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] font-medium text-muted-foreground opacity-0 transition group-hover:opacity-100">
+                    {t("dashboard.metricOpen")} →
+                  </span>
+                </span>
               </Link>
             );
           })}
@@ -216,9 +297,6 @@ export default function PortalDashboard() {
       {showOrgKpis ? (
         <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
           <h2 className="text-sm font-bold">{t("dashboard.kpiTitle")}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("dashboard.kpiHint")}
-          </p>
           {loadingKpis && !kpis ? (
             <div className="mt-4 grid gap-3 sm:grid-cols-3">
               <Skeleton className="h-16 w-full" />
@@ -296,9 +374,6 @@ export default function PortalDashboard() {
       ) : (
         <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
           <h2 className="text-sm font-bold">{t("dashboard.myLoadTitle")}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("dashboard.myLoadHint")}
-          </p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-border bg-background px-3 py-3">
               <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">

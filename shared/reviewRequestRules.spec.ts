@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   defaultReviewSlaBusinessDays,
   questionnaireStatusFromReview,
+  questionnaireStatusFromReviewStage,
   reportStatusFromReview,
   resolveReviewCompletion,
   reviewStageForReportStatus,
@@ -53,5 +54,23 @@ describe("SLA + status mapping", () => {
     expect(reportStatusFromReview("grammar_qa", "changes_requested")).toBe(
       "changes_requested",
     );
+  });
+
+  it("maps questionnaire status from review stage", () => {
+    expect(
+      questionnaireStatusFromReviewStage("grammar_qa", "approved"),
+    ).toBe("legal_review");
+    expect(
+      questionnaireStatusFromReviewStage("internal_legal", "approved"),
+    ).toBe("approved");
+    expect(
+      questionnaireStatusFromReviewStage("grammar_qa", "changes_requested"),
+    ).toBe("changes_requested");
+    expect(
+      questionnaireStatusFromReviewStage("grammar_qa", "rejected"),
+    ).toBe("rejected");
+    expect(
+      questionnaireStatusFromReviewStage("technical_director", "approved"),
+    ).toBeNull();
   });
 });

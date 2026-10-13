@@ -19,7 +19,6 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import LocalEmailCtaLegend from "@/components/portal/LocalEmailCtaLegend";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -34,7 +33,6 @@ import { cn } from "@/lib/utils";
 
 const STAFF_ROLES: UserRole[] = [
   "admin",
-  "case_coordinator",
   "expert",
   "legal",
   "logistics",
@@ -306,7 +304,6 @@ export default function TeamMemberSheet({
               onSubmit={form.handleSubmit}
               className="space-y-3"
             >
-              <SectionHelper>{t("help.team.section")}</SectionHelper>
               <label className="block text-xs font-semibold text-muted-foreground">
                 {t("team.firstName")}
                 <input
@@ -315,7 +312,6 @@ export default function TeamMemberSheet({
                   onChange={form.handleChange}
                   className="mt-1.5 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
                 />
-                <FieldHelper>{t("help.team.firstName")}</FieldHelper>
               </label>
               <label className="block text-xs font-semibold text-muted-foreground">
                 {t("team.lastName")}
@@ -325,7 +321,6 @@ export default function TeamMemberSheet({
                   onChange={form.handleChange}
                   className="mt-1.5 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm"
                 />
-                <FieldHelper>{t("help.team.lastName")}</FieldHelper>
               </label>
               <label className="block text-xs font-semibold text-muted-foreground">
                 {t("team.colRole")}
@@ -341,7 +336,6 @@ export default function TeamMemberSheet({
                     </option>
                   ))}
                 </select>
-                <FieldHelper>{t("help.team.role")}</FieldHelper>
               </label>
               <button
                 type="submit"

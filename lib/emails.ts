@@ -556,7 +556,7 @@ export function buildInviteStaffEmail(opts: {
 }): EmailPayload {
   const s = emailStrings(opts.locale);
   const roleLabel = emailStaffRoleLabel(opts.role, opts.locale);
-  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/portal/login`;
+  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/login`;
   const banner =
     opts.locale === "es"
       ? opts.resend
@@ -598,7 +598,7 @@ export function buildInviteClientEmail(opts: {
   resend?: boolean;
 }): EmailPayload {
   const s = emailStrings(opts.locale);
-  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/client/login`;
+  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/login`;
   const banner =
     opts.locale === "es"
       ? opts.resend

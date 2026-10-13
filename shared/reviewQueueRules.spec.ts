@@ -15,10 +15,12 @@ describe("reviewQueueRules", () => {
     expect(actionableReviewStagesForRole("legal")).toEqual(["internal_legal"]);
   });
 
-  it("allows admin all actionable stages; coordinator excludes external firm", () => {
+  it("allows admin all actionable stages including external firm override", () => {
     expect(actionableReviewStagesForRole("admin")).toHaveLength(4);
-    expect(actionableReviewStagesForRole("case_coordinator")).toHaveLength(3);
-    expect(actionableReviewStagesForRole("case_coordinator")).not.toContain(
+    expect(actionableReviewStagesForRole("admin")).toContain(
+      "external_law_firm",
+    );
+    expect(actionableReviewStagesForRole("legal")).not.toContain(
       "external_law_firm",
     );
   });

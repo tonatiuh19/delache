@@ -1,5 +1,6 @@
 import { ExternalLink, Eye, MapPin, Navigation } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/utils";
 import {
   googleMapsDirectionsUrl,
   googleMapsEmbedUrl,
@@ -16,6 +17,8 @@ type Props = {
   className?: string;
   compact?: boolean;
   showStreetView?: boolean;
+  /** Taller embed for full-width case detail views */
+  mapSize?: "default" | "large";
 };
 
 function mapsEmbedApiKey(): string | undefined {
@@ -32,6 +35,7 @@ export default function LocationMapPanel({
   className,
   compact,
   showStreetView = true,
+  mapSize = "default",
 }: Props) {
   const { t } = useTranslation();
   const embed = googleMapsEmbedUrl({
@@ -110,7 +114,10 @@ export default function LocationMapPanel({
         <iframe
           title={label || t("maps.location")}
           src={embed}
-          className="h-48 w-full border-0"
+          className={cn(
+            "w-full border-0",
+            mapSize === "large" ? "h-56 sm:h-72 xl:h-96" : "h-48",
+          )}
           loading="lazy"
           referrerPolicy="no-referrer-when-downgrade"
           allowFullScreen

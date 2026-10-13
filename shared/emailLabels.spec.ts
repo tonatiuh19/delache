@@ -7,13 +7,13 @@ import {
 describe("emailLabels", () => {
   it("localizes staff roles for Spanish invites", () => {
     expect(emailStaffRoleLabel("expert", "es")).toBe("Perito");
-    expect(emailStaffRoleLabel("case_coordinator", "es")).toBe("Coordinador");
+    expect(emailStaffRoleLabel("admin", "es")).toBe("Admin");
     expect(emailStaffRoleLabel("logistics", "es")).toBe("Logística");
   });
 
   it("localizes staff roles for English invites", () => {
     expect(emailStaffRoleLabel("expert", "en")).toBe("Expert");
-    expect(emailStaffRoleLabel("case_coordinator", "en")).toBe("Coordinator");
+    expect(emailStaffRoleLabel("admin", "en")).toBe("Admin");
   });
 
   it("localizes assignment roles", () => {
@@ -23,6 +23,7 @@ describe("emailLabels", () => {
     expect(emailAssignmentRoleLabel("technical_director", "en")).toBe(
       "Technical director",
     );
+    expect(emailAssignmentRoleLabel("coordinator", "es")).toBe("Coordinador");
   });
 
   it("falls back to the raw key for unknown roles", () => {

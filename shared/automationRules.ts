@@ -29,19 +29,24 @@ export type AutomationAction =
       reason: string;
     };
 
-export function automationOnQuestionnaireApproved(): AutomationAction[] {
+export function automationOnQuestionnaireQaApproved(): AutomationAction[] {
   return [
     {
       type: "create_invoice",
       invoiceType: "advance",
-      reason: "Questionnaire approved — trigger advance payment",
+      reason: "Questionnaire passed QA — trigger advance payment (P3)",
     },
     {
       type: "notify",
       notificationType: "invoice_pending",
-      reason: "Advance invoice pending after questionnaire approval",
+      reason: "Advance invoice pending after questionnaire QA approval",
     },
   ];
+}
+
+/** @deprecated Advance now fires on QA approval (P3), not legal approval. */
+export function automationOnQuestionnaireApproved(): AutomationAction[] {
+  return automationOnQuestionnaireQaApproved();
 }
 
 export function automationOnInspectionCompleted(): AutomationAction[] {

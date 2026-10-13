@@ -7,8 +7,23 @@ import type {
   VerifyOtpResponse,
 } from "@shared/api";
 import type { AuthActor } from "@shared/authActors";
+import {
+  CLIENT_TOKEN_KEY,
+  STAFF_TOKEN_KEY,
+} from "@shared/authActors";
+import { resolvePortalSessionActor } from "@shared/portalSessionRules";
+import {
+  OTP_PENDING_STORAGE_KEY,
+  parseOtpPending,
+  serializeOtpPending,
+} from "@shared/unifiedLoginRules";
+import { shouldDropSessionAfterMe } from "@shared/sessionPersistRules";
 import { normalizeLocale } from "@shared/i18n";
-import api, { getSessionToken, setSessionToken } from "@/lib/api";
+import api, {
+  getSessionToken,
+  setSessionToken,
+  clearAllSessionTokens,
+} from "@/lib/api";
 import i18n from "@/i18n";
 
 interface AuthState {
@@ -19,22 +34,65 @@ interface AuthState {
   verifyingOtp: boolean;
   updatingPrefs: boolean;
   error: string | null;
+  /** Saved token is still in localStorage; /me failed for a transient reason. */
+  sessionRestoreFailed: boolean;
   otpSentTo: string | null;
+  /** Actor used for the in-flight / last successful OTP request. */
+  otpActor: AuthActor | null;
 }
 
+/** Prefer whichever session token exists (portal hosts both actors). */
 function inferActor(): AuthActor {
-  if (
-    typeof window !== "undefined" &&
-    window.location.pathname.startsWith("/client")
-  ) {
-    return "law_firm";
-  }
-  return "staff";
+  if (typeof window === "undefined") return "staff";
+  return (
+    resolvePortalSessionActor({
+      staffToken: localStorage.getItem(STAFF_TOKEN_KEY),
+      lawFirmToken: localStorage.getItem(CLIENT_TOKEN_KEY),
+    }) ?? "staff"
+  );
 }
 
-function authPrefix(actor: AuthActor = inferActor()): string {
+function authPrefix(actor: AuthActor): string {
   return actor === "law_firm" ? "/api/auth/client" : "/api/auth/staff";
 }
+
+function otpErrorCode(err: unknown): string {
+  const data = (err as { response?: { data?: { error?: string; code?: string } } })
+    ?.response?.data;
+  return data?.code || data?.error || "request_failed";
+}
+
+function readPendingOtp(): { email: string; actor: AuthActor } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return parseOtpPending(sessionStorage.getItem(OTP_PENDING_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function writePendingOtp(email: string, actor: AuthActor) {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(
+      OTP_PENDING_STORAGE_KEY,
+      serializeOtpPending({ email, actor }),
+    );
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+function clearPendingOtp() {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(OTP_PENDING_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+const pendingOtp = typeof window !== "undefined" ? readPendingOtp() : null;
 
 const initialToken =
   typeof window !== "undefined" ? getSessionToken(inferActor()) : null;
@@ -47,26 +105,62 @@ const initialState: AuthState = {
   verifyingOtp: false,
   updatingPrefs: false,
   error: null,
-  otpSentTo: null,
+  sessionRestoreFailed: false,
+  otpSentTo: pendingOtp?.email ?? null,
+  otpActor: pendingOtp?.actor ?? null,
 };
+
+async function postRequestOtpActor(
+  email: string,
+  actor: AuthActor,
+): Promise<{ email: string; message: string; actor: AuthActor }> {
+  const { data } = await api.post<RequestOtpResponse>(
+    `${authPrefix(actor)}/request-otp`,
+    {
+      email,
+      locale: normalizeLocale(i18n.language),
+    },
+  );
+  return { email, message: data.message, actor };
+}
+
+async function postRequestOtpUnified(
+  email: string,
+): Promise<{ email: string; message: string; actor: AuthActor }> {
+  const { data } = await api.post<RequestOtpResponse>(
+    "/api/auth/request-otp",
+    {
+      email,
+      locale: normalizeLocale(i18n.language),
+    },
+  );
+  const actor = data.actor;
+  if (actor !== "staff" && actor !== "law_firm") {
+    throw Object.assign(new Error("missing_actor"), {
+      response: { data: { code: "request_failed", error: "request_failed" } },
+    });
+  }
+  return { email, message: data.message, actor };
+}
 
 export const requestOtp = createAsyncThunk(
   "auth/requestOtp",
-  async (email: string, { rejectWithValue }) => {
+  async (
+    payload: string | { email: string; actor?: AuthActor },
+    { rejectWithValue },
+  ) => {
+    const email =
+      typeof payload === "string" ? payload.trim() : payload.email.trim();
+    const forcedActor =
+      typeof payload === "string" ? undefined : payload.actor;
+
     try {
-      const { data } = await api.post<RequestOtpResponse>(
-        `${authPrefix()}/request-otp`,
-        {
-          email,
-          locale: normalizeLocale(i18n.language),
-        },
-      );
-      return { email, message: data.message };
+      if (forcedActor) {
+        return await postRequestOtpActor(email, forcedActor);
+      }
+      return await postRequestOtpUnified(email);
     } catch (err: unknown) {
-      const data = (err as { response?: { data?: { error?: string; code?: string } } })
-        ?.response?.data;
-      const message = data?.code || data?.error || "request_failed";
-      return rejectWithValue(message);
+      return rejectWithValue(otpErrorCode(err));
     }
   },
 );
@@ -74,15 +168,19 @@ export const requestOtp = createAsyncThunk(
 export const verifyOtp = createAsyncThunk(
   "auth/verifyOtp",
   async (
-    payload: { email: string; code: string },
-    { rejectWithValue },
+    payload: { email: string; code: string; actor?: AuthActor },
+    { getState, rejectWithValue },
   ) => {
+    const state = getState() as { auth: AuthState };
+    const actor = payload.actor ?? state.auth.otpActor ?? inferActor();
     try {
       const { data } = await api.post<VerifyOtpResponse>(
-        `${authPrefix()}/verify-otp`,
-        payload,
+        `${authPrefix(actor)}/verify-otp`,
+        { email: payload.email, code: payload.code },
       );
+      clearAllSessionTokens();
       setSessionToken(data.token, data.user.actor);
+      clearPendingOtp();
       if (data.user.preferredLanguage) {
         await i18n.changeLanguage(data.user.preferredLanguage);
       }
@@ -109,11 +207,13 @@ export const fetchMe = createAsyncThunk(
       }
       return data.user;
     } catch (err: unknown) {
-      setSessionToken(null, actor);
-      const message =
-        (err as { response?: { data?: { error?: string } } })?.response?.data
-          ?.error || "unauthorized";
-      return rejectWithValue(message);
+      const status = (err as { response?: { status?: number } })?.response
+        ?.status;
+      if (shouldDropSessionAfterMe(status)) {
+        setSessionToken(null, actor);
+        return rejectWithValue("unauthorized");
+      }
+      return rejectWithValue("session_check_failed");
     }
   },
 );
@@ -125,7 +225,7 @@ export const logout = createAsyncThunk("auth/logout", async () => {
   } catch {
     // ignore network errors on logout
   } finally {
-    setSessionToken(null, actor);
+    clearAllSessionTokens();
   }
 });
 
@@ -156,6 +256,8 @@ const authSlice = createSlice({
     },
     clearOtpSent(state) {
       state.otpSentTo = null;
+      state.otpActor = null;
+      clearPendingOtp();
     },
   },
   extraReducers: (builder) => {
@@ -167,10 +269,14 @@ const authSlice = createSlice({
       .addCase(requestOtp.fulfilled, (state, action) => {
         state.requestingOtp = false;
         state.otpSentTo = action.payload.email;
+        state.otpActor = action.payload.actor;
+        writePendingOtp(action.payload.email, action.payload.actor);
       })
       .addCase(requestOtp.rejected, (state, action) => {
         state.requestingOtp = false;
         state.error = (action.payload as string) || "request_failed";
+        state.otpActor = null;
+        clearPendingOtp();
       })
       .addCase(verifyOtp.pending, (state) => {
         state.verifyingOtp = true;
@@ -181,6 +287,10 @@ const authSlice = createSlice({
         state.token = action.payload.token;
         state.user = action.payload.user;
         state.loading = false;
+        state.sessionRestoreFailed = false;
+        state.otpActor = action.payload.user.actor;
+        state.otpSentTo = null;
+        clearPendingOtp();
       })
       .addCase(verifyOtp.rejected, (state, action) => {
         state.verifyingOtp = false;
@@ -188,23 +298,33 @@ const authSlice = createSlice({
       })
       .addCase(fetchMe.pending, (state) => {
         state.loading = true;
+        state.sessionRestoreFailed = false;
       })
       .addCase(fetchMe.fulfilled, (state, action) => {
         state.loading = false;
+        state.sessionRestoreFailed = false;
         state.user = action.payload;
       })
-      .addCase(fetchMe.rejected, (state) => {
+      .addCase(fetchMe.rejected, (state, action) => {
         state.loading = false;
-        state.user = null;
-        state.token = null;
+        if (action.payload === "unauthorized") {
+          state.user = null;
+          state.token = null;
+          state.sessionRestoreFailed = false;
+          return;
+        }
+        state.sessionRestoreFailed = true;
       })
       .addCase(logout.fulfilled, (state) => {
         state.user = null;
         state.token = null;
         state.otpSentTo = null;
+        state.otpActor = null;
         state.error = null;
+        state.sessionRestoreFailed = false;
         state.loading = false;
         state.updatingPrefs = false;
+        clearPendingOtp();
       })
       .addCase(updatePreferences.pending, (state) => {
         state.updatingPrefs = true;

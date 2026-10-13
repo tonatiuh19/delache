@@ -7,7 +7,6 @@ import { Eye, Search } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
 import PortalListPanel from "@/components/portal/PortalListPanel";
-import { FieldHelper } from "@/components/portal/FormHelpers";
 import DocumentPreviewSheet, {
   asPreviewableDocument,
   type PreviewableDocument,
@@ -47,7 +46,7 @@ export default function DocumentsPage() {
   }, [dispatch]);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="min-w-0 w-full max-w-full space-y-6">
       <MetaHelmet title={t("portal.documents")} noindex />
       {loadingDocuments && documentsIndex.length === 0 ? (
         <ContentPageSkeleton variant="list" withActions />
@@ -86,7 +85,6 @@ export default function DocumentsPage() {
                     {t("documents.search")}
                   </button>
                 </form>
-                <FieldHelper className="mt-2">{t("help.documents.search")}</FieldHelper>
               </div>
             }
           >

@@ -13,6 +13,9 @@ import type {
   DocumentsIndexResponse,
   GlobalSearchHit,
   GlobalSearchResponse,
+  FirmMemberItem,
+  FirmMembersResponse,
+  InviteFirmMemberRequest,
   InviteTeamMemberRequest,
   InvoiceSummary,
   InvoicesListQuery,
@@ -40,6 +43,12 @@ interface PortalState {
   membersPagination: PaginationInfo | null;
   selectedMemberDetail: TeamMemberDetailResponse | null;
   lawFirms: LawFirmSummary[];
+  firmMembers: FirmMemberItem[];
+  firmMembersMeta: {
+    canManage: boolean;
+    lawFirmId: number;
+    lawFirmName: string | null;
+  } | null;
   notifications: NotificationItem[];
   unreadCount: number;
   caseNumberSettings: CaseNumberSettings | null;
@@ -54,6 +63,7 @@ interface PortalState {
   loadingEvents: boolean;
   loadingInvoices: boolean;
   loadingMembers: boolean;
+  loadingFirmMembers: boolean;
   loadingMemberDetail: boolean;
   loadingSettings: boolean;
   loadingNotifications: boolean;
@@ -77,6 +87,8 @@ const initialState: PortalState = {
   membersPagination: null,
   selectedMemberDetail: null,
   lawFirms: [],
+  firmMembers: [],
+  firmMembersMeta: null,
   notifications: [],
   unreadCount: 0,
   caseNumberSettings: null,
@@ -93,6 +105,7 @@ const initialState: PortalState = {
   loadingEvents: false,
   loadingInvoices: false,
   loadingMembers: false,
+  loadingFirmMembers: false,
   loadingMemberDetail: false,
   loadingSettings: false,
   loadingNotifications: false,
@@ -429,6 +442,33 @@ export const createLawFirm = createAsyncThunk(
   },
 );
 
+export const fetchFirmMembers = createAsyncThunk(
+  "portal/fetchFirmMembers",
+  async (_, { rejectWithValue }) => {
+    try {
+      const { data } = await api.get<FirmMembersResponse>("/api/firm/members");
+      return data;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "firm_members_failed"));
+    }
+  },
+);
+
+export const inviteFirmMember = createAsyncThunk(
+  "portal/inviteFirmMember",
+  async (payload: InviteFirmMemberRequest, { rejectWithValue }) => {
+    try {
+      const { data } = await api.post<{ member: FirmMemberItem }>(
+        "/api/firm/members",
+        payload,
+      );
+      return data.member;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "firm_invite_failed"));
+    }
+  },
+);
+
 export const fetchDocumentsIndex = createAsyncThunk(
   "portal/fetchDocumentsIndex",
   async (
@@ -622,7 +662,10 @@ const portalSlice = createSlice({
         state.error = (action.payload as string) || "payment_failed";
       })
       .addCase(inviteTeamMember.fulfilled, (state, action) => {
-        state.members = [action.payload, ...state.members];
+        // Staff Equipo list is staff_users only; despacho invites are not listed here.
+        if (action.payload.role !== "law_firm_user") {
+          state.members = [action.payload, ...state.members];
+        }
       })
       .addCase(inviteTeamMember.rejected, (state, action) => {
         state.error = (action.payload as string) || "invite_failed";
@@ -719,6 +762,29 @@ const portalSlice = createSlice({
       })
       .addCase(createLawFirm.rejected, (state, action) => {
         state.error = (action.payload as string) || "law_firm_create_failed";
+      })
+      .addCase(fetchFirmMembers.pending, (state) => {
+        state.loadingFirmMembers = true;
+        state.error = null;
+      })
+      .addCase(fetchFirmMembers.fulfilled, (state, action) => {
+        state.loadingFirmMembers = false;
+        state.firmMembers = action.payload.members;
+        state.firmMembersMeta = {
+          canManage: action.payload.canManage,
+          lawFirmId: action.payload.lawFirmId,
+          lawFirmName: action.payload.lawFirmName,
+        };
+      })
+      .addCase(fetchFirmMembers.rejected, (state, action) => {
+        state.loadingFirmMembers = false;
+        state.error = (action.payload as string) || "firm_members_failed";
+      })
+      .addCase(inviteFirmMember.fulfilled, (state, action) => {
+        state.firmMembers = [action.payload, ...state.firmMembers];
+      })
+      .addCase(inviteFirmMember.rejected, (state, action) => {
+        state.error = (action.payload as string) || "firm_invite_failed";
       })
       .addCase(fetchDocumentsIndex.pending, (state) => {
         state.loadingDocuments = true;

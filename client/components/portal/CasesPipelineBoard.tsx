@@ -11,6 +11,7 @@ import {
 } from "@shared/casePipelineRules";
 import type { WorkflowTransitionOpts } from "@shared/caseWorkflow";
 import ListadoFlagStrip from "@/components/portal/ListadoFlagStrip";
+import CaseOwnershipBadges from "@/components/portal/CaseOwnershipBadges";
 import CasesPipelineSkeleton from "@/components/portal/CasesPipelineSkeleton";
 import {
   AlertDialog,
@@ -115,17 +116,18 @@ function PipelineCard({
           {caseItem.title}
         </p>
         <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
-          {[
-            caseItem.primaryExpertName,
-            caseItem.lawFirmName,
-            caseItem.propertyCity,
-          ]
+          {[caseItem.lawFirmName, caseItem.propertyCity]
             .filter(Boolean)
             .join(" · ") || t("cases.noLocation")}
         </p>
+        <CaseOwnershipBadges caseItem={caseItem} className="mt-2" max={3} />
         {caseItem.listado ? (
           <div className="mt-2">
-            <ListadoFlagStrip listado={caseItem.listado} compact />
+            <ListadoFlagStrip
+              listado={caseItem.listado}
+              status={caseItem.status}
+              compact
+            />
           </div>
         ) : null}
         <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-primary opacity-0 transition group-hover:opacity-100">
@@ -271,7 +273,7 @@ export default function CasesPipelineBoard({
               <div
                 key={colStatus}
                 className={cn(
-                  "flex w-[min(280px,calc(100vw-2.5rem))] shrink-0 flex-col rounded-2xl border bg-muted/30 transition-all",
+                  "flex min-w-[min(260px,85vw)] w-[min(280px,85vw)] flex-1 shrink-0 flex-col rounded-2xl border bg-muted/30 transition-all lg:max-w-[22rem]",
                   isDragTarget && canDrop
                     ? "border-primary ring-2 ring-primary/25 scale-[1.01]"
                     : isDragTarget && dropLock

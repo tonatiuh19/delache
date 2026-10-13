@@ -9,8 +9,9 @@ SET TIME_ZONE = '+00:00';
 -- ---------------------------------------------------------------------------
 -- Identity & auth (passwordless OTP) — athlete-hub style split actors
 -- staff_users  → /portal  (JWT actor=staff)
--- law_firm_users → /client (JWT actor=law_firm)
--- Same email MAY exist in both tables independently.
+-- law_firm_users → /portal (JWT actor=law_firm)
+-- Product rule (Q5-A): one email = one actor. App rejects cross-table duplicates
+-- on invite/create; login still prefers staff if a legacy dual row exists.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS `staff_users` (
@@ -23,7 +24,6 @@ CREATE TABLE IF NOT EXISTS `staff_users` (
   `phone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `role` enum(
     'admin',
-    'case_coordinator',
     'expert',
     'legal',
     'logistics',
@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS `staff_users` (
   `avatar_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `preferred_language` varchar(5) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'es',
   `preferred_theme` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'system',
-  `show_form_helpers` tinyint(1) NOT NULL DEFAULT 1,
+  `show_form_helpers` tinyint(1) NOT NULL DEFAULT 0,
+  `show_process_guidance` tinyint(1) NOT NULL DEFAULT 0,
   `timezone` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'America/Mexico_City',
   `last_login_at` datetime DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -97,7 +98,8 @@ CREATE TABLE IF NOT EXISTS `law_firm_users` (
   `avatar_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `preferred_language` varchar(5) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'es',
   `preferred_theme` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'system',
-  `show_form_helpers` tinyint(1) NOT NULL DEFAULT 1,
+  `show_form_helpers` tinyint(1) NOT NULL DEFAULT 0,
+  `show_process_guidance` tinyint(1) NOT NULL DEFAULT 0,
   `timezone` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'America/Mexico_City',
   `last_login_at` datetime DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -168,6 +170,7 @@ CREATE TABLE IF NOT EXISTS `law_firms` (
   `state` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `postal_code` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `country` char(2) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'MX',
+  `default_court_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `status` enum('active','inactive') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active',
   `notes` text COLLATE utf8mb4_unicode_ci,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -221,11 +224,9 @@ CREATE TABLE IF NOT EXISTS `cases` (
     'legal_review_questionnaire',
     'additional_docs',
     'court_acceptance',
-    'logistics',
-    'inspection',
+    'field_ops',
     'technical_report',
-    'legal_validation',
-    'court_delivery',
+    'validation_delivery',
     'accounting',
     'completed',
     'on_hold',
@@ -243,10 +244,18 @@ CREATE TABLE IF NOT EXISTS `cases` (
   `involves_fatality` tinyint(1) NOT NULL DEFAULT 0,
   `gps_validated_at` datetime DEFAULT NULL,
   `street_view_validated_at` datetime DEFAULT NULL,
+  `documents_handoff_confirmed_at` datetime DEFAULT NULL COMMENT 'P2: coordinator confirmed intake package reached primary expert',
+  `documents_handoff_confirmed_by` int unsigned DEFAULT NULL COMMENT 'Staff who confirmed P2 handoff',
+  `expediente_approved_at` datetime DEFAULT NULL COMMENT 'P1: admin approved intake package (Aprobar expediente)',
+  `expediente_approved_by` int unsigned DEFAULT NULL COMMENT 'Staff who approved the expediente',
+  `ratification_scheduled_at` datetime DEFAULT NULL COMMENT 'P9: judicial ratification hearing scheduled (before evidence upload)',
   `power_line_verified_at` datetime DEFAULT NULL,
   `intake_received_at` datetime DEFAULT NULL,
   `court_acceptance_at` datetime DEFAULT NULL,
+  `protesta_modality` enum('presencial','virtual') COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'P6: presencial (print+scan) or virtual (signed upload)',
   `inspection_deadline_at` datetime DEFAULT NULL COMMENT '10 business-day countdown after protesta is filed',
+  `external_court_deadline_at` datetime DEFAULT NULL COMMENT 'Optional external court plazo; null = process SLAs only',
+  `dictamen_due_at` datetime DEFAULT NULL COMMENT 'Field ops: date the dictamen must be finished before leaving the step',
   `completed_at` datetime DEFAULT NULL,
   `cancelled_at` datetime DEFAULT NULL,
   `cancel_reason` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
@@ -268,7 +277,9 @@ CREATE TABLE IF NOT EXISTS `cases` (
   CONSTRAINT `fk_cases_law_firm` FOREIGN KEY (`law_firm_id`) REFERENCES `law_firms` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_cases_expert` FOREIGN KEY (`assigned_expert_id`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_cases_coordinator` FOREIGN KEY (`assigned_coordinator_id`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL,
-  CONSTRAINT `fk_cases_created_by` FOREIGN KEY (`created_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL
+  CONSTRAINT `fk_cases_created_by` FOREIGN KEY (`created_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_cases_handoff_confirmed_by` FOREIGN KEY (`documents_handoff_confirmed_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_cases_expediente_approved_by` FOREIGN KEY (`expediente_approved_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `case_assignments` (
@@ -326,7 +337,8 @@ CREATE TABLE IF NOT EXISTS `case_deadlines` (
     'court_delivery',
     'payment',
     'custom',
-    'expert_delivery'
+    'expert_delivery',
+    'intake_correction'
   ) COLLATE utf8mb4_unicode_ci NOT NULL,
   `title` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `due_at` datetime NOT NULL,
@@ -383,6 +395,7 @@ CREATE TABLE IF NOT EXISTS `documents` (
     'invoice',
     'receipt',
     'logistics',
+    'street_view',
     'other'
   ) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'other',
   `title` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
@@ -394,6 +407,9 @@ CREATE TABLE IF NOT EXISTS `documents` (
   `uploaded_by_law_firm_user_id` int unsigned DEFAULT NULL,
   `approved_by` int unsigned DEFAULT NULL,
   `approved_at` datetime DEFAULT NULL,
+  `rejection_reason` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `correction_requested_at` datetime DEFAULT NULL COMMENT 'When admin requested despacho re-upload',
+  `correction_requested_by` int unsigned DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `deleted_at` datetime DEFAULT NULL,
@@ -405,6 +421,7 @@ CREATE TABLE IF NOT EXISTS `documents` (
   CONSTRAINT `fk_documents_case` FOREIGN KEY (`case_id`) REFERENCES `cases` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_documents_uploaded_by` FOREIGN KEY (`uploaded_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_documents_approved_by` FOREIGN KEY (`approved_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_documents_correction_requested_by` FOREIGN KEY (`correction_requested_by`) REFERENCES `staff_users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_documents_uploaded_by_lfu` FOREIGN KEY (`uploaded_by_law_firm_user_id`) REFERENCES `law_firm_users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -447,7 +464,7 @@ CREATE TABLE IF NOT EXISTS `questionnaires` (
   `case_id` int unsigned NOT NULL,
   `status` enum(
     'draft',
-    'submitted',
+    'grammar_qa',
     'legal_review',
     'changes_requested',
     'approved',
@@ -627,6 +644,8 @@ CREATE TABLE IF NOT EXISTS `technical_reports` (
   ) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'draft',
   `version_number` int unsigned NOT NULL DEFAULT '1',
   `investigation_summary` mediumtext COLLATE utf8mb4_unicode_ci,
+  `defendant_questionnaire_summary` mediumtext COLLATE utf8mb4_unicode_ci,
+  `plaintiff_questionnaire_summary` mediumtext COLLATE utf8mb4_unicode_ci,
   `conclusions` mediumtext COLLATE utf8mb4_unicode_ci,
   `photo_catalog_json` json DEFAULT NULL,
   `document_id` int unsigned DEFAULT NULL,
@@ -889,7 +908,7 @@ VALUES
   ('otp_max_attempts', '5', 'Max verification attempts per OTP'),
   ('session_ttl_days', '30', 'Session token lifetime in days'),
   ('default_locale', 'es', 'Default UI locale for new users (browser ignored until user changes)'),
-  ('login_allowed_roles', 'admin,case_coordinator,expert,legal,logistics,accountant', 'Comma-separated roles allowed to request OTP login'),
+  ('login_allowed_roles', 'admin,expert,legal,logistics,accountant', 'Comma-separated roles allowed to request OTP login'),
   ('case_number_format', 'DEL-{YYYY}-{SEQ:4}', 'Case number template. Tokens: {YYYY} {YY} {MM} {SEQ:n}. Admin-configurable.'),
   ('case_number_next_seq', '1', 'Next sequence integer used when generating case numbers')
 ON DUPLICATE KEY UPDATE

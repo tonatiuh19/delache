@@ -10,14 +10,12 @@ alwaysApply: true
 When adding or changing product behavior (API, Redux thunks, shared rules, auth, team, cases, calendar, finance, etc.):
 
 1. Extract non-trivial business rules into `shared/` (or existing shared modules)
-2. Add/extend Vitest in colocated `*.spec.ts` covering:
-   - Happy path
-   - Validation failures
-   - Auth / self-action guards
-   - Empty/whitespace and boundary inputs
-   - Status/role transition edges
-3. Run `npm run test` and `npm run typecheck` before claiming done
-4. Do not ship UI that introduces untested server rules
+2. Add/extend Vitest:
+   - `shared/*.spec.ts` — pure rules (happy path + validation/auth/edge cases)
+   - `api/**/*.test.ts` — HTTP integration via supertest against `createServer()` (401/403/400 + happy path)
+3. Sync inlined copies in `api/index.ts` when shared rules change; run `npm run check:api-inline`
+4. Run `npm run test` and `npm run typecheck` before claiming done
+5. Integration fixtures: `@example.test` emails, `RUN_ID` in titles, cleanup via `api/testDbCleanup.ts` — Resend is never called under `VITEST=true`
 
 ## Definition of done
 

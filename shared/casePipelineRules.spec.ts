@@ -30,15 +30,14 @@ describe("casePipelineRules", () => {
     );
   });
 
-  it("allows coordinators to drag and move forward one step", () => {
-    expect(canDragCaseOnPipeline("case_coordinator")).toBe(true);
+  it("allows admin to drag and move forward one step", () => {
     expect(canDragCaseOnPipeline("admin")).toBe(true);
     expect(canDragCaseOnPipeline("expert")).toBe(false);
     expect(
       canDropCaseOnPipelineColumn({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "intake",
-        toStatus: "assignment",
+        toStatus: "questionnaire",
         listado: { gatesOk: true } as never,
       }),
     ).toBe(true);
@@ -46,14 +45,14 @@ describe("casePipelineRules", () => {
       pipelineDropLockReason({
         role: "expert",
         fromStatus: "intake",
-        toStatus: "assignment",
+        toStatus: "questionnaire",
       }),
     ).toBe("role");
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "intake",
-        toStatus: "inspection",
+        toStatus: "field_ops",
       }),
     ).toBe("transition");
   });
@@ -61,17 +60,17 @@ describe("casePipelineRules", () => {
   it("blocks forward drag when process gates are not satisfied", () => {
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "intake",
-        toStatus: "assignment",
+        toStatus: "questionnaire",
         listado: { gatesOk: false } as never,
       }),
     ).toBe("gates");
     expect(
       canDropCaseOnPipelineColumn({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "intake",
-        toStatus: "assignment",
+        toStatus: "questionnaire",
         listado: { gatesOk: false } as never,
       }),
     ).toBe(false);
@@ -80,9 +79,9 @@ describe("casePipelineRules", () => {
   it("blocks forward drag when listado is missing on a gated transition", () => {
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "intake",
-        toStatus: "assignment",
+        toStatus: "questionnaire",
       }),
     ).toBe("gates");
   });
@@ -90,7 +89,7 @@ describe("casePipelineRules", () => {
   it("allows parking on hold even when gates are not satisfied", () => {
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "intake",
         toStatus: "on_hold",
         listado: { gatesOk: false } as never,
@@ -98,7 +97,7 @@ describe("casePipelineRules", () => {
     ).toBeNull();
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "intake",
         toStatus: "cancelled",
         listado: { gatesOk: false } as never,
@@ -109,7 +108,7 @@ describe("casePipelineRules", () => {
   it("does not gate resume from on_hold", () => {
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "on_hold",
         toStatus: "intake",
         listado: { gatesOk: false } as never,
@@ -117,25 +116,55 @@ describe("casePipelineRules", () => {
     ).toBeNull();
   });
 
-  it("allows resume from on_hold to last workflow status via workflowOpts", () => {
+  it("allows admin resume from on_hold to any workflow stage", () => {
     expect(
       canDropCaseOnPipelineColumn({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "on_hold",
-        toStatus: "inspection",
-        workflowOpts: { lastWorkflowStatus: "inspection" },
-        listado: { gatesOk: false, holdResumeStatus: "inspection" } as never,
+        toStatus: "field_ops",
+        workflowOpts: { lastWorkflowStatus: "field_ops" },
+        listado: { gatesOk: false, holdResumeStatus: "field_ops" } as never,
       }),
     ).toBe(true);
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
+        role: "admin",
         fromStatus: "on_hold",
         toStatus: "intake",
-        workflowOpts: { lastWorkflowStatus: "inspection" },
-        listado: { gatesOk: false, holdResumeStatus: "inspection" } as never,
+        workflowOpts: { lastWorkflowStatus: "field_ops" },
+        listado: { gatesOk: false, holdResumeStatus: "field_ops" } as never,
       }),
-    ).toBe("transition");
+    ).toBeNull();
+  });
+
+  it("restricts non-admin resume from on_hold to last workflow status", () => {
+    expect(
+      canDropCaseOnPipelineColumn({
+        role: "expert",
+        fromStatus: "on_hold",
+        toStatus: "field_ops",
+        workflowOpts: { lastWorkflowStatus: "field_ops" },
+        listado: { gatesOk: false, holdResumeStatus: "field_ops" } as never,
+      }),
+    ).toBe(false);
+    expect(
+      pipelineDropLockReason({
+        role: "expert",
+        fromStatus: "on_hold",
+        toStatus: "field_ops",
+        workflowOpts: { lastWorkflowStatus: "field_ops" },
+        listado: { gatesOk: false, holdResumeStatus: "field_ops" } as never,
+      }),
+    ).toBe("role");
+    expect(
+      pipelineDropLockReason({
+        role: "legal",
+        fromStatus: "on_hold",
+        toStatus: "intake",
+        workflowOpts: { lastWorkflowStatus: "field_ops" },
+        listado: { gatesOk: false, holdResumeStatus: "field_ops" } as never,
+      }),
+    ).toBe("role");
   });
 
   it("aligns gate locks with every forward +1 workflow step", () => {
@@ -179,26 +208,26 @@ describe("casePipelineRules", () => {
     ).toBe(false);
     expect(
       isForwardTransitionBlockedByGates({
-        fromStatus: "legal_validation",
+        fromStatus: "validation_delivery",
         toStatus: "technical_report",
         gatesOk: false,
       }),
     ).toBe(false);
   });
 
-  it("gates P10 forward to court delivery but not the backward path", () => {
+  it("gates P9 forward to accounting but not the backward path", () => {
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
-        fromStatus: "legal_validation",
-        toStatus: "court_delivery",
+        role: "admin",
+        fromStatus: "validation_delivery",
+        toStatus: "accounting",
         listado: { gatesOk: false } as never,
       }),
     ).toBe("gates");
     expect(
       pipelineDropLockReason({
-        role: "case_coordinator",
-        fromStatus: "legal_validation",
+        role: "admin",
+        fromStatus: "validation_delivery",
         toStatus: "technical_report",
         listado: { gatesOk: false } as never,
       }),

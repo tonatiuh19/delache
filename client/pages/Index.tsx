@@ -318,7 +318,7 @@ export default function Index() {
   ];
 
   return (
-    <div className="min-h-screen overflow-hidden bg-delache-50 text-foreground">
+    <div className="min-h-screen overflow-x-clip overflow-hidden bg-delache-50 text-foreground">
       <MetaHelmet
         title="Peritajes eléctricos de precisión"
         description="Transformamos el proceso de los peritajes eléctricos con ingeniería especializada, procesos judiciales estandarizados y tecnología propia. Precisión, trazabilidad y certeza."
@@ -351,7 +351,7 @@ export default function Index() {
           </nav>
           <div className="flex items-center gap-2 sm:gap-3">
             <Link
-              to="/client/login"
+              to="/login"
               className="hidden rounded-full border border-slate-200 bg-white px-4 py-2.5 text-[12px] font-semibold text-slate-700 transition hover:border-primary/30 hover:bg-secondary hover:text-[#E6AB40] sm:block"
             >
               {t("home.accessClient")}
@@ -387,14 +387,14 @@ export default function Index() {
               </button>
             ))}
             <Link
-              to="/client/login"
+              to="/login"
               onClick={() => setMobileOpen(false)}
               className="mt-2 block w-full rounded-xl border border-slate-200 py-3 text-center text-sm font-semibold text-slate-700"
             >
               {t("home.accessClient")}
             </Link>
             <Link
-              to="/portal/login"
+              to="/login"
               onClick={() => setMobileOpen(false)}
               className="mt-2 block w-full py-3 text-center text-sm font-medium text-slate-500"
             >
@@ -897,7 +897,7 @@ export default function Index() {
             <span>© 2024 DELACHE. Ingeniería de precisión.</span>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <Link
-                to="/portal/login"
+                to="/login"
                 className="transition hover:text-white/70"
               >
                 {t("home.accessStaff")}

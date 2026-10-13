@@ -165,18 +165,63 @@ export function DataGrid<T>({
 
   return (
     <>
-      {mobileCard ? (
+      {mobileCard || columns.length > 0 ? (
         <div className="block space-y-3 sm:hidden">
-          {data.map((item) => (
-            <div key={rowKey(item)}>{mobileCard(item)}</div>
-          ))}
+          {data.map((item, index) =>
+            mobileCard ? (
+              <div key={rowKey(item)}>{mobileCard(item)}</div>
+            ) : (
+              <div
+                key={rowKey(item)}
+                role={onRowClick ? "button" : undefined}
+                tabIndex={onRowClick ? 0 : undefined}
+                onClick={onRowClick ? () => onRowClick(item) : undefined}
+                onKeyDown={
+                  onRowClick
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onRowClick(item);
+                        }
+                      }
+                    : undefined
+                }
+                className={cn(
+                  "rounded-xl border border-border bg-background p-4 text-left",
+                  onRowClick && "cursor-pointer transition hover:border-primary/40",
+                )}
+              >
+                {columns.slice(0, 5).map((col) => (
+                  <div
+                    key={col.key}
+                    className={cn(
+                      "py-1.5",
+                      col.key !== columns[0]?.key && "border-t border-border/60",
+                    )}
+                  >
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                      {col.label}
+                    </p>
+                    <div className="mt-0.5 text-sm text-foreground">
+                      {col.render
+                        ? col.render(item, index)
+                        : String(
+                            (item as Record<string, unknown>)[col.key] ?? "—",
+                          )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ),
+          )}
         </div>
       ) : null}
 
       <div
         className={cn(
-          mobileCard ? "hidden sm:block" : "block",
-          noBleeding ? "overflow-x-auto" : "-mx-6 overflow-x-auto px-0",
+          mobileCard || columns.length > 0 ? "hidden sm:block" : "block",
+          "max-w-full",
+          noBleeding ? "overflow-x-auto overscroll-x-contain" : "-mx-6 overflow-x-auto overscroll-x-contain px-0",
         )}
       >
         <Table className="w-max min-w-full">

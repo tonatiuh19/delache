@@ -11,11 +11,22 @@
     "cancel": "Cancelar",
     "continue": "Continuar",
     "back": "Volver",
+    "retry": "Reintentar",
     "errorGeneric": "Algo salió mal. Inténtalo de nuevo."
+  },
+  "datePicker": {
+    "pickDate": "Elige una fecha",
+    "pickDateTime": "Elige fecha y hora",
+    "calendarLabel": "Calendario",
+    "clear": "Quitar fecha",
+    "time": "Hora",
+    "hour": "Hora",
+    "minute": "Minuto",
+    "done": "Listo"
   },
   "dev": {
     "localEmailCtaTitle": "Desarrollo local — enlaces en correos",
-    "localEmailCtaBody": "Estás en localhost. Los correos de invitación y notificación usan este origen en sus botones CTA (p. ej. inicio de sesión). Quien abra ese enlace verá “conexión rechazada”. Configura VITE_PUBLIC_APP_URL con la URL pública antes de enviar invitaciones reales."
+    "localEmailCtaBody": "Estás en localhost. Los correos de invitación y notificación usan este origen en sus botones CTA (p. ej. /login). Quien abra ese enlace verá “conexión rechazada”. Configura VITE_PUBLIC_APP_URL con la URL pública antes de enviar invitaciones reales."
   },
   "home": {
     "accessClient": "Acceso despachos",
@@ -28,6 +39,7 @@
     "emailPlaceholder": "nombre@empresa.com",
     "continueWithEmail": "Continuar con correo",
     "secureNote": "Sin contraseñas. Acceso cifrado y seguro.",
+    "sessionRestoreFailed": "No pudimos confirmar tu sesión. Tu acceso sigue guardado en este dispositivo.",
     "otpTitle": "Confirma tu identidad.",
     "otpSubtitle": "Enviamos un código de 6 dígitos a",
     "otpLabel": "Código de acceso",
@@ -38,6 +50,9 @@
     "successTitle": "Todo listo.",
     "successSubtitle": "Tu acceso fue verificado correctamente.",
     "privatePortal": "Portal privado",
+    "unifiedPortal": "Acceso seguro",
+    "unifiedLoginSubtitle": "Personal y contactos de despacho usan el mismo acceso. Enviamos un código de un solo uso y abrimos el espacio correcto.",
+    "unifiedVisualBody": "Un solo acceso para el equipo DELACHE y despachos invitados. Tu correo decide si entras a operaciones o al escritorio del despacho.",
     "clientPortal": "Portal del despacho",
     "clientLoginTitle": "Acceso para despachos.",
     "clientLoginSubtitle": "Ingresa con el correo de tu despacho. Te enviaremos un código de un solo uso.",
@@ -58,6 +73,7 @@
     "invalidEmail": "Ingresa un correo válido",
     "invalidCode": "El código debe tener 6 dígitos",
     "accountNotFound": "No existe una cuenta con este correo. Pide a un administrador que te invite.",
+    "emailActorConflict": "Este correo está registrado como staff y como despacho. Contacta a un administrador antes de iniciar sesión.",
     "accountInactive": "Esta cuenta está inactiva. Contacta a un administrador.",
     "loginNotAllowed": "El inicio de sesión no está permitido para esta cuenta.",
     "rateLimited": "Demasiados intentos de verificación. Espera unos minutos e inténtalo de nuevo.",
@@ -93,6 +109,8 @@
     "logout": "Cerrar sesión",
     "comingSoonTitle": "Portal en construcción",
     "comingSoonBody": "Estamos preparando tu centro de operaciones.",
+    "shellDescription": "Portal operativo DELACHE para gestión de expedientes.",
+    "placeholderBody": "Esta sección aún no está disponible.",
     "profile": "Perfil"
   },
   "cases": {
@@ -106,11 +124,73 @@
     "involvesFatality": "Este asunto involucra un fallecimiento",
     "involvesFatalityBadge": "Asunto con fallecimiento",
     "create": "Crear expediente",
+    "externalReferenceLabel": "Referencia externa",
+    "plaintiffLabel": "Parte actora",
+    "defendantLabel": "Parte demandada",
+    "lawFirmLabel": "Despacho jurídico",
+    "createSheet": {
+      "title": "Crear en nombre del despacho",
+      "description": "El ingreso principal lo hace el despacho. Usa esto solo cuando coordinación crea el expediente por ellos: folio, fecha límite, los cuatro documentos iniciales y una nota.",
+      "badgePoint1": "Inicia en Punto 1",
+      "badgeOpensDetail": "Abre el expediente al crear",
+      "sectionEssentials": "Esenciales",
+      "sectionCourt": "Juzgado y partes",
+      "titlePlaceholder": "p. ej. Cortocircuito — Reforma 120",
+      "titleRequired": "El título del expediente es obligatorio.",
+      "courtPlaceholder": "Nombre del juzgado (se rellena del despacho si está configurado)",
+      "courtHint": "Opcional. Si queda vacío, la API usa el juzgado por defecto del despacho.",
+      "externalPlaceholder": "No. de despacho o juzgado",
+      "lawFirmPlaceholder": "Selecciona despacho…",
+      "lawFirmQuickAdd": "+ Alta rápida de despacho",
+      "quickAddTitle": "Nuevo despacho",
+      "quickAddNameRequired": "El nombre del despacho es obligatorio.",
+      "ownerRequiredHint": "Se requiere un titular — recibirá la invitación al portal.",
+      "devFill": "Llenar datos de prueba",
+      "cancel": "Cancelar",
+      "lawFirmRequired": "Selecciona el despacho jurídico."
+    },
+    "intakeCreate": {
+      "pageTitle": "Nuevo expediente",
+      "stepLabel": "Paso 1. Ingreso",
+      "infoTitle": "Información del expediente",
+      "folioLabel": "Folio / nombre del expediente *",
+      "folioPlaceholder": "Ej. DEL-2025-0029 o Terreno El Roble",
+      "deadlineLabel": "Fecha límite *",
+      "deadlinePlaceholder": "Selecciona una fecha",
+      "docsTitle": "Documentos iniciales",
+      "upload": "Subir archivo",
+      "replace": "Cambiar archivo",
+      "extraLabel": "Archivos adicionales (opcional)",
+      "extraCount": "{{count}} archivos",
+      "fileHint": "PDF, JPG, PNG. Tamaño máximo por archivo: 10 MB.",
+      "requiredDocsTitle": "Documentos requeridos",
+      "acceptedTypesTitle": "Tipos de archivo aceptados",
+      "acceptedTypes": "PDF, JPG, PNG",
+      "acceptedSize": "Tamaño máximo por archivo: 10 MB.",
+      "notesTitle": "Notas o comentarios (opcional)",
+      "notesPlaceholder": "Escribe aquí tus comentarios…",
+      "send": "Enviar",
+      "saved": "Ingreso guardado",
+      "saveFailed": "No se pudo guardar el ingreso",
+      "readOnly": "El despacho consulta este ingreso. Coordinación puede corregir folio, fecha, archivos y nota.",
+      "uploadPartial": "El expediente se creó, pero algunos archivos no se subieron",
+      "error": {
+        "title": "El folio o nombre del expediente es obligatorio.",
+        "deadline": "La fecha límite es obligatoria.",
+        "note": "La nota no puede pasar de 500 caracteres.",
+        "documents": "Sube demanda, expediente médico, dictamen CFE y fotos preliminares.",
+        "fileType": "Solo se aceptan PDF, JPG y PNG.",
+        "fileSize": "Cada archivo debe pesar 10 MB o menos."
+      }
+    },
     "searchPlaceholder": "Buscar por número, título, juzgado, ciudad, despacho o perito…",
     "empty": "Aún no hay expedientes. Crea el primero.",
     "noLocation": "Sin ubicación",
     "filterAllStatuses": "Todos los estatus",
     "filterAllPriorities": "Todas las prioridades",
+    "filtersButton": "Filtros",
+    "filtersTitle": "Filtros",
+    "filtersClear": "Limpiar",
     "colCaseNumber": "Expediente",
     "colTitle": "Título",
     "colStatus": "Estatus",
@@ -139,12 +219,13 @@
       "moveFailed": "No se pudo actualizar el estatus",
       "refreshing": "Actualizando…",
       "lock": {
-        "role": "Solo coordinadores y admins pueden arrastrar expedientes",
+        "role": "Solo los admins pueden arrastrar expedientes",
         "transition": "Este cambio de estatus no está permitido por las reglas del flujo",
         "gates": "Completa el punto del proceso actual primero (abre el expediente para ver qué falta)"
       }
     },
-    "flagsFailed": "No se pudo actualizar la marca de fallecimiento. Intenta de nuevo.",
+    "flagsFailed": "No se pudieron actualizar las marcas del expediente. Intenta de nuevo.",
+    "flagsSaveSuccess": "Marcas del expediente guardadas",
     "documentCategory": "Categoría del documento",
     "categoryFailed": "No se pudo actualizar la categoría del documento. Intenta de nuevo.",
     "priority": {
@@ -154,23 +235,202 @@
       "urgent": "Urgente"
     },
     "status": {
-      "intake": "Ingreso",
-      "assignment": "Asignación",
-      "questionnaire": "Cuestionario",
-      "legal_review_questionnaire": "Revisión legal",
-      "additional_docs": "Documentos",
-      "court_acceptance": "Aceptación",
-      "logistics": "Logística",
-      "inspection": "Inspección",
-      "technical_report": "Dictamen",
-      "legal_validation": "Validación legal",
-      "court_delivery": "Entrega",
-      "accounting": "Contabilidad",
+      "intake": "Ingreso · recibir expediente",
+      "assignment": "Asignación · equipo y entrega",
+      "questionnaire": "Cuestionario · GPS y Street View",
+      "legal_review_questionnaire": "Revisión legal · cuestionario",
+      "additional_docs": "Documentos adicionales",
+      "court_acceptance": "Aceptación · protesta",
+      "field_ops": "Campo · inspección",
+      "technical_report": "Dictamen técnico",
+      "validation_delivery": "Validación y entrega al juzgado",
+      "accounting": "Contabilidad · cierre",
       "completed": "Completado",
       "on_hold": "En pausa",
-      "cancelled": "Cancelado"
+      "cancelled": "Cancelado",
+      "logistics": "Campo · inspección",
+      "inspection": "Campo · inspección",
+      "legal_validation": "Validación y entrega al juzgado",
+      "court_delivery": "Validación y entrega al juzgado"
     },
     "backToList": "Volver a expedientes",
+    "header": {
+      "inProgress": "En proceso",
+      "responsible": "Responsable",
+      "globalDeadline": "Plazo global"
+    },
+    "stepTree": {
+      "label": "Pasos del proceso",
+      "eyebrow": "Proceso de 10 puntos",
+      "hint": "Solo los pasos de tu rol — elige uno y luego la sección a trabajar.",
+      "overview": "Resumen",
+      "current": "Paso actual",
+      "toggleGroup": "Mostrar pasos del reloj judicial",
+      "openMenu": "Menú del proceso",
+      "closeMenu": "Cerrar menú"
+    },
+    "subsectionNav": {
+      "label": "Secciones del paso",
+      "eyebrow": "Paso actual"
+    },
+    "stepOwnership": {
+      "label": "Responsables del paso",
+      "eyebrow": "Quién responde"
+    },
+    "subsection": {
+      "intake": "Ingreso",
+      "location": "Ubicación de la propiedad",
+      "documents": "Documentos",
+      "workflow": "Flujo del expediente",
+      "notes": "Notas",
+      "assignments": "Asignaciones",
+      "questionnaire": "Cuestionario",
+      "reviews": "Revisiones jurídicas",
+      "completeness": "Checklist documental",
+      "deadlines": "Plazos",
+      "inspections": "Inspecciones",
+      "evidence": "Evidencias",
+      "logistics": "Logística",
+      "reports": "Dictamen técnico",
+      "audit": "Bitácora de auditoría",
+      "finance": "Finanzas y cobros"
+    },
+    "stepHero": {
+      "eyebrow": "Detalle del paso",
+      "pendingToAdvance": "Pendientes para avanzar",
+      "pendingCount": "{{count}} pendientes",
+      "waitingCount": "{{count}} en espera de otros roles",
+      "yourTasks": "Tus tareas",
+      "waitingOnOthers": "En espera de otros roles",
+      "gatesClear": "Requisitos de este paso completos.",
+      "advanceHint": "Coordinación o admin puede avanzar el estatus cuando corresponda."
+    },
+    "stickyAdvance": {
+      "eyebrow": "Listo para avanzar",
+      "ready": "Las compuertas de este expediente están claras.",
+      "toStatus": "Siguiente: {{status}}",
+      "openWorkflow": "Flujo",
+      "cta": "Avanzar"
+    },
+    "protesta": {
+      "eyebrow": "P6 · Protesta",
+      "title": "Elige cómo se presentará la protesta",
+      "hint": "El reloj de 10 días hábiles inicia cuando se carga el documento de protesta — no al elegir la modalidad.",
+      "modality": {
+        "virtual": "Virtual",
+        "presencial": "Presencial"
+      },
+      "modalityHint": {
+        "virtual": "Sube la protesta firmada digitalmente",
+        "presencial": "Imprime, firma en tinta y sube el escaneo"
+      },
+      "scanPath": "Imprimir → firma en tinta → escanear y subir para arrancar el reloj.",
+      "virtualPath": "Sube el PDF firmado de la protesta para iniciar el reloj.",
+      "clockStarted": "Protesta presentada — el reloj está corriendo.",
+      "clockPending": "El reloj inicia cuando se presenta el artefacto de protesta."
+    },
+    "p9": {
+      "eyebrow": "P9 · Validación y entrega",
+      "title": "Despacho → juzgado → ratificación",
+      "hint": "Completa cada hito en orden. El SLA anidado corre dentro del reloj de protesta / campo.",
+      "stepLabel": "Paso {{n}}",
+      "step": {
+        "firm_review": "El despacho aprueba el dictamen técnico",
+        "court_filing": "Ingreso a juzgado cargado",
+        "ratification": "Ratificación agendada o concluida",
+        "final_released": "Finiquito liberado"
+      }
+    },
+    "sla": {
+      "due": "Vence {{date}}"
+    },
+    "softParallel": {
+      "inspectionLocked": "La inspección solo se marca completa en field ops (P7).",
+      "evidenceLocked": "La evidencia de campo solo se sube durante field ops (P7).",
+      "tripLocked": "Los viajes se pueden draftar desde asignación hasta field ops.",
+      "tripDraftOk": "Paralelo suave: puedes draftar viajes antes de field ops; las compuertas duras siguen bloqueando el avance.",
+      "logisticsReadOnly": "Ves la preparación de viajes para field ops. Logística gestiona las reservaciones."
+    },
+    "anticipoCue": {
+      "title": "Anticipo listo",
+      "body": "QA aprobado — se puede cobrar el anticipo.",
+      "cta": "Abrir finanzas"
+    },
+    "overview": {
+      "title": "Resumen",
+      "actionRequired": "Acción requerida",
+      "blocked": "Bloqueado",
+      "continue": "Continuar",
+      "noActiveStep": "Sin paso activo",
+      "terminalState": "Expediente cerrado o en pausa. Abre un paso del menú para ver historial.",
+      "progress": "Progreso",
+      "stepsCompleted": "{{done}} de {{total}} pasos",
+      "documents": "Documentos",
+      "documentsBody": "{{count}} archivos en el expediente",
+      "openDocuments": "Ver documentos",
+      "inspection": "Inspección",
+      "inspectionScheduled": "Inspección programada o completada",
+      "inspectionNotScheduled": "Sin programar",
+      "openInspection": "Abrir paso de inspección",
+      "finance": "Finanzas",
+      "financePending": "Facturas pendientes",
+      "financeClear": "Sin facturas pendientes",
+      "openAccounting": "Abrir paso de cobranza",
+      "expertLine": "Perito principal: {{name}}"
+    },
+    "kpi": {
+      "stripLabel": "Resumen",
+      "stripHint": "Conteos rápidos — toca una tarjeta para filtrar o saltar.",
+      "expand": "Mostrar resumen",
+      "collapse": "Ocultar resumen",
+      "active": "Expedientes activos",
+      "activeHint": "En tu alcance de visibilidad",
+      "dueSoon": "Por vencer",
+      "dueSoonHint": "Plazos en riesgo",
+      "inReview": "En revisión",
+      "inReviewHint": "Revisiones pendientes",
+      "completedMonth": "Terminados",
+      "completedHint": "Cerrados en alcance",
+      "cta": {
+        "active": "Ver tablero",
+        "dueSoon": "Ver calendario",
+        "inReview": "Abrir cola de revisión",
+        "completed": "Filtrar terminados"
+      }
+    },
+    "actionQueue": {
+      "title": "Requieren atención",
+      "subtitle": "Expedientes con gates abiertos en tu visibilidad",
+      "atPoint": "En punto {{point}}"
+    },
+    "preview": {
+      "progress": "Avance listado",
+      "blocked": "Gates pendientes",
+      "blockedHint": "Completa requisitos antes de avanzar.",
+      "continueStep": "Continuar este paso",
+      "openCase": "Abrir expediente"
+    },
+    "action": {
+      "continueStep": {
+        "questionnaire": "Continuar cuestionario",
+        "assignment": "Abrir asignación",
+        "intake": "Continuar ingreso",
+        "legal_review_questionnaire": "Abrir revisión jurídica",
+        "additional_docs": "Ver documentos",
+        "court_acceptance": "Abrir reloj judicial",
+        "field_ops": "Abrir operación de campo",
+        "technical_report": "Abrir dictamen",
+        "validation_delivery": "Abrir validación y entrega",
+        "accounting": "Abrir cobranza",
+        "logistics": "Abrir operación de campo",
+        "inspection": "Abrir operación de campo",
+        "legal_validation": "Abrir validación y entrega",
+        "court_delivery": "Abrir validación y entrega"
+      },
+      "openStep": {
+        "questionnaire": "Abrir paso cuestionario"
+      }
+    },
     "notFound": "Expediente no encontrado",
     "loadFailed": "No se pudieron cargar los expedientes. Intenta de nuevo.",
     "workflow": "Flujo del expediente",
@@ -178,7 +438,7 @@
     "reasonPlaceholder": "Motivo del cambio (opcional)",
     "workflowGatesHint": "Completa lo anterior (o en la línea de proceso) antes de avanzar. Aún puedes pausar o cancelar.",
     "noTransitions": "Sin transiciones disponibles",
-    "statusReadOnly": "Solo coordinadores y administradores pueden cambiar el estado del caso.",
+    "statusReadOnly": "Solo los admins pueden cambiar el estado del caso.",
     "timeline": "Historial",
     "notes": "Notas",
     "notePlaceholder": "Escribe una nota interna…",
@@ -190,6 +450,7 @@
     "unassignSaveFailed": "No se pudo quitar la asignación",
     "unassignSaveSuccess": "Asignación eliminada",
     "expertDeliveryDate": "Fecha de entrega del perito",
+    "expertDeliveryManagedAside": "La fecha de entrega se gestiona en el panel de acción a la derecha una vez asignado el perito primario.",
     "expertDeliveryActionTitle": "Acción: fecha de entrega",
     "expertDeliveryActionHint": "Avisar a {{name}} cuándo debe entregar este expediente.",
     "expertDeliverySave": "Guardar fecha de entrega",
@@ -199,6 +460,42 @@
     "expertDeliverySaveFailed": "No se pudo guardar la fecha de entrega",
     "questionnaireSaveFailed": "No se pudo guardar el cuestionario",
     "questionnaireSaveSuccess": "Cuestionario guardado",
+    "questionnaireAttachTitle": "PDF y Word del cuestionario de la demandada",
+    "questionnaireAttachHint": "Sube el PDF y el archivo Word. El editor de abajo es el borrador en vivo de este lado.",
+    "questionnaireEditorTitle": "Editor del cuestionario",
+    "questionnaireEditorPlaceholder": "Redacta el cuestionario aquí. Al guardar se envía este texto junto con el PDF y el Word.",
+    "dictamenDueLabel": "Fecha límite del dictamen",
+    "dictamenDueSave": "Guardar fecha",
+    "dictamenDueSaved": "Fecha del dictamen guardada",
+    "dictamenDueFailed": "No se pudo guardar la fecha del dictamen",
+    "intakeCard": {
+      "upload": "Subir archivo",
+      "approve": "Marcar completo",
+      "reject": "Rechazar",
+      "viewFile": "Ver archivo",
+      "empty": "Aún sin archivo",
+      "status": {
+        "complete": "Completo",
+        "rejected": "Observado",
+        "review": "En revisión",
+        "pending": "Pendiente"
+      }
+    },
+    "protestaAttachTitle": "PDF de protesta",
+    "protestaAttachHint": "Sube la protesta del cargo (muestra Miro 10). El reloj de 10 días inicia cuando el archivo está en el expediente.",
+    "reportAttachTitle": "PDF del dictamen técnico",
+    "reportAttachHint": "Sube el dictamen técnico (muestra Miro 11). Obligatorio — los campos de texto no sustituyen el archivo.",
+    "reportPdfRequired": "Sube el PDF del dictamen antes de enviar a revisión.",
+    "reportSubmitHint": "Conclusiones breves opcionales para la bitácora de revisión. El PDF es la fuente de verdad.",
+    "courtFilingAttachTitle": "PDF de ingreso al juzgado",
+    "courtFilingAttachHint": "Sube el ingreso al juzgado (muestra Miro 12).",
+    "ratificationAttachTitle": "PDF de ratificación",
+    "ratificationAttachHint": "Sube la ratificación / comparecencia (muestra Miro 13). Solo agendar no cierra esta compuerta.",
+    "categoryAttach": {
+      "required": "Archivo requerido",
+      "onFile": "En expediente",
+      "uploadSuccess": "Documento subido"
+    },
     "inspectionSaveFailed": "No se pudo guardar la inspección",
     "inspectionSaveSuccess": "Inspección programada",
     "measurementSaveFailed": "No se pudo guardar la medición",
@@ -219,6 +516,10 @@
     "docsBlockingTitle": "Bloquean este punto del proceso",
     "docsBlockingHint": "Estas categorías son obligatorias antes de avanzar el estatus. Súbelas con la etiqueta correcta, o reclasifica un archivo existente abajo.",
     "docsBlockingCount": "{{count}} tipo(s) de documento aún faltan",
+    "docsPanelHint": "Elige el tipo, arrastra archivos o usa Adjuntar en cada ítem faltante.",
+    "docsRequiredLabel": "Requeridos ahora",
+    "docsAttachFiles": "Adjuntar archivos",
+    "docsSizeLimit": "Hasta {{mb}} MB por archivo",
     "docsPointClear": "Sin huecos de documentos en este punto",
     "docsStatusMissing": "Falta",
     "docsStatusOnFile": "En expediente",
@@ -233,11 +534,34 @@
     "open": "Abrir",
     "deadlines": "Plazos",
     "deadlineType": {
-      "expert_delivery": "Entrega del perito"
+      "expert_delivery": "Entrega del perito",
+      "intake_correction": "Corrección de ingreso (3 días hábiles)",
+      "questionnaire": "Cuestionario",
+      "legal_review": "Revisión legal",
+      "inspection": "Inspección",
+      "technical_report": "Dictamen técnico",
+      "external_legal_validation": "Validación legal externa",
+      "court_delivery": "Entrega al juzgado",
+      "payment": "Pago",
+      "custom": "Personalizado",
+      "court_acceptance_window": "Ventana de aceptación"
     },
     "assignments": "Asignaciones",
-    "assignmentHowItWorks": "Coordinadores y admins asignan personas aquí. Elige un miembro, su rol en el expediente y marca primario para el perito (o coordinador) líder. Solo el personal asignado (más admins/coordinadores) puede abrir el expediente después. Avanzar de punto sigue requiriendo la lista de arriba — asignar no salta los requisitos documentales.",
+    "assignmentHowItWorks": "P2 exige un perito primario (responsable). Los demás roles son opcionales pero recomendados para puntos posteriores. El admin también confirma el handoff de documentos tras asignar al perito.",
     "selectMember": "Seleccionar miembro",
+    "selectMemberPlaceholder": "Selecciona un compañero compatible…",
+    "assignmentRoleLabel": "Rol de asignación",
+    "assignmentRoleRequiredSuffix": "obligatorio en P2",
+    "assignmentRoleTier": {
+      "required": "Obligatorio para salir de P2",
+      "recommended": "Recomendado (opcional)",
+      "optional": "Otros"
+    },
+    "requiredPrimaryExpertTitle": "Se requiere perito primario",
+    "requiredPrimaryExpertHint": "Miro / proceso P2: asigna un perito responsable primario antes de salir de asignación. Luego confirma el handoff de documentos.",
+    "primaryExpertForced": "Perito primario (obligatorio para este rol)",
+    "assignPrimaryExpert": "Asignar perito primario",
+    "noMembersForRole": "No hay compañeros activos con este rol",
     "primaryAssignment": "Asignación principal",
     "assign": "Asignar",
     "unassign": "Quitar",
@@ -248,7 +572,7 @@
     "powerLinePlaceholder": "Verificación de línea eléctrica",
     "observationsPlaceholder": "Observaciones técnicas",
     "saveQuestionnaire": "Guardar cuestionario",
-    "questionnaireLocked": "Este cuestionario está en revisión jurídica o cerrado. Pide cambios antes de editarlo.",
+    "questionnaireLocked": "Este cuestionario está en QA, revisión jurídica o cerrado. Pide cambios antes de editarlo.",
     "inspections": "Inspecciones",
     "inspectionNotes": "Notas de inspección",
     "scheduleInspection": "Programar inspección",
@@ -304,6 +628,93 @@
     "investigationSummary": "Resumen de investigación",
     "conclusions": "Conclusiones",
     "submitReport": "Enviar a revisión",
+    "defendantQuestionnaire": "Cuerpo del cuestionario de la demandada",
+    "defendantQuestionnairePlaceholder": "Texto completo del cuestionario (longitud mínima al enviar)",
+    "plaintiffQuestionnaireOutline": "Resumen del cuestionario de la actora",
+    "plaintiffQuestionnaireOutlinePlaceholder": "Puntos clave del cuestionario actor para cruce legal",
+    "streetViewPreexistencePlaceholder": "Conclusión de preexistencia (Street View)",
+    "streetViewPreexistence": {
+      "preexists": "Línea/estructura preexistía",
+      "not_preexists": "Sin evidencia de preexistencia",
+      "inconclusive": "Inconcluso en imagen"
+    },
+    "chronologyTitle": "Cronología de hechos",
+    "chronologyHint": "Línea de tiempo que sustenta el cuestionario de la demandada.",
+    "chronologyEventPlaceholder": "Descripción del hecho",
+    "chronologyAdd": "Agregar evento",
+    "chronologyRemove": "Quitar",
+    "defendantReportChapter": "Capítulo cuestionario demandada",
+    "plaintiffReportChapter": "Capítulo cuestionario actora",
+    "photoCatalogPlaceholder": "JSON del catálogo fotográfico (arreglo de { id, caption, evidenceRef })",
+    "photoCatalogHint": "Catálogo opcional que vincula fotos del dictamen con evidencias.",
+    "photoCatalogInvalid": "El catálogo fotográfico debe ser JSON válido.",
+    "recommendedAssignmentsTitle": "Roles recomendados aún abiertos",
+    "recommendedAssignmentsHint": "Opcionales para salir de P2 — considera asignar después: {{roles}}",
+    "handoffPendingTitle": "Confirmar entrega de documentos al perito",
+    "handoffPendingHint": "Un admin debe confirmar que el paquete de ingreso llegó íntegro al perito primario antes de salir de asignación.",
+    "handoffWaitingExpertTitle": "Esperando confirmación de entrega de documentos",
+    "handoffWaitingExpertHint": "Un admin aún no confirma que los documentos de ingreso te llegaron íntegros. Puedes revisar asignaciones, pero el expediente no avanzará de asignación hasta confirmar la entrega.",
+    "handoffWaitingObserverTitle": "Entrega de documentos pendiente",
+    "handoffWaitingObserverHint": "Un admin debe confirmar que los documentos de ingreso llegaron al perito primario antes de que el expediente salga de asignación.",
+    "handoffConfirmAction": "Confirmar entrega",
+    "handoffConfirmSuccess": "Entrega de documentos confirmada",
+    "handoffConfirmFailed": "No se pudo confirmar la entrega",
+    "handoffConfirmedAt": "Entrega confirmada {{date}}",
+    "expedientePendingTitle": "Aprobar expediente",
+    "expedientePendingReadyHint": "Los cuatro documentos de ingreso están aprobados. Confirma el paquete para desbloquear asignación.",
+    "expedientePendingDocsHint": "Aprueba cada documento de ingreso (demanda, expediente médico, dictamen CFE, fotos preliminares) antes de aprobar el expediente.",
+    "expedientePendingObserverHint": "Un admin debe aprobar cada documento de ingreso y luego aprobar el expediente antes de salir de ingreso.",
+    "expedienteApproveAction": "Aprobar expediente",
+    "expedienteApproveSuccess": "Expediente aprobado",
+    "expedienteApproveFailed": "No se pudo aprobar el expediente",
+    "expedienteApprovedAt": "Expediente aprobado {{date}}",
+    "documentApproveAction": "Aprobar",
+    "documentRejectAction": "Solicitar corrección",
+    "documentRejectPrompt": "Motivo de la corrección (opcional):",
+    "documentApproveSuccess": "Documento aprobado",
+    "documentApproveFailed": "No se pudo aprobar el documento",
+    "documentRejectSuccess": "Corrección solicitada",
+    "documentRejectFailed": "No se pudo solicitar la corrección",
+    "docStatus": {
+      "draft": "Borrador",
+      "uploaded": "Cargado",
+      "under_review": "En revisión",
+      "approved": "Aprobado",
+      "rejected": "Corrección solicitada",
+      "archived": "Archivado"
+    },
+    "externalCourtDeadline": "Plazo externo del juzgado",
+    "externalCourtDeadlineHint": "Opcional. Vacío = solo aplican los plazos del proceso.",
+    "externalCourtDeadlineClear": "Quitar plazo externo",
+    "externalCourtDeadlineSave": "Guardar plazo",
+    "externalCourtDeadlineSaveSuccess": "Plazo externo del juzgado guardado",
+    "externalCourtDeadlineSaveFailed": "No se pudo guardar el plazo externo",
+    "documentLockedBadge": "Bloqueado",
+    "documentLockedHint": "Este archivo está bloqueado hasta que DELACHE solicite una corrección.",
+    "documentCorrectionNeeded": "Corrección solicitada",
+    "documentCorrectionNeededHint": "Vuelve a subir esta categoría para reemplazar el archivo rechazado.",
+    "uploadCategoryLockedTitle": "Categoría bloqueada",
+    "uploadCategoryLockedHint": "Ya hay un archivo enviado en esta categoría. Espera una solicitud de corrección o elige otra categoría.",
+    "ratificationScheduledTitle": "Comparecencia de ratificación",
+    "ratificationScheduledHint": "Solo planificación — sube el PDF de ratificación para cumplir la compuerta del proceso.",
+    "ratificationScheduledAt": "Fecha y hora programada",
+    "ratificationScheduledSave": "Guardar programación",
+    "ratificationScheduledSaveSuccess": "Programación de ratificación guardada",
+    "ratificationScheduledSaveFailed": "No se pudo guardar la programación",
+    "financePanelHelper": "Facturas del expediente, banderas de anticipo/final y captura rápida de pagos.",
+    "financePanelHint": "Anticipos y finales ligados a este expediente.",
+    "financeOpenFull": "Abrir finanzas completas",
+    "financeFlagOn": "Completo",
+    "financeFlagOff": "Pendiente",
+    "noInvoices": "Sin facturas en este expediente.",
+    "evidenceProtocolTitle": "Protocolo de evidencia en inspección",
+    "evidenceProtocolHint": "Captura cada categoría en campo. Los ítems cubiertos reflejan cargas y mediciones en este caso.",
+    "evidenceGroup": {
+      "measurements": "Mediciones",
+      "network": "Red y estructuras",
+      "environment": "Sitio y entorno",
+      "risk": "Observaciones de riesgo"
+    },
     "reportStatus": {
       "draft": "Borrador",
       "grammar_qa": "QA gramatical",
@@ -377,11 +788,117 @@
       "invoice": "Factura",
       "receipt": "Recibo",
       "logistics": "Logística",
+      "street_view": "Street View / preexistencia",
       "other": "Otro"
+    },
+    "pdfStep": {
+      "statusTitle": "Estado del expediente",
+      "onSendTitle": "Al enviar",
+      "acceptedFormats": "Formatos de archivo aceptados",
+      "saveDraft": "Guardar borrador",
+      "send": "Enviar",
+      "draftSaved": "Borrador guardado",
+      "sent": "Expediente actualizado",
+      "noNextStatus": "No hay un siguiente estatus disponible",
+      "inProgress": "En curso",
+      "pending": "Pendiente",
+      "notesTitle": "Notas o comentarios (opcional)",
+      "notesPlaceholder": "Escribe aquí tus notas o comentarios…",
+      "summary": {
+        "folio": "Folio del expediente",
+        "lawFirm": "Despacho que lo envió",
+        "sentAt": "Fecha de envío",
+        "deadline": "Fecha límite",
+        "expert": "Perito asignado",
+        "unassigned": "Sin asignar",
+        "expertRole": "Perito eléctrico"
+      },
+      "editor": {
+        "bold": "Negrita",
+        "italic": "Cursiva",
+        "bulletList": "Lista",
+        "orderedList": "Lista numerada",
+        "undo": "Deshacer",
+        "redo": "Rehacer"
+      },
+      "questionnaire": {
+        "title": "Paso 2. Preparar cuestionario",
+        "subtitle": "Ubica el acontecimiento, sube Street View y el cuestionario (DOCX y PDF), edita el documento y envía.",
+        "formats": "JPG, PNG, PDF, DOCX",
+        "onSend": "El estatus del expediente cambiará al siguiente paso del proceso.",
+        "locationTitle": "Ubicación del acontecimiento",
+        "locationHint": "Usa la sección de ubicación del expediente si necesitas corregir dirección o GPS.",
+        "locationEditHint": "Lat/Lng se toman de la ubicación guardada del expediente.",
+        "streetViewTitle": "Preexistencia / Street View",
+        "questionnaireTitle": "Cuestionario",
+        "bothFilesHint": "Se requieren DOCX y PDF. El editor en vivo genera el DOCX al guardar si no subiste uno.",
+        "editorTitle": "Editor del cuestionario",
+        "badFile": "Solo se aceptan DOCX o PDF para el cuestionario."
+      },
+      "assignment": {
+        "title": "Paso 3. Asignación",
+        "subtitle": "Revisión final del cuestionario y asignación de perito",
+        "formats": "Cuestionario: DOCX (Word)",
+        "onSend": "Se notificará al despacho y el expediente avanzará.",
+        "send": "Enviar al despacho",
+        "questionnaireReview": "Cuestionario para revisión"
+      },
+      "legalReview": {
+        "title": "Paso 4. Revisión jurídica",
+        "subtitle": "Revisión final del cuestionario por el despacho",
+        "formats": "DOCX • máx. 10 MB",
+        "onSend": "Se notificará al administrador y el expediente continuará al siguiente paso.",
+        "send": "Enviar versión definitiva",
+        "questionnaireCard": "Cuestionario para revisión jurídica"
+      },
+      "protesta": {
+        "title": "Paso 5. Aceptación y protesta de cargo",
+        "subtitle": "El perito acepta el cargo, elige modalidad y sube la documentación firmada.",
+        "formats": "PDF, JPG o PNG • máx. 10 MB",
+        "onSend": "Se notificará al perito y el expediente avanzará cuando la protesta firmada esté cargada."
+      },
+      "fieldOps": {
+        "title": "Paso 6. Logística e inspección",
+        "subtitle": "Documentos de viaje del perito y evidencia requerida en campo.",
+        "formats": "PDF, JPG, PNG",
+        "onSend": "Al continuar, el expediente pasa a dictamen técnico.",
+        "send": "Guardar y continuar",
+        "evidenceTitle": "Evidencia requerida para inspección de campo",
+        "evidenceHint": "Sube cada tipo de evidencia por separado. Puedes adjuntar varios archivos por casilla.",
+        "readOnly": "Solo lectura"
+      },
+      "evidence": {
+        "distances": "Distancias (horizontal, vertical, entre postes)",
+        "facadePole": "Fachada y placa del poste",
+        "electricalStructure": "Estructura eléctrica",
+        "condition": "Estado: conductor, postes, banqueta, inmueble",
+        "oversize": "Análisis de sobredimensión"
+      },
+      "report": {
+        "title": "Paso 7. Dictamen técnico",
+        "subtitle": "Sube el PDF del dictamen, registra conclusiones y obtén la aprobación interna.",
+        "formats": "PDF · dictamen técnico",
+        "onSend": "Con aprobación interna, el expediente pasa a validación del despacho y entrega.",
+        "send": "Enviar a validación del despacho"
+      },
+      "validation": {
+        "title": "Paso 8. Validación y entrega",
+        "subtitle": "El despacho valida el dictamen; luego sube ingreso a juzgado y ratificación en PDF.",
+        "formats": "PDF · ingreso a juzgado · ratificación",
+        "onSend": "Con OK del despacho, ingreso y ratificación, el expediente pasa a cobranza.",
+        "send": "Continuar a cobranza"
+      },
+      "accounting": {
+        "title": "Paso 9. Cobranza y cierre",
+        "subtitle": "Registra anticipo y finiquito. Las facturas sin pagar bloquean el cierre.",
+        "formats": "Comprobantes de pago · anticipo + finiquito",
+        "onSend": "Cuando anticipo y finiquito estén pagados, el expediente puede cerrarse.",
+        "send": "Cerrar expediente"
+      }
     },
     "questionnaireStatus": {
       "draft": "Borrador",
-      "submitted": "Enviado",
+      "grammar_qa": "QA gramatical",
       "legal_review": "Revisión legal",
       "changes_requested": "Cambios solicitados",
       "approved": "Aprobado",
@@ -416,6 +933,36 @@
     "auditLogs": "Bitácora de auditoría",
     "noAuditLogs": "Sin entradas de auditoría"
   },
+  "missionControl": {
+    "eyebrow": "Mission control",
+    "openQueue": "Abrir mi cola",
+    "focus": {
+      "admin_overview": {
+        "title": "Mantén el portafolio en movimiento",
+        "subtitle": "Vigila bloqueos, pausas y relojes vencidos en todos los roles."
+      },
+      "assign_handoff": {
+        "title": "Asigna y entrega el expediente",
+        "subtitle": "Asigna peritos, confirma handoff documental y insiste en docs del despacho."
+      },
+      "questionnaire_qa": {
+        "title": "Cuestionario y campo",
+        "subtitle": "GPS, Street View, protesta, operación de campo y dictamen — tu expediente."
+      },
+      "legal_review": {
+        "title": "Cola de revisión jurídica",
+        "subtitle": "Aprueba o regresa cuestionarios dentro del SLA de 2 días."
+      },
+      "field_ops": {
+        "title": "Viajes de campo",
+        "subtitle": "Planea viajes y mantén logística lista para inspecciones en curso."
+      },
+      "billing": {
+        "title": "Anticipo y finiquito",
+        "subtitle": "Registra pagos para que cobranza pueda cerrar expedientes."
+      }
+    }
+  },
   "dashboard": {
     "eyebrow": "Resumen operativo",
     "subtitle": "Expedientes abiertos, prioridades y actividad reciente de un vistazo.",
@@ -431,12 +978,24 @@
     "quickActionsHint": "Accede al trabajo que corresponde a tu rol.",
     "cta": {
       "cases": "Mis expedientes",
-      "createCase": "Nuevo expediente",
+      "createCase": "Crear en su nombre",
       "calendar": "Calendario",
       "documents": "Documentos",
       "finance": "Finanzas",
       "team": "Equipo",
-      "notifications": "Notificaciones"
+      "notifications": "Notificaciones",
+      "reviews": "Cola de revisión",
+      "pipeline": "Pipeline de expedientes",
+      "fieldOps": "Operación de campo"
+    },
+    "ctaPrimaryHint": "Principal para tu rol",
+    "personaBadge": {
+      "ops": "Mesa de operaciones",
+      "expert": "Mesa del perito",
+      "legal": "Mesa jurídica",
+      "logistics": "Mesa de logística",
+      "accountant": "Mesa de cobranza",
+      "default": "Tu mesa"
     },
     "myLoadTitle": "Mi carga",
     "myLoadHint": "Las métricas se limitan a expedientes asignados a ti.",
@@ -494,9 +1053,17 @@
     "lawFirmSaveFailed": "No se pudo crear el despacho",
     "lawFirmsTitle": "Despachos",
     "lawFirmsHint": "Crea despachos para vincular usuarios del portal externo.",
+    "lawFirmsOwnerHint": "Crear un despacho siempre invita a un titular (owner). Prefiere Equipo para sumar gente a un despacho existente.",
     "lawFirmName": "Nombre del despacho",
+    "ownerEmail": "Correo del titular",
+    "firmContactEmail": "Correo de contacto del despacho (opcional)",
     "state": "Estado",
-    "createLawFirm": "Crear despacho"
+    "defaultCourtName": "Juzgado por defecto",
+    "defaultCourtNamePlaceholder": "p. ej. Juzgado Primero Civil…",
+    "defaultCourtNameHint": "Se usa para rellenar el juzgado cuando el despacho (o staff en su nombre) crea un expediente sin escribirlo.",
+    "createLawFirm": "Crear despacho",
+    "appVersionTitle": "Versión de la aplicación",
+    "appVersionHint": "Compilación en ejecución en este entorno."
   },
   "calendar": {
     "eyebrow": "Agenda operativa",
@@ -559,6 +1126,22 @@
     "invite": "Invitar miembro",
     "resendInvite": "Reenviar correo de invitación",
     "selectLawFirm": "Seleccionar despacho",
+    "firmModeExisting": "Vincular a despacho existente",
+    "firmModeCreate": "Crear nuevo despacho",
+    "createFirmOwnerHint": "Esta persona será el titular (owner) del nuevo despacho.",
+    "despachoInviteSent": "Invitación de despacho enviada",
+    "despachoInviteSentHint": "Cambiado a la lista de despacho — ahí aparecen los contactos tras invitar.",
+    "staffListHint": "Cuentas de staff DELACHE. Usa la pestaña Despacho para contactos externos.",
+    "firmListHint": "Contactos de despacho de todas las firmas. Un correo soft-deleted se puede reinvitar para reactivarlo.",
+    "rosterStaff": "Staff",
+    "rosterFirm": "Despacho",
+    "colFirm": "Despacho",
+    "memberRole": {
+      "owner": "Titular",
+      "admin": "Admin del despacho",
+      "member": "Miembro",
+      "viewer": "Solo lectura"
+    },
     "searchPlaceholder": "Buscar por nombre o correo…",
     "empty": "Aún no hay miembros.",
     "colRole": "Rol",
@@ -589,7 +1172,6 @@
     },
     "role": {
       "admin": "Admin",
-      "case_coordinator": "Coordinador",
       "expert": "Perito",
       "legal": "Legal",
       "logistics": "Logística",
@@ -604,38 +1186,6 @@
     "markRead": "Marcar leída",
     "markAllRead": "Marcar todas"
   },
-  "client": {
-    "portalTitle": "Portal del despacho",
-    "cases": "Mis expedientes",
-    "notifications": "Notificaciones",
-    "notificationsSubtitle": "Actualizaciones de estatus, dictámenes entregados y alertas compartidas.",
-    "subtitle": "Envía nuevos asuntos y da seguimiento al estatus.",
-    "submitCase": "Enviar nuevo expediente",
-    "submit": "Enviar",
-    "caseSaveFailed": "No se pudo crear el expediente — se conservaron tus datos",
-    "empty": "Aún no has enviado expedientes.",
-    "plaintiff": "Demandante",
-    "defendant": "Demandado",
-    "sharedNotes": "Notas compartidas",
-    "noNotes": "Sin notas compartidas",
-    "reports": "Dictámenes",
-    "noReports": "Aún no hay dictámenes disponibles",
-    "approveReport": "Aprobar",
-    "requestChanges": "Solicitar cambios",
-    "rejectReport": "Rechazar",
-    "reportStatus": {
-      "draft": "Borrador",
-      "grammar_qa": "QA gramatical",
-      "technical_director": "Director técnico",
-      "approved_internal": "Aprobado internamente",
-      "external_review": "Revisión externa",
-      "changes_requested": "Cambios solicitados",
-      "approved": "Aprobado",
-      "rejected": "Rechazado",
-      "delivered": "Entregado"
-    },
-    "profile": "Perfil"
-  },
   "documents": {
     "eyebrow": "Evidencia y archivos",
     "hint": "Busca, previsualiza y aplica OCR a documentos de todos los expedientes. Arrastra archivos en un expediente para carga masiva.",
@@ -643,6 +1193,8 @@
     "search": "Buscar",
     "empty": "No se encontraron documentos.",
     "preview": "Vista previa",
+    "removeDraft": "Quitar",
+    "stagedHint": "Nada se sube hasta que pulses Enviar.",
     "dropHint": "Arrastra archivos aquí, o haz clic para elegir",
     "dropNow": "Suelta para subir",
     "dropLimits": "Hasta {{max}} archivos · PDF, imágenes, Word · {{mb}}MB c/u",
@@ -661,11 +1213,15 @@
       "too_many": "demasiados archivos"
     },
     "openExternal": "Abrir original",
+    "download": "Descargar",
     "previewFailed": "No se pudo renderizar este PDF en la app.",
+    "previewIframeHint": "Mostrando el visor PDF del navegador como respaldo.",
     "noPreview": "Sin vista previa para este tipo de archivo.",
     "unknownType": "Tipo desconocido",
     "ocrTitle": "OCR / texto extraído",
     "ocrEmpty": "Aún no hay texto OCR. Ejecuta OCR para extraer texto buscable.",
+    "ocrExpand": "Mostrar",
+    "ocrCollapse": "Ocultar",
     "runOcr": "Ejecutar OCR",
     "prevPage": "Página anterior",
     "nextPage": "Página siguiente",
@@ -723,15 +1279,24 @@
     "geocodeFailed": "Geocodificación fallida — intente una dirección más completa o pegue lat,lng",
     "invalidGpsText": "Ingrese GPS decimal (19.43, -99.13) o DMS (16°26'47.1\"N, 92°43'40.7\"W)",
     "gpsNeedBoth": "Ingrese latitud y longitud, o deje ambos vacíos",
-    "applyGpsToProperty": "Aplicar GPS a los campos de la propiedad"
+    "applyGpsToProperty": "Aplicar GPS a los campos de la propiedad",
+    "permissionModal": {
+      "titleProperty": "Ubica la propiedad desde tu dispositivo",
+      "titleEvidence": "Etiqueta esta evidencia con GPS",
+      "bodyProperty": "Permite la ubicación para que Delache complete latitud y longitud del mapa del expediente y las validaciones de Street View.",
+      "bodyEvidence": "Permite la ubicación para marcar foto o medición con el lugar donde se capturó en campo.",
+      "bulletPrivacy": "Solo usamos la lectura para este expediente — nada corre en segundo plano.",
+      "bulletAccuracy": "Mejor al aire libre con GPS de alta precisión. Aún puedes editar las coordenadas a mano.",
+      "allow": "Permitir ubicación",
+      "notNow": "Ahora no",
+      "locating": "Obteniendo ubicación…"
+    }
   },
   "profile": {
     "eyebrow": "Tu cuenta",
     "title": "Perfil",
-    "subtitle": "Controla cómo DELACHE te guía mientras trabajas.",
-    "helpersIntro": "Los helpers explican qué capturar en cada formulario. Están activos por defecto y puedes desactivarlos cuando quieras.",
-    "showHelpers": "Mostrar helpers de formularios",
-    "showHelpersHint": "Si está activo, verás tips cortos bajo los campos en expedientes, finanzas, equipo, calendario y portal de despacho.",
+    "subtitle": "Datos de tu cuenta Delache.",
+    "accountHint": "Las asignaciones de rol y las notificaciones las administra tu equipo. Los pasos del expediente ya muestran secciones numeradas y chips de responsabilidad — sin paneles de coaching extra.",
     "saveFailed": "No se pudieron guardar las preferencias. Intenta de nuevo."
   },
   "help": {
@@ -745,8 +1310,10 @@
       "court": "Nombre oficial del juzgado si ya se conoce; vacío si aún no hay asignación.",
       "city": "Ciudad del predio o incidente — se usa en logística y mapas.",
       "priority": "Urgente para audiencias o riesgo; Alta para plazos cortos; Normal en el resto.",
+      "externalReference": "Número opcional de despacho o juzgado para cruce de referencias.",
+      "lawFirm": "El despacho cliente del asunto (no el juzgado). Elige uno existente o dale de alta rápida.",
       "search": "Filtra por número, título, juzgado, ciudad, despacho o perito.",
-      "pipeline": "La vista pipeline agrupa expedientes por estatus actual. Coordinadores/admins pueden arrastrar un paso adelante solo si los gates del punto actual están completos; las columnas bloqueadas muestran candado. El resto abre el expediente para avanzar. Filtros y búsqueda aplican a todas las columnas.",
+      "pipeline": "La vista pipeline agrupa expedientes por estatus actual. Los admins pueden arrastrar un paso adelante solo si los gates del punto actual están completos; las columnas bloqueadas muestran candado. El resto abre el expediente para avanzar. Filtros y búsqueda aplican a todas las columnas.",
       "fatality": "Marca solo si la demanda involucra un fallecimiento. Eso habilita el acta de defunción — no se infiere de los archivos."
     },
     "clientCases": {
@@ -771,8 +1338,8 @@
       "email": "Debe ser único. Se envía OTP de invitación a este correo.",
       "firstName": "Nombre como debe verse en el portal y correos.",
       "lastName": "Apellido como debe verse en el portal y correos.",
-      "role": "Admin gestiona equipo/ajustes; coordinador opera casos; perito hace campo; legal/logística/contador tienen alcances. Usuario de despacho entra al portal cliente.",
-      "lawFirm": "Obligatorio para usuarios de despacho — indica a qué firma pertenecen."
+      "role": "Admin opera casos y gestiona equipo/ajustes; perito hace campo; legal/logística/contador tienen alcances. Usuario de despacho entra al portal cliente.",
+      "lawFirm": "Para usuarios de despacho: elige una firma existente o crea una nueva en línea."
     },
     "calendar": {
       "section": "Agenda inspecciones, reuniones o plazos. Vincula un expediente si el evento es del caso.",
@@ -787,22 +1354,25 @@
     },
     "settings": {
       "caseNumber": "Tokens como {YYYY} y {SEQ} controlan cómo se generan los números de expediente.",
-      "lawFirm": "Registra firmas antes de invitar a sus usuarios del portal."
+      "lawFirm": "Registra un despacho con titular, o crea e invita desde Equipo."
     },
     "caseDetail": {
       "location": "Completa la dirección para logística; usa GPS o geocodifica para mapas y Street View.",
       "workflow": "Los botones de avance quedan deshabilitados hasta completar los gates del punto actual. Pausar y cancelar siguen disponibles. Agrega motivo para auditoría.",
       "notes": "Notas internas del staff. Sé breve y fecha los hechos.",
-      "assignments": "Asigna el rol correcto. Marca un responsable principal. Define fecha de entrega del perito primario — genera acción y notificación.",
+      "assignments": "P2 (Miro): primero asigna un perito primario — es el único rol que bloquea salir de asignación. Luego confirma el handoff de documentos. Los demás roles son recomendados, no obligatorios.",
+      "assignmentRoleTier": "Obligatorio = perito primario. Recomendado = coordinador, QA, legal, logística, contador. Otros = director técnico / observador.",
+      "assignMemberFilter": "La lista de miembros solo muestra compañeros cuyo rol de personal coincide con el rol de asignación elegido.",
       "expertDelivery": "Opcional al asignar perito primario. Crea plazo en el expediente y calendario, e incluye la fecha en la notificación de asignación.",
-      "questionnaire": "Captura GPS del sitio, Street View, contexto de línea y observaciones antes de la inspección.",
+      "expertDeliveryOnAssign": "Opcional en la primera asignación del perito primario. Crea el plazo y la incluye en el correo. Después, edítala en el panel de acción de entrega.",
+      "questionnaire": "Sube el PDF del cuestionario de la demandada; luego captura GPS, Street View + preexistencia, y cronología/notas opcionales.",
       "reviewRequests": "Abre revisiones con fecha límite y responsable claros.",
       "inspections": "Agenda la visita; agrega notas que el equipo verá en campo.",
       "measurements": "Registra lecturas numéricas con unidades e ID de poste si aplica.",
       "evidence": "Titula fotos con claridad; el GPS refuerza la cadena de custodia.",
       "logistics": "Registra viajes y gastos del expediente para reembolsos.",
-      "report": "Resume hallazgos y conclusiones para entrega legal — preciso y neutral.",
-      "documentCategory": "Etiqueta cada archivo con la categoría que revisan los gates de 12 puntos (demanda, protesta, ratificación…).",
+      "report": "Sube el PDF del dictamen técnico; luego puedes añadir conclusiones breves antes de enviar a QA.",
+      "documentCategory": "Etiqueta cada archivo con la categoría que revisan los gates de 10 puntos (demanda, protesta, ratificación…).",
       "documentCategoryClient": "Elige el tipo de ingreso o documentos adicionales que cubre este archivo (demanda, expediente médico, croquis…).",
       "documentsPanel": "La lista muestra qué bloquea el punto actual. El selector de arriba solo etiqueta la próxima carga; usa Cambiar categoría en cada archivo si la etiqueta está mal."
     },
@@ -818,7 +1388,10 @@
     }
   },
   "process": {
-    "eyebrow": "Proceso de 12 puntos",
+    "eyebrow": "Proceso de 10 puntos",
+    "guidance": {
+      "eyebrow": "Guía"
+    },
     "title": "Flujo de peritaje eléctrico",
     "helper": "Cada punto tiene un responsable (A), artefactos y, si aplica, un reloj en días hábiles. Los 3 días del despacho van dentro de los 10 que inician al archivar la protesta.",
     "current": "Actual: punto {{point}} — {{name}}",
@@ -827,22 +1400,25 @@
     "nestedSla": "dentro del reloj de 10 días",
     "insideClock": "Dentro del reloj del punto {{point}}",
     "blockedTitle": "Aún no se puede salir de este punto",
-    "blockedHowTo": "Completa los elementos de abajo; luego un coordinador o admin puede avanzar el flujo.",
+    "blockedHowTo": "Completa los elementos de abajo; luego un admin puede avanzar el flujo.",
     "blockedHowToOps": "Completa los elementos de abajo y avanza el flujo desde los controles de estatus.",
     "blockedHowToUploader": "Sube o respalda los documentos faltantes en Documentos (atajos abajo).",
-    "blockedHowToWaitAssignment": "Un coordinador o admin debe asignar perito primario antes de poder avanzar.",
+    "blockedHowToWaitAssignment": "Un admin debe asignar perito primario antes de poder avanzar.",
     "blockedHowToWait": "Otros roles deben completar los elementos de abajo. Tu rol no puede avanzar el estatus.",
+    "blockedHowToPrepParallel": "Los admins deben completar lo pendiente. Mientras tanto puedes avanzar cuestionario, GPS y Street View (paralelo suave) — usa los atajos de abajo.",
     "blockedNeedsAssignment": "Abre Asignaciones en este expediente y marca un perito primario.",
     "blockedDocsOwner": "Los documentos de ingreso suelen cargarlos el despacho en el portal cliente (Documentos). El staff puede respaldarlos aquí si hace falta.",
     "gatesClear": "Los requisitos de este punto están completos.",
     "gatesClearAdvance": "Puedes avanzar el estatus desde los controles de flujo.",
-    "gatesClearWaitOps": "Espera a que un coordinador o admin avance el estatus.",
+    "gatesClearWaitOps": "Espera a que un admin avance el estatus.",
     "ownershipTitle": "Quién responde en este punto",
     "yourActionTitle": "Qué te toca hacer",
+    "yourTasksTitle": "Tus tareas",
+    "waitingOnOthersTitle": "En espera de otros roles",
     "yourAction": {
       "ops": "Punto {{point}} — {{name}}. Coordina lo pendiente y avanza cuando los requisitos estén listos.",
-      "uploader": "Punto {{point}} — {{name}}. Puedes ayudar con documentos o campo. Avanzar el estatus sigue siendo de coordinadores/admins.",
-      "assignee": "Punto {{point}} — {{name}}. Enfócate en tu trabajo asignado. Coordinadores/admins mueven el estatus cuando corresponda.",
+      "uploader": "Punto {{point}} — {{name}}. Puedes ayudar con documentos o campo. Avanzar el estatus sigue siendo de los admins.",
+      "assignee": "Punto {{point}} — {{name}}. Enfócate en tu trabajo asignado. Los admins mueven el estatus cuando corresponda.",
       "viewer": "Punto {{point}} — {{name}}. Esta etapa la atienden otros roles; usa la lista para ver qué falta."
     },
     "ownershipIntro": "Punto {{point}} — {{name}}. El RACI indica quién ejecuta y quién avanza.",
@@ -853,8 +1429,8 @@
       "I": "Informado"
     },
     "actor": {
-      "law_firm": "Despacho (portal cliente)",
-      "coordinator": "Coordinador de casos",
+      "law_firm": "Despacho",
+      "coordinator": "Coordinador",
       "expert": "Perito asignado",
       "questionnaire_author": "Redacción de cuestionario",
       "qa": "Control de calidad / gramática",
@@ -865,9 +1441,9 @@
       "admin": "Admin de plataforma"
     },
     "advanceYouCan": "Tu rol puede cambiar el estatus del expediente cuando los requisitos estén listos.",
-    "advanceOnlyOps": "Solo coordinadores y admins pueden pasar el expediente al siguiente estatus.",
-    "advanceOnlyOpsShort": "Solo coordinadores/admins cambian el estatus.",
-    "assignmentHow": "Asignación: coordinadores/admins agregan personal con un rol (perito, logística, …). Marca un perito primario — esa persona es dueña del expediente después del P2. Las asignaciones secundarias apoyan revisiones y campo.",
+    "advanceOnlyOps": "Solo los admins pueden pasar el expediente al siguiente estatus.",
+    "advanceOnlyOpsShort": "Solo los admins cambian el estatus.",
+    "assignmentHow": "Asignación: los admins agregan personal con un rol (perito, logística, …). Marca un perito primario — esa persona es dueña del expediente después del P2. Las asignaciones secundarias apoyan revisiones y campo.",
     "assignmentLater": "La asignación del perito primario ocurre en el punto 2 (Asignación). Primero van los documentos de ingreso.",
     "quickLink": {
       "documents": "Ir a documentos",
@@ -885,36 +1461,30 @@
         "name": "Recepción"
       },
       "2": {
-        "name": "Asignación"
+        "name": "Preparar cuestionario"
       },
       "3": {
-        "name": "Cuestionario y anticipo"
+        "name": "Asignación"
       },
       "4": {
-        "name": "Revisión jurídica interna"
+        "name": "Revisión jurídica"
       },
       "5": {
         "name": "Documentos del despacho"
       },
       "6": {
-        "name": "Protesta y reloj de 10 días"
+        "name": "Aceptación y protesta"
       },
       "7": {
-        "name": "Logística"
+        "name": "Logística e inspección"
       },
       "8": {
-        "name": "Inspección en campo"
-      },
-      "9": {
         "name": "Dictamen técnico"
       },
+      "9": {
+        "name": "Validación y entrega"
+      },
       "10": {
-        "name": "Validación del despacho"
-      },
-      "11": {
-        "name": "Entrega y ratificación"
-      },
-      "12": {
         "name": "Cobros"
       }
     },
@@ -937,13 +1507,19 @@
       "assignment": {
         "primary_expert": "Asignar perito primario"
       },
+      "handoff": {
+        "documents_confirmed": "Admin confirma entrega de documentos al perito primario"
+      },
+      "court": {
+        "ratification_scheduled": "Programar comparecencia de ratificación"
+      },
       "location": {
         "gps": "Coordenadas GPS del inmueble",
         "street_view": "Street View / preexistencia"
       },
       "questionnaire": {
         "approved": "Cuestionario aprobado por QA",
-        "ready": "Cuestionario enviado a revisión jurídica interna",
+        "ready": "Cuestionario pasó QA gramatical (anticipo liberado)",
         "legal_approved": "Cuestionario aprobado por legal interno"
       },
       "logistics": {
@@ -976,6 +1552,14 @@
     }
   },
   "listado": {
+    "badge": {
+      "activo": "Activo",
+      "en_revision": "En revisión",
+      "en_espera": "En espera",
+      "vencido": "Vencido",
+      "cerrado": "Cerrado",
+      "pagado": "Pagado"
+    },
     "flag": {
       "intakeComplete": "Ingreso completo",
       "primaryExpert": "Perito primario asignado",
@@ -1011,6 +1595,91 @@
       "attendedWithReport": "Comparec.",
       "finalReleased": "Fin. lib",
       "finalPaid": "Fin. cob"
+    }
+  },
+  "despacho": {
+    "portalTitle": "Portal del despacho",
+    "cases": "Mis expedientes",
+    "notifications": "Notificaciones",
+    "notificationsSubtitle": "Actualizaciones de estatus, dictámenes entregados y alertas compartidas.",
+    "subtitle": "Crea expedientes y da seguimiento con DELACHE.",
+    "submitCase": "Crear expediente",
+    "submit": "Crear",
+    "caseSaveFailed": "No se pudo crear el expediente — se conservaron tus datos",
+    "empty": "Aún no hay expedientes. Crea el primero.",
+    "plaintiff": "Demandante",
+    "defendant": "Demandado",
+    "sharedNotes": "Notas compartidas",
+    "noNotes": "Sin notas compartidas",
+    "reports": "Dictámenes",
+    "noReports": "Aún no hay dictámenes disponibles",
+    "approveReport": "Aprobar",
+    "requestChanges": "Solicitar cambios",
+    "rejectReport": "Rechazar",
+    "reportStatus": {
+      "draft": "Borrador",
+      "grammar_qa": "QA gramatical",
+      "technical_director": "Director técnico",
+      "approved_internal": "Aprobado internamente",
+      "external_review": "Revisión externa",
+      "changes_requested": "Cambios solicitados",
+      "approved": "Aprobado",
+      "rejected": "Rechazado",
+      "delivered": "Entregado"
+    },
+    "profile": "Perfil",
+    "panel": {
+      "title": "Panel del despacho",
+      "subtitle": "Gestiona tus expedientes y consulta su estado.",
+      "roleBanner": "Rol: Despacho — acceso limitado",
+      "roleBannerHint": "Puedes crear el Paso 1 y dar seguimiento en solo lectura. Acciones puntuales (corrección de documentos, revisión jurídica, dictamen) se abren desde el expediente.",
+      "viewerBanner": "Rol: Solo lectura (viewer)",
+      "viewerBannerHint": "Puedes seguir expedientes, pero no crear casos, subir documentos ni revisar informes.",
+      "viewerBadge": "Solo lectura",
+      "viewerDetailHint": "Tu rol en el despacho es viewer. Subidas y acciones de informe están deshabilitadas.",
+      "searchPlaceholder": "Buscar folio o dirección…",
+      "newCase": "Nuevo expediente",
+      "tableSearch": "Buscar en la lista…",
+      "allStatuses": "Todos los estados",
+      "colFolio": "Folio",
+      "colName": "Nombre del expediente",
+      "colDeadline": "Fecha límite",
+      "colStep": "Paso actual",
+      "colReview": "Estado de revisión",
+      "showing": "Mostrando {{shown}} de {{total}} expedientes",
+      "seguimientoTitle": "Seguimiento del expediente",
+      "seguimientoEmptyTitle": "Selecciona un expediente",
+      "seguimientoEmptyHint": "Elige una fila a la izquierda para ver el progreso en solo lectura.",
+      "readOnly": "Solo lectura",
+      "deadline": "Fecha límite",
+      "tabProgress": "Progreso del proceso",
+      "tabInfo": "Información general",
+      "pillDone": "Listo",
+      "pillInProgress": "En revisión",
+      "pillPending": "Pendiente",
+      "currentStepHint": "Paso actual {{n}}",
+      "adminObservation": "Observación del administrador",
+      "openActions": "Abrir acciones del expediente →",
+      "backToPanel": "Volver al panel",
+      "createOnlyPaso1": "Como despacho solo creas el Paso 1 (ingreso). El resto del proceso es seguimiento en solo lectura.",
+      "detailActionsHint": "El seguimiento es solo lectura. Aquí puedes corregir documentos rechazados y responder revisiones cuando apliquen."
+    },
+    "team": {
+      "nav": "Equipo del despacho",
+      "eyebrow": "Personas del despacho",
+      "title": "Equipo del despacho",
+      "subtitle": "Personas con acceso a los expedientes de este despacho.",
+      "subtitleNamed": "Personas en {{name}}.",
+      "invite": "Invitar colega",
+      "sendInvite": "Enviar invitación",
+      "empty": "Aún no hay miembros del despacho.",
+      "primary": "Titular",
+      "memberRole": {
+        "owner": "Titular",
+        "admin": "Admin",
+        "member": "Miembro",
+        "viewer": "Solo lectura"
+      }
     }
   }
 }

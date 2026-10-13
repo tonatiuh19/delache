@@ -4,10 +4,14 @@
  */
 
 import type { UserRole, UserStatus } from "./api";
+import {
+  resolveDespachoInviteTarget,
+  type CreateLawFirmDraft,
+  type LawFirmMemberRole,
+} from "./lawFirmMemberRules";
 
 export const STAFF_EDIT_ROLES: readonly UserRole[] = [
   "admin",
-  "case_coordinator",
   "expert",
   "legal",
   "logistics",
@@ -183,12 +187,19 @@ export type InviteValidationOk = {
   lastName: string;
   role: UserRole | "law_firm_user";
   lawFirmId: number | null;
+  createLawFirm: CreateLawFirmDraft | null;
+  memberRole: LawFirmMemberRole | null;
+  isPrimaryContact: boolean;
 };
 
 export type InviteValidationErr = {
   ok: false;
   error: string;
-  code: "invalid_payload" | "law_firm_required";
+  code:
+    | "invalid_payload"
+    | "law_firm_required"
+    | "invalid_firm_name"
+    | "invalid_member_role";
 };
 
 export function validateTeamInvite(input: {
@@ -197,6 +208,8 @@ export function validateTeamInvite(input: {
   lastName: string;
   role: string;
   lawFirmId?: number | null;
+  createLawFirm?: Partial<CreateLawFirmDraft> | null;
+  memberRole?: string | null;
 }): InviteValidationOk | InviteValidationErr {
   const email = String(input.email || "").trim().toLowerCase();
   const firstName = String(input.firstName || "").trim();
@@ -212,12 +225,16 @@ export function validateTeamInvite(input: {
   }
 
   if (role === "law_firm_user") {
-    const lawFirmId = Number(input.lawFirmId);
-    if (!Number.isFinite(lawFirmId) || lawFirmId <= 0) {
+    const target = resolveDespachoInviteTarget({
+      lawFirmId: input.lawFirmId,
+      createLawFirm: input.createLawFirm,
+      memberRole: input.memberRole,
+    });
+    if (target.ok === false) {
       return {
         ok: false,
-        error: "lawFirmId required for law firm users",
-        code: "law_firm_required",
+        error: target.error,
+        code: target.code,
       };
     }
     return {
@@ -226,7 +243,12 @@ export function validateTeamInvite(input: {
       firstName,
       lastName,
       role: "law_firm_user",
-      lawFirmId,
+      lawFirmId:
+        target.target.mode === "existing" ? target.target.lawFirmId : null,
+      createLawFirm:
+        target.target.mode === "create" ? target.target.firm : null,
+      memberRole: target.memberRole,
+      isPrimaryContact: target.isPrimaryContact,
     };
   }
 
@@ -237,5 +259,8 @@ export function validateTeamInvite(input: {
     lastName,
     role: role as UserRole,
     lawFirmId: null,
+    createLawFirm: null,
+    memberRole: null,
+    isPrimaryContact: false,
   };
 }

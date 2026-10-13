@@ -6,7 +6,7 @@ DELACHE is an operations platform for forensic electrical expert cases: intake �
 
 ## Brand identity
 
-Brand gold (`primary` ≈ `#E6AB40`) with ink CTAs (`accent` near-black) and dark `primary-foreground` on gold. Typography: DM Sans (UI) + Manrope (titles). See [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md).
+PDF marigold CTAs (`primary` ≈ `#F8C018`, white `primary-foreground`), ink secondary CTAs (`accent` near-black), `success` / `info` panels per approved CRM mockups. Logo mark remains `#E6AB40`. Typography: DM Sans (UI) + Manrope (titles). See [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md).
 
 ## Design system
 

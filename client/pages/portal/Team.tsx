@@ -7,7 +7,6 @@ import { Plus, Search } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
 import PortalListPanel from "@/components/portal/PortalListPanel";
-import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import TeamMemberSheet from "@/components/portal/TeamMemberSheet";
 import LocalEmailCtaLegend from "@/components/portal/LocalEmailCtaLegend";
 import { DataGrid, type DataGridColumn } from "@/components/ui/data-grid";
@@ -17,18 +16,30 @@ import {
   fetchTeamMembers,
   inviteTeamMember,
 } from "@/store/slices/portalSlice";
-import type { TeamMemberItem, UserRole, UserStatus } from "@shared/api";
+import type {
+  LawFirmMemberRole,
+  TeamMemberItem,
+  UserRole,
+  UserStatus,
+} from "@shared/api";
 import { useGridListState } from "@/hooks/useGridListState";
+import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
 const ROLES: (UserRole | "law_firm_user")[] = [
   "admin",
-  "case_coordinator",
   "expert",
   "legal",
   "logistics",
   "accountant",
   "law_firm_user",
+];
+
+const FIRM_MEMBER_ROLES: LawFirmMemberRole[] = [
+  "owner",
+  "admin",
+  "member",
+  "viewer",
 ];
 
 export default function TeamPage() {
@@ -40,6 +51,7 @@ export default function TeamPage() {
   const [selected, setSelected] = useState<TeamMemberItem | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [roster, setRoster] = useState<"staff" | "firm">("staff");
   const { page, setPage, sortBy, sortDir, onSort, gridParams } =
     useGridListState("created_at", 20);
 
@@ -52,9 +64,10 @@ export default function TeamPage() {
       fetchTeamMembers({
         ...gridParams,
         q: query.trim() || undefined,
+        roster,
       }),
     );
-  }, [dispatch, gridParams, query]);
+  }, [dispatch, gridParams, query, roster]);
 
   const form = useFormik({
     initialValues: {
@@ -62,20 +75,41 @@ export default function TeamPage() {
       firstName: "",
       lastName: "",
       role: "expert" as UserRole | "law_firm_user",
+      firmMode: "existing" as "existing" | "create",
       lawFirmId: "",
+      memberRole: "member" as LawFirmMemberRole,
+      firmName: "",
+      firmCity: "",
+      firmState: "",
+      firmDefaultCourt: "",
     },
     validationSchema: Yup.object({
       email: Yup.string().email().required(),
       firstName: Yup.string().trim().required(),
       lastName: Yup.string().trim().required(),
       role: Yup.string().required(),
-      lawFirmId: Yup.string().when("role", {
-        is: "law_firm_user",
+      firmMode: Yup.string().oneOf(["existing", "create"]),
+      lawFirmId: Yup.string().when(["role", "firmMode"], {
+        is: (role: string, firmMode: string) =>
+          role === "law_firm_user" && firmMode === "existing",
         then: (schema) => schema.required(),
+        otherwise: (schema) => schema.optional(),
+      }),
+      firmName: Yup.string().when(["role", "firmMode"], {
+        is: (role: string, firmMode: string) =>
+          role === "law_firm_user" && firmMode === "create",
+        then: (schema) => schema.trim().required(),
+        otherwise: (schema) => schema.optional(),
+      }),
+      memberRole: Yup.string().when(["role", "firmMode"], {
+        is: (role: string, firmMode: string) =>
+          role === "law_firm_user" && firmMode === "existing",
+        then: (schema) => schema.oneOf(FIRM_MEMBER_ROLES).required(),
         otherwise: (schema) => schema.optional(),
       }),
     }),
     onSubmit: async (values, helpers) => {
+      const isDespacho = values.role === "law_firm_user";
       const result = await dispatch(
         inviteTeamMember({
           email: values.email.trim(),
@@ -84,8 +118,21 @@ export default function TeamPage() {
           role: values.role,
           preferredLanguage: i18n.language,
           lawFirmId:
-            values.role === "law_firm_user" && values.lawFirmId
+            isDespacho && values.firmMode === "existing" && values.lawFirmId
               ? Number(values.lawFirmId)
+              : null,
+          createLawFirm:
+            isDespacho && values.firmMode === "create"
+              ? {
+                  name: values.firmName.trim(),
+                  city: values.firmCity.trim() || null,
+                  state: values.firmState.trim() || null,
+                  defaultCourtName: values.firmDefaultCourt.trim() || null,
+                }
+              : null,
+          memberRole:
+            isDespacho && values.firmMode === "existing"
+              ? values.memberRole
               : null,
         }),
       );
@@ -96,14 +143,29 @@ export default function TeamPage() {
             firstName: "",
             lastName: "",
             role: "expert",
+            firmMode: "existing",
             lawFirmId: "",
+            memberRole: "member",
+            firmName: "",
+            firmCity: "",
+            firmState: "",
+            firmDefaultCourt: "",
           },
         });
         setShowInvite(false);
+        void dispatch(fetchLawFirms());
+        if (isDespacho) {
+          toast({
+            title: t("team.despachoInviteSent"),
+            description: t("team.despachoInviteSentHint"),
+          });
+          setRoster("firm");
+        }
         void dispatch(
           fetchTeamMembers({
             ...gridParams,
             q: query.trim() || undefined,
+            roster: isDespacho ? "firm" : "staff",
           }),
         );
       }
@@ -140,8 +202,21 @@ export default function TeamPage() {
         label: t("team.colRole"),
         sortable: true,
         shrink: true,
-        render: (m) => t(`team.role.${m.role}`, { defaultValue: m.role }),
+        render: (m) =>
+          m.role === "law_firm_user" && m.memberRole
+            ? `${t("team.role.law_firm_user")} · ${t(`team.memberRole.${m.memberRole}`)}`
+            : t(`team.role.${m.role}`, { defaultValue: m.role }),
       },
+      ...(roster === "firm"
+        ? [
+            {
+              key: "law_firm",
+              label: t("team.colFirm"),
+              sortable: false,
+              render: (m: TeamMemberItem) => m.lawFirmName || "—",
+            } satisfies DataGridColumn<TeamMemberItem>,
+          ]
+        : []),
       {
         key: "status",
         label: t("team.colStatus"),
@@ -167,10 +242,12 @@ export default function TeamPage() {
           m.lastLoginAt ? new Date(m.lastLoginAt).toLocaleString() : "—",
       },
     ];
-  }, [t]);
+  }, [t, roster]);
+
+  const isDespachoInvite = form.values.role === "law_firm_user";
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="min-w-0 w-full max-w-full space-y-6">
       <MetaHelmet title={t("portal.team")} noindex />
       <PortalPageHeader
         eyebrow={t("team.eyebrow")}
@@ -199,9 +276,6 @@ export default function TeamPage() {
             className="grid gap-3 rounded-2xl border border-border bg-card p-5 shadow-sm sm:grid-cols-2 sm:p-6"
           >
             <div className="sm:col-span-2">
-              <SectionHelper>{t("help.team.section")}</SectionHelper>
-            </div>
-            <div className="sm:col-span-2">
               <LocalEmailCtaLegend />
             </div>
             <div className="sm:col-span-2">
@@ -213,7 +287,6 @@ export default function TeamPage() {
                 placeholder={t("team.emailPlaceholder")}
                 className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
               />
-              <FieldHelper>{t("help.team.email")}</FieldHelper>
             </div>
             <div>
               <input
@@ -223,7 +296,6 @@ export default function TeamPage() {
                 placeholder={t("team.firstName")}
                 className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
               />
-              <FieldHelper>{t("help.team.firstName")}</FieldHelper>
             </div>
             <div>
               <input
@@ -233,9 +305,8 @@ export default function TeamPage() {
                 placeholder={t("team.lastName")}
                 className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
               />
-              <FieldHelper>{t("help.team.lastName")}</FieldHelper>
             </div>
-            <div>
+            <div className={isDespachoInvite ? "" : "sm:col-span-2"}>
               <select
                 name="role"
                 value={form.values.role}
@@ -248,28 +319,93 @@ export default function TeamPage() {
                   </option>
                 ))}
               </select>
-              <FieldHelper>{t("help.team.role")}</FieldHelper>
             </div>
-            {form.values.role === "law_firm_user" ? (
-              <div>
-                <select
-                  name="lawFirmId"
-                  value={form.values.lawFirmId}
-                  onChange={form.handleChange}
-                  className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-                >
-                  <option value="">{t("team.selectLawFirm")}</option>
-                  {lawFirms.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
-                <FieldHelper>{t("help.team.lawFirm")}</FieldHelper>
-              </div>
-            ) : (
-              <div className="hidden sm:block" />
-            )}
+            {isDespachoInvite ? (
+              <>
+                <div>
+                  <select
+                    name="firmMode"
+                    value={form.values.firmMode}
+                    onChange={form.handleChange}
+                    className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="existing">{t("team.firmModeExisting")}</option>
+                    <option value="create">{t("team.firmModeCreate")}</option>
+                  </select>
+                </div>
+                {form.values.firmMode === "existing" ? (
+                  <>
+                    <div>
+                      <select
+                        name="lawFirmId"
+                        value={form.values.lawFirmId}
+                        onChange={form.handleChange}
+                        className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                      >
+                        <option value="">{t("team.selectLawFirm")}</option>
+                        {lawFirms.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <select
+                        name="memberRole"
+                        value={form.values.memberRole}
+                        onChange={form.handleChange}
+                        className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                      >
+                        {FIRM_MEMBER_ROLES.map((role) => (
+                          <option key={role} value={role}>
+                            {t(`team.memberRole.${role}`)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="sm:col-span-2">
+                      <p className="mb-2 text-[11px] text-muted-foreground">
+                        {t("team.createFirmOwnerHint")}
+                      </p>
+                      <input
+                        name="firmName"
+                        value={form.values.firmName}
+                        onChange={form.handleChange}
+                        placeholder={t("settings.lawFirmName")}
+                        className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                      />
+                    </div>
+                    <input
+                      name="firmCity"
+                      value={form.values.firmCity}
+                      onChange={form.handleChange}
+                      placeholder={t("cases.cityLabel")}
+                      className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                    />
+                    <input
+                      name="firmState"
+                      value={form.values.firmState}
+                      onChange={form.handleChange}
+                      placeholder={t("settings.state")}
+                      className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                    />
+                    <div className="sm:col-span-2">
+                      <input
+                        name="firmDefaultCourt"
+                        value={form.values.firmDefaultCourt}
+                        onChange={form.handleChange}
+                        placeholder={t("settings.defaultCourtNamePlaceholder")}
+                        className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                      />
+                    </div>
+                  </>
+                )}
+              </>
+            ) : null}
             <button
               type="submit"
               disabled={!form.isValid || form.isSubmitting}
@@ -282,6 +418,42 @@ export default function TeamPage() {
       </AnimatePresence>
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            setRoster("staff");
+            setPage(1);
+          }}
+          className={cn(
+            "h-9 rounded-xl px-3 text-xs font-semibold transition",
+            roster === "staff"
+              ? "bg-primary text-primary-foreground"
+              : "border border-border bg-card text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {t("team.rosterStaff")}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setRoster("firm");
+            setPage(1);
+          }}
+          className={cn(
+            "h-9 rounded-xl px-3 text-xs font-semibold transition",
+            roster === "firm"
+              ? "bg-primary text-primary-foreground"
+              : "border border-border bg-card text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {t("team.rosterFirm")}
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {roster === "firm" ? t("team.firmListHint") : t("team.staffListHint")}
+      </p>
 
       <PortalListPanel
         toolbar={
@@ -315,6 +487,7 @@ export default function TeamPage() {
           emptyMessage={t("team.empty")}
           noBleeding
           onRowClick={(m) => {
+            if (m.role === "law_firm_user") return;
             setSelected(m);
             setSheetOpen(true);
           }}

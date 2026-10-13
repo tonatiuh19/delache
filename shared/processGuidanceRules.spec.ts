@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildNextStepGuidance,
   canSeeProcessRaciDetail,
+  partitionMissingGatesForViewer,
   processBlockedHowToKey,
   processGateQuickLink,
   processPointRaciBuckets,
   processQuickLinksForViewer,
   processViewerActionKey,
   shouldHighlightAssignment,
+  viewerCanActOnGate,
   whoCanAdvanceWorkflow,
 } from "./processGuidanceRules";
 
@@ -27,7 +29,7 @@ describe("processGuidanceRules", () => {
     });
     expect(g.accountable).toBe("coordinator");
     expect(g.responsible).toContain("law_firm");
-    expect(g.advanceRoles).toEqual(["admin", "case_coordinator"]);
+    expect(g.advanceRoles).toEqual(["admin"]);
     expect(g.needsPrimaryExpert).toBe(false);
   });
 
@@ -37,11 +39,12 @@ describe("processGuidanceRules", () => {
       missingGateCodes: ["assignment:primary_expert"],
     });
     expect(g.needsPrimaryExpert).toBe(true);
-    expect(shouldHighlightAssignment(2)).toBe(true);
+    expect(shouldHighlightAssignment(3)).toBe(true);
+    expect(shouldHighlightAssignment(2)).toBe(false);
     expect(shouldHighlightAssignment(1)).toBe(false);
   });
 
-  it("limits workflow advance to admin/coordinator", () => {
+  it("limits workflow advance to admin", () => {
     expect(whoCanAdvanceWorkflow("admin")).toBe(true);
     expect(whoCanAdvanceWorkflow("expert")).toBe(false);
   });
@@ -67,7 +70,48 @@ describe("processGuidanceRules", () => {
         missingGateCodes: ["doc:medical_record"],
       }),
     ).toBe("blockedHowToWait");
-    expect(processViewerActionKey("expert")).toBe("uploader");
+    expect(processViewerActionKey("expert")).toBe("assignee");
+  });
+
+  it("partitions P2 admin gates away from expert actionable tasks", () => {
+    expect(viewerCanActOnGate("handoff:documents_confirmed", "expert")).toBe(
+      false,
+    );
+    expect(viewerCanActOnGate("handoff:documents_confirmed", "admin")).toBe(
+      true,
+    );
+    expect(viewerCanActOnGate("assignment:primary_expert", "expert")).toBe(
+      false,
+    );
+    expect(viewerCanActOnGate("assignment:primary_expert", "admin")).toBe(true);
+    expect(viewerCanActOnGate("location:gps", "expert")).toBe(true);
+
+    const partitioned = partitionMissingGatesForViewer(
+      ["assignment:primary_expert", "handoff:documents_confirmed"],
+      "expert",
+    );
+    expect(partitioned.actionable).toEqual([]);
+    expect(partitioned.waiting).toEqual([
+      "assignment:primary_expert",
+      "handoff:documents_confirmed",
+    ]);
+
+    expect(
+      processBlockedHowToKey({
+        role: "expert",
+        missingGateCodes: [
+          "assignment:primary_expert",
+          "handoff:documents_confirmed",
+        ],
+      }),
+    ).toBe("blockedHowToWaitAssignment");
+
+    expect(
+      processBlockedHowToKey({
+        role: "expert",
+        missingGateCodes: ["handoff:documents_confirmed"],
+      }),
+    ).toBe("blockedHowToPrepParallel");
   });
 
   it("builds role-aware quick links for intake gaps", () => {
@@ -97,5 +141,47 @@ describe("processGuidanceRules", () => {
       "#case-documents-cat-medical_record",
     );
     expect(processGateQuickLink("doc:cfe_report", "logistics")).toBeNull();
+  });
+
+  it("builds quick links for P2 handoff and P9 ratification schedule gates", () => {
+    const handoffLinks = processQuickLinksForViewer({
+      role: "admin",
+      missingGateCodes: ["handoff:documents_confirmed"],
+      gatesOk: false,
+      point: 3,
+    });
+    expect(handoffLinks.map((l) => l.id)).toContain("assignments");
+    expect(
+      processGateQuickLink("handoff:documents_confirmed", "admin")?.href,
+    ).toBe("#case-assignments");
+    expect(
+      processGateQuickLink("handoff:documents_confirmed", "expert"),
+    ).toBeNull();
+
+    const expertPrep = processQuickLinksForViewer({
+      role: "expert",
+      missingGateCodes: ["handoff:documents_confirmed"],
+      gatesOk: false,
+      point: 3,
+      publicUuid: "case-uuid",
+    });
+    expect(expertPrep.map((l) => l.id)).toEqual(
+      expect.arrayContaining(["questionnaire", "location"]),
+    );
+    expect(expertPrep.map((l) => l.id)).not.toContain("assignments");
+
+    const ratificationLinks = processQuickLinksForViewer({
+      role: "admin",
+      missingGateCodes: ["court:ratification_scheduled"],
+      gatesOk: false,
+      point: 9,
+    });
+    expect(ratificationLinks.map((l) => l.id)).toContain("documents");
+    expect(
+      processGateQuickLink("court:ratification_scheduled", "admin")?.href,
+    ).toBe("#case-ratification-schedule");
+    expect(
+      processGateQuickLink("court:ratification_scheduled", "logistics"),
+    ).toBeNull();
   });
 });

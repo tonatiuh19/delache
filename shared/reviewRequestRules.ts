@@ -2,6 +2,8 @@
  * Review request lifecycle (Product.md Phases 4, 9, 10).
  */
 
+import type { QuestionnaireStatus } from "./api";
+
 export const REVIEW_ENTITY_TYPES = [
   "questionnaire",
   "technical_report",
@@ -99,7 +101,21 @@ export function resolveReviewCompletion(
   return { ok: true, nextStatus: outcome, completed: true };
 }
 
-/** Map review outcome → questionnaire status. */
+/** Map review outcome → questionnaire status from a given stage. */
+export function questionnaireStatusFromReviewStage(
+  stage: ReviewStage,
+  outcome: ReviewOutcome,
+): QuestionnaireStatus | null {
+  if (outcome === "changes_requested") return "changes_requested";
+  if (outcome === "rejected") return "rejected";
+  if (outcome === "approved") {
+    if (stage === "grammar_qa") return "legal_review";
+    if (stage === "internal_legal") return "approved";
+  }
+  return null;
+}
+
+/** @deprecated Use questionnaireStatusFromReviewStage for stage-aware mapping. */
 export function questionnaireStatusFromReview(
   outcome: ReviewOutcome,
 ): "approved" | "changes_requested" | "rejected" {

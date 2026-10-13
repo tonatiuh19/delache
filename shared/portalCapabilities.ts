@@ -18,6 +18,7 @@ export const CASE_SECTIONS = [
   "evidence",
   "logistics",
   "reports",
+  "finance",
   "audit",
   "completeness",
 ] as const;
@@ -40,7 +41,6 @@ const ALL = new Set<CaseSection>(CASE_SECTIONS);
 
 const BY_ROLE: Record<UserRole, ReadonlySet<CaseSection>> = {
   admin: ALL,
-  case_coordinator: ALL,
   expert: new Set([
     "workflow",
     "timeline",
@@ -50,6 +50,7 @@ const BY_ROLE: Record<UserRole, ReadonlySet<CaseSection>> = {
     "questionnaire",
     "inspections",
     "evidence",
+    "logistics",
     "reports",
     "reviews",
     "completeness",
@@ -81,15 +82,16 @@ const BY_ROLE: Record<UserRole, ReadonlySet<CaseSection>> = {
     "notes",
     "documents",
     "deadlines",
+    "finance",
     "audit",
     "completeness",
   ]),
 };
 
 const REVIEW_STAGE_ROLES: Record<ReviewStage, readonly UserRole[]> = {
-  grammar_qa: ["admin", "case_coordinator", "expert"],
-  technical_director: ["admin", "case_coordinator", "expert"],
-  internal_legal: ["admin", "case_coordinator", "legal"],
+  grammar_qa: ["admin", "expert"],
+  technical_director: ["admin", "expert"],
+  internal_legal: ["admin", "legal"],
   /** External law-firm stage is completed via client portal; staff admin can override. */
   external_law_firm: ["admin"],
 };
@@ -114,7 +116,10 @@ export function canMutateCaseSection(
   role: string | null | undefined,
   section: CaseMutateSection,
 ): boolean {
-  return canViewCaseSection(role, section);
+  if (!canViewCaseSection(role, section)) return false;
+  // Expert may view logistics readiness on P7 but not mutate trips.
+  if (role === "expert" && section === "logistics") return false;
+  return true;
 }
 
 export function canCompleteReviewStage(
@@ -141,27 +146,27 @@ export function canStaffApproveExternalReview(
 export function canDecideQuestionnaireReview(
   role: string | null | undefined,
 ): boolean {
-  return (
-    role === "admin" || role === "case_coordinator" || role === "legal"
-  );
+  return role === "admin" || role === "legal";
 }
 
 /** Edit property GPS / address on a case. */
 export function canEditCaseLocation(role: string | null | undefined): boolean {
   return (
-    role === "admin" ||
-    role === "case_coordinator" ||
-    role === "expert" ||
-    role === "logistics"
+    role === "admin" || role === "expert" || role === "logistics"
   );
 }
 
-/** Case workflow status transitions — coordinators and admins. */
-export function canChangeCaseStatus(role: string | null | undefined): boolean {
-  return role === "admin" || role === "case_coordinator";
+/** Paso 1 folio, note, and files inside an existing case. Despacho stays read-only. */
+export function canEditIntakePack(role: string | null | undefined): boolean {
+  return canMutateCaseSection(role, "documents");
 }
 
-/** Accountant may only complete P12; coordinators/admins keep full workflow. */
+/** Case workflow status transitions — admin (Miro Coordinador). */
+export function canChangeCaseStatus(role: string | null | undefined): boolean {
+  return role === "admin";
+}
+
+/** Accountant may only complete P10; admin keeps full workflow. */
 export function canApplyCaseStatusChange(
   role: string | null | undefined,
   from: string,
@@ -171,21 +176,16 @@ export function canApplyCaseStatusChange(
   return role === "accountant" && from === "accounting" && to === "completed";
 }
 
-/** Assignments — coordinators and admins. */
+/** Assignments — admin (Miro Coordinador). */
 export function canManageCaseAssignments(
   role: string | null | undefined,
 ): boolean {
-  return role === "admin" || role === "case_coordinator";
+  return role === "admin";
 }
 
 /** Calendar create/update — ops roles. */
 export function canManageCalendar(role: string | null | undefined): boolean {
-  return (
-    role === "admin" ||
-    role === "case_coordinator" ||
-    role === "logistics" ||
-    role === "expert"
-  );
+  return role === "admin" || role === "logistics" || role === "expert";
 }
 
 /** Generic blob upload endpoint — documents or evidence roles. */
@@ -212,6 +212,7 @@ export type CaseDetailSectionsPayload = {
   trips: unknown[];
   expenses: unknown[];
   technicalReports: unknown[];
+  invoices?: unknown[];
 };
 
 /**
@@ -250,5 +251,6 @@ export function filterCaseDetailSectionsForRole<T extends CaseDetailSectionsPayl
     next.expenses = [];
   }
   if (!canViewCaseSection(role, "reports")) next.technicalReports = [];
+  if (!canViewCaseSection(role, "finance")) next.invoices = [];
   return next;
 }

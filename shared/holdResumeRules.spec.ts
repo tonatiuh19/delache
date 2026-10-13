@@ -8,11 +8,11 @@ import {
 describe("holdResumeRules", () => {
   it("picks the first (newest) hold from_status per case", () => {
     const map = latestHoldFromStatusByCase([
-      { caseId: 1, fromStatus: "inspection" },
+      { caseId: 1, fromStatus: "field_ops" },
       { caseId: 1, fromStatus: "intake" },
       { caseId: 2, fromStatus: "assignment" },
     ]);
-    expect(map.get(1)).toBe("inspection");
+    expect(map.get(1)).toBe("field_ops");
     expect(map.get(2)).toBe("assignment");
   });
 
@@ -26,11 +26,11 @@ describe("holdResumeRules", () => {
 
   it("resolves hold resume from hold history with flow fallback", () => {
     const holdFrom = latestHoldFromStatusByCase([
-      { caseId: 10, fromStatus: "inspection" },
+      { caseId: 10, fromStatus: "field_ops" },
     ]);
     const flowTo = latestFlowToStatusByCase([]);
     const result = buildHoldResumeStatusByCase([10], holdFrom, flowTo);
-    expect(result.get(10)).toBe("inspection");
+    expect(result.get(10)).toBe("field_ops");
   });
 
   it("falls back to last workflow status when hold from is missing", () => {
@@ -56,9 +56,9 @@ describe("holdResumeRules", () => {
       { caseId: 13, fromStatus: "completed" },
     ]);
     const flowTo = latestFlowToStatusByCase([
-      { caseId: 13, toStatus: "inspection" },
+      { caseId: 13, toStatus: "field_ops" },
     ]);
     const result = buildHoldResumeStatusByCase([13], holdFrom, flowTo);
-    expect(result.get(13)).toBe("inspection");
+    expect(result.get(13)).toBe("field_ops");
   });
 });

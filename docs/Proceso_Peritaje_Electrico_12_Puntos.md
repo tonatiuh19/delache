@@ -101,7 +101,7 @@ Arranca el reloj de **3 días** al pasar a P3.
 
 **Rechazo QA:** permanece en P3; el autor corrige. El reloj de 3 días no se reinicia salvo `on_hold` justificado.
 
-**Bloquea salir:** GPS, Street View, cuestionario enviado a legal (`submitted`, `legal_review` o `approved`). El hito de anticipo sigue exigiendo `approved`.
+**Bloquea salir:** GPS, Street View, cuestionario con QA aprobado (`legal_review` o `approved`). El anticipo se libera al pasar QA (entrada a `legal_review`), no al aprobar legal.
 
 ---
 

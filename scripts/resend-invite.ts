@@ -83,7 +83,7 @@ async function main() {
       resend: true,
     });
 
-    const loginUrl = `${appUrl}/portal/login`;
+    const loginUrl = `${appUrl}/login`;
     if (!payload.html.includes(loginUrl) || !payload.html.includes(appUrl)) {
       throw new Error("Email HTML missing production URLs — aborting");
     }

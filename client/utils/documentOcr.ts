@@ -1,4 +1,5 @@
 import { classifyDmsFiles, isOcrableMime } from "@shared/documentDmsRules";
+import { loadPdfDocumentFromUrl } from "@/utils/pdfDocument";
 
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -19,12 +20,7 @@ export function filterDmsFiles(files: FileList | File[]): File[] {
 
 /** Extract text from PDF via pdf.js (client). */
 export async function extractPdfTextFromUrl(url: string): Promise<string> {
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/build/pdf.worker.min.mjs",
-    import.meta.url,
-  ).toString();
-  const doc = await pdfjs.getDocument(url).promise;
+  const doc = await loadPdfDocumentFromUrl(url);
   const parts: string[] = [];
   const maxPages = Math.min(doc.numPages, 40);
   for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {

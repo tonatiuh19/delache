@@ -39,10 +39,10 @@ const intakeDocs = [
 ];
 
 describe("process alignment", () => {
-  it("maps 12 points onto CASE_STATUS_FLOW before completed", () => {
+  it("maps 10 points onto CASE_STATUS_FLOW before completed", () => {
     const { statuses } = assertProcessAlignsWithCaseFlow();
-    expect(statuses).toHaveLength(12);
-    expect(CASE_STATUS_FLOW.slice(0, 12)).toEqual(statuses);
+    expect(statuses).toHaveLength(10);
+    expect(CASE_STATUS_FLOW.slice(0, 10)).toEqual(statuses);
   });
 
   it("has exactly one Accountable per point", () => {
@@ -55,29 +55,32 @@ describe("process alignment", () => {
     }
   });
 
-  it("nests P7–P11 inside the 10-day protesta clock", () => {
-    expect(pointsInsideParentClock(6)).toEqual([7, 8, 9, 10, 11]);
-    expect(PROCESS_POINTS[10].sla?.nestedInside).toBe(6);
-    expect(PROCESS_POINTS[10].sla?.businessDays).toBe(3);
+  it("nests P7–P9 inside the 10-day protesta clock", () => {
+    expect(pointsInsideParentClock(6)).toEqual([7, 8, 9]);
+    expect(PROCESS_POINTS[9].sla?.nestedInside).toBe(6);
+    expect(PROCESS_POINTS[9].sla?.businessDays).toBe(3);
     expect(PROCESS_POINTS[6].sla?.businessDays).toBe(10);
     expect(PROCESS_POINTS[6].sla?.startsOn).toBe("protesta_filed");
-    expect(PROCESS_POINTS[3].sla?.businessDays).toBe(3);
+    expect(PROCESS_POINTS[2].sla?.businessDays).toBe(3);
     expect(PROCESS_POINTS[4].sla?.businessDays).toBe(2);
   });
 
   it("resolves status → point and terminal statuses to null", () => {
     expect(processPointForStatus("intake")).toBe(1);
-    expect(processPointForStatus("accounting")).toBe(12);
+    expect(processPointForStatus("accounting")).toBe(10);
+    expect(processPointForStatus("field_ops")).toBe(7);
+    expect(processPointForStatus("validation_delivery")).toBe(9);
     expect(processPointForStatus("completed")).toBeNull();
     expect(processPointForStatus("on_hold")).toBeNull();
     expect(processPointForStatus("cancelled")).toBeNull();
   });
 
   it("defines reject loops for QA / legal / report", () => {
-    expect(rejectReturnsTo(3)).toBe(3);
-    expect(rejectReturnsTo(4)).toBe(3);
-    expect(rejectReturnsTo(9)).toBe(9);
-    expect(rejectReturnsTo(10)).toBe(9);
+    expect(rejectReturnsTo(2)).toBe(2);
+    expect(rejectReturnsTo(3)).toBeNull();
+    expect(rejectReturnsTo(4)).toBe(2);
+    expect(rejectReturnsTo(8)).toBe(8);
+    expect(rejectReturnsTo(9)).toBe(8);
     expect(rejectReturnsTo(1)).toBeNull();
   });
 
@@ -105,7 +108,11 @@ describe("process alignment", () => {
 
     const ready = buildListadoProgress({
       status: "intake",
-      input: { documentCategories: intakeDocs },
+      input: {
+        documentCategories: intakeDocs,
+        approvedDocumentCategories: intakeDocs,
+        expedienteApproved: true,
+      },
     });
     expect(ready.gatesOk).toBe(true);
     expect(ready.intakeComplete).toBe(true);
@@ -119,7 +126,11 @@ describe("process alignment", () => {
 
     const assignmentReady = buildListadoProgress({
       status: "assignment",
-      input: { documentCategories: intakeDocs, hasPrimaryExpert: true },
+      input: {
+        documentCategories: intakeDocs,
+        hasPrimaryExpert: true,
+        documentsHandoffConfirmed: true,
+      },
     });
     expect(assignmentReady.gatesOk).toBe(true);
 
@@ -164,14 +175,41 @@ describe("evaluateProcessGates", () => {
     }
   });
 
-  it("allows P1 when intake pack is complete", () => {
+  it("blocks P1 when docs present but not approved / expediente missing", () => {
+    const r = evaluateProcessGates(1, {
+      documentCategories: intakeDocs,
+      approvedDocumentCategories: [],
+      expedienteApproved: false,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.missing).toContain("doc_approved:lawsuit");
+      expect(r.missing).toContain("expediente:approved");
+    }
+  });
+
+  it("allows P1 when intake pack is approved and expediente stamped", () => {
     expect(
-      evaluateProcessGates(1, { documentCategories: intakeDocs }).ok,
+      evaluateProcessGates(1, {
+        documentCategories: intakeDocs,
+        approvedDocumentCategories: intakeDocs,
+        expedienteApproved: true,
+      }).ok,
     ).toBe(true);
   });
 
-  it("blocks P2 without a primary expert", () => {
-    const r = evaluateProcessGates(2, {
+  it("blocks P1 when expediente not approved even if docs approved", () => {
+    const r = evaluateProcessGates(1, {
+      documentCategories: intakeDocs,
+      approvedDocumentCategories: intakeDocs,
+      expedienteApproved: false,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.missing).toEqual(["expediente:approved"]);
+  });
+
+  it("blocks assignment without a primary expert", () => {
+    const r = evaluateProcessGates(3, {
       documentCategories: intakeDocs,
       hasPrimaryExpert: false,
     });
@@ -179,11 +217,32 @@ describe("evaluateProcessGates", () => {
     if (!r.ok) expect(r.missing).toContain("assignment:primary_expert");
   });
 
-  it("blocks P3 until GPS, Street View, and a submitted questionnaire", () => {
-    const base = { documentCategories: ["questionnaire"] };
-    expect(evaluateProcessGates(3, base).ok).toBe(false);
+  it("blocks assignment without coordinator handoff confirmation", () => {
+    const r = evaluateProcessGates(3, {
+      documentCategories: intakeDocs,
+      hasPrimaryExpert: true,
+      documentsHandoffConfirmed: false,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.missing).toContain("handoff:documents_confirmed");
     expect(
       evaluateProcessGates(3, {
+        documentCategories: intakeDocs,
+        hasPrimaryExpert: true,
+        documentsHandoffConfirmed: true,
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("blocks questionnaire until GPS, Street View preexistence, and QA pass", () => {
+    const base = { documentCategories: ["questionnaire"] };
+    const streetViewContent = {
+      streetViewValidated: "https://sv",
+      streetViewPreexistence: "preexists",
+    };
+    expect(evaluateProcessGates(2, base).ok).toBe(false);
+    expect(
+      evaluateProcessGates(2, {
         ...base,
         hasPropertyGps: true,
         hasStreetView: true,
@@ -191,31 +250,23 @@ describe("evaluateProcessGates", () => {
       }).ok,
     ).toBe(false);
     expect(
-      evaluateProcessGates(3, {
+      evaluateProcessGates(2, {
         ...base,
         hasPropertyGps: true,
         hasStreetView: true,
-        questionnaireStatus: "changes_requested",
+        questionnaireStatus: "grammar_qa",
       }).ok,
     ).toBe(false);
     expect(
-      evaluateProcessGates(3, {
+      evaluateProcessGates(2, {
         ...base,
         hasPropertyGps: true,
-        hasStreetView: true,
-        questionnaireStatus: "submitted",
-      }).ok,
-    ).toBe(true);
-    expect(
-      evaluateProcessGates(3, {
-        ...base,
-        hasPropertyGps: true,
-        hasStreetView: true,
+        questionnaireContentJson: streetViewContent,
         questionnaireStatus: "legal_review",
       }).ok,
     ).toBe(true);
     expect(
-      evaluateProcessGates(3, {
+      evaluateProcessGates(2, {
         ...base,
         hasPropertyGps: true,
         hasStreetView: true,
@@ -224,8 +275,8 @@ describe("evaluateProcessGates", () => {
     ).toBe(true);
   });
 
-  it("returns P4 legal reject to questionnaire (P3)", () => {
-    expect(rejectReturnsTo(4)).toBe(3);
+  it("returns legal review reject to the questionnaire step", () => {
+    expect(rejectReturnsTo(4)).toBe(2);
     const r = evaluateProcessGates(4, {
       documentCategories: ["questionnaire"],
       questionnaireStatus: "changes_requested",
@@ -258,10 +309,26 @@ describe("evaluateProcessGates", () => {
     ).toBe(true);
   });
 
-  it("treats an approved questionnaire as satisfying the P3 file artifact", () => {
+  it("requires the defendant questionnaire PDF file at questionnaire (point 2)", () => {
     expect(
-      evaluateProcessGates(3, {
+      evaluateProcessGates(2, {
         documentCategories: [],
+        hasPropertyGps: true,
+        hasStreetView: true,
+        questionnaireStatus: "approved",
+      }).ok,
+    ).toBe(false);
+    expect(
+      evaluateProcessGates(2, {
+        documentCategories: [],
+        hasPropertyGps: true,
+        hasStreetView: true,
+        questionnaireStatus: "approved",
+      }).missing,
+    ).toContain("doc:questionnaire");
+    expect(
+      evaluateProcessGates(2, {
+        documentCategories: ["questionnaire"],
         hasPropertyGps: true,
         hasStreetView: true,
         questionnaireStatus: "approved",
@@ -270,64 +337,80 @@ describe("evaluateProcessGates", () => {
   });
 
   it("enforces gates only on forward process advances", () => {
-    expect(processPointToEnforceOnTransition("intake", "assignment")).toBe(1);
+    expect(processPointToEnforceOnTransition("intake", "questionnaire")).toBe(1);
+    expect(processPointToEnforceOnTransition("intake", "assignment")).toBeNull();
     expect(processPointToEnforceOnTransition("accounting", "completed")).toBe(
-      12,
+      10,
     );
     expect(processPointToEnforceOnTransition("intake", "on_hold")).toBeNull();
     expect(processPointToEnforceOnTransition("intake", "cancelled")).toBeNull();
     expect(
       processPointToEnforceOnTransition("on_hold", "questionnaire"),
     ).toBeNull();
-    expect(
-      processPointToEnforceOnTransition("intake", "questionnaire"),
-    ).toBeNull();
   });
 
-  it("reads Street View from questionnaire JSON aliases", () => {
-    expect(questionnaireHasStreetView({ streetView: " https://maps " })).toBe(
-      true,
-    );
+  it("reads Street View from questionnaire JSON aliases with preexistence", () => {
     expect(
-      questionnaireHasStreetView({ streetViewValidated: "https://sv" }),
+      questionnaireHasStreetView({
+        streetView: " https://maps ",
+        streetViewPreexistence: "preexists",
+      }),
     ).toBe(true);
+    expect(
+      questionnaireHasStreetView({
+        streetViewValidated: "https://sv",
+        streetViewPreexistence: "not_preexists",
+      }),
+    ).toBe(true);
+    expect(questionnaireHasStreetView({ streetView: "https://maps" })).toBe(
+      false,
+    );
     expect(questionnaireHasStreetView({ streetView: "  " })).toBe(false);
     expect(questionnaireHasStreetView(null)).toBe(false);
   });
 
-  it("does not block protesta (P6) when plaintiff questionnaire is missing", () => {
+  it("blocks protesta until the plaintiff questionnaire is on file", () => {
     const r = evaluateProcessGates(6, {
       documentCategories: ["protesta"],
       protestaFiled: true,
       plaintiffQuestionnairePresent: false,
     });
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.missing).toContain("doc:plaintiff_questionnaire");
+    expect(
+      evaluateProcessGates(6, {
+        documentCategories: ["protesta", "plaintiff_questionnaire"],
+        protestaFiled: true,
+      }).ok,
+    ).toBe(true);
   });
 
-  it("blocks inspection and report when plaintiff questionnaire is missing", () => {
-    const p8 = evaluateProcessGates(8, {
+  it("blocks field_ops and report when plaintiff questionnaire is missing", () => {
+    const p7 = evaluateProcessGates(7, {
       documentCategories: [],
       plaintiffQuestionnairePresent: false,
       evidenceCategories: [...EVIDENCE_CHECKLIST_CATEGORIES],
       inspectionComplete: true,
+      logisticsReady: true,
     });
-    expect(p8.ok).toBe(false);
-    if (!p8.ok) expect(p8.missing).toContain("doc:plaintiff_questionnaire");
+    expect(p7.ok).toBe(false);
+    if (!p7.ok) expect(p7.missing).toContain("doc:plaintiff_questionnaire");
 
-    const p9 = evaluateProcessGates(9, {
+    const p8 = evaluateProcessGates(8, {
       documentCategories: ["technical_report"],
       plaintiffQuestionnairePresent: false,
       reportStatus: "approved_internal",
     });
-    expect(p9.ok).toBe(false);
+    expect(p8.ok).toBe(false);
   });
 
-  it("blocks leaving inspection without the mandatory evidence checklist", () => {
-    const r = evaluateProcessGates(8, {
+  it("blocks leaving field_ops without the mandatory evidence checklist", () => {
+    const r = evaluateProcessGates(7, {
       documentCategories: [],
       plaintiffQuestionnairePresent: true,
       evidenceCategories: ["facade"],
       inspectionComplete: true,
+      logisticsReady: true,
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -335,54 +418,98 @@ describe("evaluateProcessGates", () => {
     }
   });
 
-  it("requires firm approval to leave P10 and returns rejects to P9", () => {
-    expect(rejectReturnsTo(10)).toBe(9);
+  it("requires firm approval + delivery artifacts to leave P9; rejects return to P8", () => {
+    expect(rejectReturnsTo(9)).toBe(8);
     expect(
-      evaluateProcessGates(10, {
+      evaluateProcessGates(9, {
         documentCategories: ["technical_report"],
         reportStatus: "external_review",
       }).ok,
     ).toBe(false);
     expect(
-      evaluateProcessGates(10, {
-        documentCategories: ["technical_report"],
+      evaluateProcessGates(9, {
+        documentCategories: [
+          "technical_report",
+          "court_filing",
+          "ratification",
+        ],
         reportStatus: "approved",
+        courtFilingPresent: true,
+        ratificationPresent: true,
       }).ok,
     ).toBe(true);
   });
 
-  it("requires court filing + ratification to leave P11", () => {
-    const r = evaluateProcessGates(11, {
-      documentCategories: ["court_filing"],
+  it("requires court filing + ratification PDF to leave P9 (schedule is not enough)", () => {
+    const r = evaluateProcessGates(9, {
+      documentCategories: ["technical_report", "court_filing"],
+      reportStatus: "approved",
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.missing).toContain("doc:ratification");
     expect(
-      evaluateProcessGates(11, {
-        documentCategories: ["court_filing", "ratification"],
+      evaluateProcessGates(9, {
+        documentCategories: [
+          "technical_report",
+          "court_filing",
+          "ratification",
+        ],
+        reportStatus: "approved",
+      }).ok,
+    ).toBe(true);
+    expect(
+      evaluateProcessGates(9, {
+        documentCategories: ["technical_report", "court_filing"],
+        reportStatus: "approved",
+        courtFilingPresent: true,
+        ratificationScheduledAt: "2026-06-01T10:00:00.000Z",
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("requires technical_report PDF even when report status is approved", () => {
+    expect(
+      evaluateProcessGates(8, {
+        documentCategories: [],
+        plaintiffQuestionnairePresent: true,
+        reportStatus: "approved_internal",
+      }).missing,
+    ).toContain("doc:technical_report");
+    expect(
+      evaluateProcessGates(8, {
+        documentCategories: ["technical_report"],
+        plaintiffQuestionnairePresent: true,
+        reportStatus: "approved_internal",
       }).ok,
     ).toBe(true);
   });
 
-  it("blocks P7 unless a logistics trip is explicitly ready", () => {
+  it("blocks P7 unless logistics is ready and inspection is complete", () => {
     expect(evaluateProcessGates(7, { documentCategories: [] }).ok).toBe(false);
     expect(
       evaluateProcessGates(7, {
         documentCategories: [],
         logisticsReady: true,
+        plaintiffQuestionnairePresent: true,
+        evidenceCategories: [...EVIDENCE_CHECKLIST_CATEGORIES],
+        inspectionComplete: true,
+        dictamenDueAt: "2026-02-01T00:00:00.000Z",
       }).ok,
     ).toBe(true);
     const r = evaluateProcessGates(7, {
       documentCategories: [],
       logisticsReady: false,
+      plaintiffQuestionnairePresent: true,
+      evidenceCategories: [...EVIDENCE_CHECKLIST_CATEGORIES],
+      inspectionComplete: true,
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.missing).toContain("logistics:ready");
   });
 
-  it("blocks P12 when issued invoices are unpaid", () => {
-    expect(evaluateProcessGates(12, { documentCategories: [] }).ok).toBe(true);
-    const r = evaluateProcessGates(12, {
+  it("blocks P10 when issued invoices are unpaid", () => {
+    expect(evaluateProcessGates(10, { documentCategories: [] }).ok).toBe(true);
+    const r = evaluateProcessGates(10, {
       documentCategories: [],
       hasUnpaidInvoices: true,
     });
@@ -390,27 +517,30 @@ describe("evaluateProcessGates", () => {
     if (!r.ok) expect(r.missing).toContain("finance:unpaid_invoices");
   });
 
-  it("blocks P8 when inspectionComplete is omitted", () => {
-    const r = evaluateProcessGates(8, {
+  it("blocks P7 when inspectionComplete is omitted", () => {
+    const r = evaluateProcessGates(7, {
       documentCategories: [],
       plaintiffQuestionnairePresent: true,
       evidenceCategories: [...EVIDENCE_CHECKLIST_CATEGORIES],
+      logisticsReady: true,
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.missing).toContain("inspection:complete");
   });
 
-  it("lets measurements cover P8 checklist categories", () => {
+  it("lets measurements cover P7 checklist categories", () => {
     const covered = mergeEvidenceCategories(
       ["facade", "sidewalk", "construction", "pole_id", "electrical_structure", "conductor", "property_invasion", "oversized_construction", "safety"],
       ["horizontal_distance", "vertical_distance", "pole_distance"],
     );
     expect(
-      evaluateProcessGates(8, {
+      evaluateProcessGates(7, {
         documentCategories: [],
         plaintiffQuestionnairePresent: true,
         evidenceCategories: covered,
         inspectionComplete: true,
+        logisticsReady: true,
+        dictamenDueAt: "2026-02-01T00:00:00.000Z",
       }).ok,
     ).toBe(true);
   });
@@ -418,7 +548,7 @@ describe("evaluateProcessGates", () => {
   it("picks the strongest questionnaire / report status, not the newest draft", () => {
     expect(
       pickBestByStatusRank(
-        [{ status: "draft" }, { status: "approved" }, { status: "submitted" }],
+        [{ status: "draft" }, { status: "approved" }, { status: "grammar_qa" }],
         QUESTIONNAIRE_STATUS_RANK,
       )?.status,
     ).toBe("approved");
@@ -443,14 +573,65 @@ describe("evaluateProcessGates", () => {
     expect(hasBlockingUnpaidInvoices(["partially_paid", "paid"])).toBe(true);
   });
 
-  it("parses the fatality flag update", () => {
+  it("parses case flag updates including protesta modality", () => {
     expect(parseUpdateCaseFlags({ involvesFatality: true })).toEqual({
       ok: true,
       value: { involvesFatality: true },
     });
+    expect(parseUpdateCaseFlags({ protestaModality: "virtual" })).toEqual({
+      ok: true,
+      value: { protestaModality: "virtual" },
+    });
+    expect(
+      parseUpdateCaseFlags({
+        involvesFatality: false,
+        protestaModality: "presencial",
+      }),
+    ).toEqual({
+      ok: true,
+      value: { involvesFatality: false, protestaModality: "presencial" },
+    });
     expect(parseUpdateCaseFlags({ involvesFatality: "yes" }).ok).toBe(false);
+    expect(parseUpdateCaseFlags({ protestaModality: "fax" }).ok).toBe(false);
     expect(parseUpdateCaseFlags(null).ok).toBe(false);
     expect(parseUpdateCaseFlags({}).ok).toBe(false);
+    expect(
+      parseUpdateCaseFlags({
+        externalCourtDeadlineAt: "2026-12-01T12:00:00.000Z",
+      }),
+    ).toEqual({
+      ok: true,
+      value: { externalCourtDeadlineAt: "2026-12-01T12:00:00.000Z" },
+    });
+    expect(parseUpdateCaseFlags({ externalCourtDeadlineAt: null })).toEqual({
+      ok: true,
+      value: { externalCourtDeadlineAt: null },
+    });
+    expect(
+      parseUpdateCaseFlags({
+        title: "  Terreno El Roble  ",
+        description: "Nota de ingreso",
+      }),
+    ).toEqual({
+      ok: true,
+      value: { title: "Terreno El Roble", description: "Nota de ingreso" },
+    });
+    expect(parseUpdateCaseFlags({ lawFirmId: 4 })).toEqual({
+      ok: true,
+      value: { lawFirmId: 4 },
+    });
+    expect(parseUpdateCaseFlags({ lawFirmId: null })).toEqual({
+      ok: true,
+      value: { lawFirmId: null },
+    });
+    expect(parseUpdateCaseFlags({ lawFirmId: 0 }).ok).toBe(false);
+    expect(parseUpdateCaseFlags({ title: "   " }).ok).toBe(false);
+    expect(parseUpdateCaseFlags({ description: "x".repeat(501) }).ok).toBe(
+      false,
+    );
+    expect(
+      parseUpdateCaseFlags({ externalCourtDeadlineAt: "bad" }).ok,
+    ).toBe(false);
   });
 
   it("prefers a newer revision over an older approved artifact", () => {
@@ -474,21 +655,25 @@ describe("evaluateProcessGates", () => {
     ).toBe("approved");
     expect(
       pickCurrentProcessArtifact(
-        [{ status: "rejected" }, { status: "submitted" }],
+        [{ status: "rejected" }, { status: "grammar_qa" }],
         QUESTIONNAIRE_STATUS_RANK,
       )?.status,
-    ).toBe("submitted");
+    ).toBe("grammar_qa");
   });
 
   it("reads Street View across questionnaire payloads and upsert eligibility", () => {
     expect(
       anyQuestionnaireHasStreetView([
         { streetView: "  " },
-        { streetViewValidated: "https://sv" },
+        {
+          streetViewValidated: "https://sv",
+          streetViewPreexistence: "inconclusive",
+        },
       ]),
     ).toBe(true);
     expect(anyQuestionnaireHasStreetView([{ streetView: "" }])).toBe(false);
-    expect(canUpsertQuestionnaire("submitted")).toBe(true);
+    expect(canUpsertQuestionnaire("draft")).toBe(true);
+    expect(canUpsertQuestionnaire("grammar_qa")).toBe(false);
     expect(canUpsertQuestionnaire("legal_review")).toBe(false);
     expect(canUpsertQuestionnaire("approved")).toBe(false);
     expect(
@@ -499,20 +684,20 @@ describe("evaluateProcessGates", () => {
     ).toBe(false);
     expect(
       resolveQuestionnaireUpsert({ currentStatus: "draft", submit: true }),
-    ).toMatchObject({ ok: true, nextStatus: "submitted" });
+    ).toMatchObject({ ok: true, nextStatus: "grammar_qa" });
     expect(
       resolveQuestionnaireUpsert({
-        currentStatus: "submitted",
+        currentStatus: "changes_requested",
         submit: true,
       }),
-    ).toMatchObject({ ok: true, nextStatus: "submitted" });
+    ).toMatchObject({ ok: true, nextStatus: "grammar_qa" });
     expect(isActiveLogisticsTripStatus("planned")).toBe(true);
     expect(isActiveLogisticsTripStatus("cancelled")).toBe(false);
     expect(shouldClearOtherPrimaryAssignments("expert", true)).toBe(true);
     expect(shouldClearOtherPrimaryAssignments("qa", true)).toBe(false);
   });
 
-  it("blocks P12 on draft advance/final as well as unpaid issued invoices", () => {
+  it("blocks P10 on draft advance/final as well as unpaid issued invoices", () => {
     expect(
       hasBlockingFinanceForCompletion([{ status: "paid", invoiceType: "advance" }]),
     ).toBe(false);
@@ -530,6 +715,28 @@ describe("evaluateProcessGates", () => {
     expect(isPendingFinanceInvoice({ status: "draft", invoiceType: "expense" })).toBe(
       false,
     );
+  });
+
+  it("keeps listado intakeComplete on presence only (not full P1 approve)", () => {
+    const listado = buildListadoProgress({
+      status: "assignment",
+      input: {
+        documentCategories: intakeDocs,
+        approvedDocumentCategories: [],
+        expedienteApproved: false,
+        hasPrimaryExpert: true,
+        documentsHandoffConfirmed: true,
+      },
+    });
+    expect(listado.intakeComplete).toBe(true);
+    expect(listado.gatesOk).toBe(true);
+    expect(
+      evaluateProcessGates(1, {
+        documentCategories: intakeDocs,
+        approvedDocumentCategories: [],
+        expedienteApproved: false,
+      }).ok,
+    ).toBe(false);
   });
 
   it("builds a server gate snapshot and listado progress", () => {
@@ -550,6 +757,8 @@ describe("evaluateProcessGates", () => {
           "ratification",
           "court_filing",
         ],
+        approvedDocumentCategories: intakeDocs,
+        expedienteApproved: true,
         hasPrimaryExpert: true,
         hasStreetView: true,
         questionnaireStatus: "approved",
@@ -580,9 +789,9 @@ describe("evaluateProcessGates", () => {
     const listado = buildListadoProgress({
       status: "on_hold",
       input: { documentCategories: [] },
-      holdResumeStatus: "inspection",
+      holdResumeStatus: "field_ops",
     });
-    expect(listado.holdResumeStatus).toBe("inspection");
+    expect(listado.holdResumeStatus).toBe("field_ops");
     expect(listado.gatesOk).toBe(true);
   });
 });

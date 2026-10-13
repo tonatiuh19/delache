@@ -72,7 +72,7 @@ describe("email templates", () => {
       role: "expert",
       appUrl: "https://app.delache.mx",
     });
-    expect(staff.html).toContain("/portal/login");
+    expect(staff.html).toContain("/login");
     expect(staff.html).toContain("Perito");
     expect(staff.html).not.toContain(">expert<");
     expect(staff.html).toContain("Sin contraseña");
@@ -84,7 +84,7 @@ describe("email templates", () => {
       appUrl: "https://app.delache.mx",
       resend: true,
     });
-    expect(client.html).toContain("/client/login");
+    expect(client.html).toContain("/login");
     expect(client.html).toContain("García &amp; Co");
     expect(client.subject.toLowerCase()).toContain("reminder");
   });

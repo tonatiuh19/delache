@@ -18,6 +18,6 @@ describe("rbac", () => {
     expect(canManageFinance("accountant")).toBe(true);
     expect(canManageFinance("expert")).toBe(false);
     expect(canManageAdmin("admin")).toBe(true);
-    expect(canManageAdmin("case_coordinator")).toBe(false);
+    expect(canManageAdmin("expert")).toBe(false);
   });
 });

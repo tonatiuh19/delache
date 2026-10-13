@@ -1,5 +1,5 @@
 /**
- * Reject-loop + typed-deadline side effects for the 12-point process.
+ * Reject-loop + typed-deadline side effects for the 10-point process.
  * Keep API handlers thin — Vitest covers these rules.
  */
 
@@ -20,7 +20,7 @@ export function deadlineTypesForCaseStatus(
 ): readonly string[] {
   if (status === "questionnaire") return ["questionnaire"];
   if (status === "legal_review_questionnaire") return ["legal_review"];
-  if (status === "legal_validation") return ["external_legal_validation"];
+  if (status === "validation_delivery") return ["external_legal_validation"];
   return [];
 }
 
@@ -46,7 +46,7 @@ export function deadlineTypesToCompleteOnTransition(
  * returns to the author (or fondo-rejects onto hold).
  */
 export const QUESTIONNAIRE_REOPEN_FROM_STATUSES = [
-  "submitted",
+  "grammar_qa",
   "legal_review",
   "approved",
   "rejected",

@@ -1,34 +1,55 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { Suspense, useEffect } from "react";
+import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { useFormik } from "formik";
-import * as Yup from "yup";
 import {
-  ArrowLeft,
-  Crosshair,
-  FileUp,
-  MapPinned,
-  MessageSquarePlus,
-  Pencil,
-  Trash2,
-} from "lucide-react";
-import MetaHelmet from "@/components/MetaHelmet";
-import { CaseDetailSkeleton } from "@/components/portal/PortalSkeletons";
-import DocumentPreviewSheet, {
-  asPreviewableDocument,
-  type PreviewableDocument,
-} from "@/components/portal/DocumentPreviewSheet";
-import CaseDocumentsPanel from "@/components/portal/CaseDocumentsPanel";
-import DigitalSignaturePad, {
-  type SignatureExport,
-} from "@/components/portal/DigitalSignaturePad";
-import LocationMapPanel from "@/components/portal/LocationMapPanel";
-import ProcessTimeline, {
   buildProcessGateInput,
   processGateLabel,
 } from "@/components/portal/ProcessTimeline";
 import {
-  canUpsertQuestionnaire,
+  StickyAdvanceBar,
+} from "@/components/portal/case-detail/CaseDetailStepHero";
+import { CaseStepNavProvider } from "@/components/portal/case-detail/CaseStepNavContext";
+import ProtestaModalityPanel from "@/components/portal/case-detail/ProtestaModalityPanel";
+import ValidationDeliveryChecklist from "@/components/portal/case-detail/ValidationDeliveryChecklist";
+import CaseSlaStrip from "@/components/portal/case-detail/CaseSlaStrip";
+import PortalPageHeader from "@/components/portal/PortalPageHeader";
+import PdfStepQuestionnaireWorkspace from "@/components/portal/case-detail/pdf-steps/PdfStepQuestionnaireWorkspace";
+import PdfStepAssignmentWorkspace from "@/components/portal/case-detail/pdf-steps/PdfStepAssignmentWorkspace";
+import PdfStepLegalReviewWorkspace from "@/components/portal/case-detail/pdf-steps/PdfStepLegalReviewWorkspace";
+import PdfStepProtestaWorkspace from "@/components/portal/case-detail/pdf-steps/PdfStepProtestaWorkspace";
+import PdfStepFieldOpsWorkspace from "@/components/portal/case-detail/pdf-steps/PdfStepFieldOpsWorkspace";
+import PdfStepReportWorkspace from "@/components/portal/case-detail/pdf-steps/PdfStepReportWorkspace";
+import PdfStepValidationWorkspace from "@/components/portal/case-detail/pdf-steps/PdfStepValidationWorkspace";
+import PdfStepAccountingWorkspace from "@/components/portal/case-detail/pdf-steps/PdfStepAccountingWorkspace";
+import { isPdfWorkspaceStep } from "@shared/pdfStepWorkspaceRules";
+import {
+  CaseDetailSectionFallback,
+  LazyCaseLocationSection,
+  LazyCaseCompletenessSection,
+  LazyCaseDeadlinesSection,
+  LazyCaseWorkflowSection,
+  LazyCaseNotesSection,
+  LazyCaseDocumentsSection,
+  LazyCaseAssignmentsSection,
+  LazyCaseQuestionnaireSection,
+  LazyCaseReviewsSection,
+  LazyCaseInspectionsSection,
+  LazyCaseEvidenceSection,
+  LazyCaseLogisticsSection,
+  LazyCaseReportsSection,
+  LazyCaseFinanceSection,
+  LazyCaseAuditSection,
+} from "@/components/portal/case-detail/sections";
+import {
+  clientStepNumber,
+  processPointForSlug,
+  resolveFocusedSection,
+  sectionDomId,
+  shouldShowSection,
+  type CaseDetailSectionId,
+} from "@shared/caseStepTreeRules";
+import {
+  evaluateProcessGates,
   isActiveLogisticsTripStatus,
   mergeEvidenceCategories,
   pickCurrentProcessArtifact,
@@ -38,785 +59,94 @@ import {
 } from "@shared/processGates";
 import { isForwardTransitionBlockedByGates } from "@shared/casePipelineRules";
 import { isActiveDocumentStatus } from "@shared/documentCompleteness";
-import { SectionHelper, FieldHelper } from "@/components/portal/FormHelpers";
-import PendingSubmitButton from "@/components/portal/PendingSubmitButton";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { notifyThunkSave } from "@/utils/formSave";
 import {
   canChangeCaseStatus,
-  canCompleteReviewStage,
-  canEditCaseLocation,
-  canManageCaseAssignments,
   canMutateCaseSection,
   canViewCaseSection,
 } from "@shared/portalCapabilities";
+import type { CaseStatus, ProtestaModality } from "@shared/api";
 import {
-  buildPropertyQuery,
-  formatDecimalCoordinate,
-  googleStreetViewUrl,
-  hasPropertyMapPreview,
-  parseGpsText,
-  resolveOptionalLatLng,
-  shouldStartPropertyLocationEditing,
-} from "@shared/locationRules";
-import { resolveLocationGpsForSave } from "@shared/formSaveRules";
-import { isBlobTokenMissingError } from "@shared/documentDmsRules";
-import { toast } from "@/hooks/use-toast";
-import { requestDevicePosition } from "@/utils/geolocation";
-import {
-  addCaseNote,
-  assignCaseMember,
-  completeReviewRequest,
-  createEvidence,
-  createExpense,
-  createInspection,
-  createMeasurement,
-  createQuestionnaire,
-  createTechnicalReport,
-  createTrip,
-  deleteEvidence,
   fetchCaseDetail,
-  geocodeAddress,
-  runDocumentOcr,
-  setExpertDeliveryDeadline,
-  unassignCaseMember,
   updateCaseFlags,
-  updateCaseLocation,
   updateCaseStatus,
-  updateInspectionStatus,
-  updateQuestionnaireStatus,
-  updateDocumentCategory,
-  updateTechnicalReportStatus,
-  uploadCaseDocumentsSmart,
 } from "@/store/slices/casesSlice";
-import { fetchTeamMembers } from "@/store/slices/portalSlice";
-import type {
-  AssignmentRole,
-  CaseStatus,
-  DocumentCategory,
-  EvidenceCategory,
-  EvidenceType,
-  ExpenseType,
-  MeasurementType,
-  QuestionnaireStatus,
-} from "@shared/api";
-import {
-  EVIDENCE_CATEGORIES,
-  EVIDENCE_TYPES,
-  evidenceRequiresFile,
-} from "@shared/evidenceRules";
-import { fileToBase64 } from "@/utils/documentOcr";
+import type { ReactNode } from "react";
 
-const ASSIGNMENT_ROLES: AssignmentRole[] = [
-  "expert",
-  "coordinator",
-  "legal_reviewer",
-  "logistics",
-  "accountant",
-  "qa",
-  "technical_director",
-  "observer",
-];
-
-const MEASUREMENT_TYPES: MeasurementType[] = [
-  "horizontal_distance",
-  "vertical_distance",
-  "pole_distance",
-  "other",
-];
-
-function severityClass(level: string) {
-  if (level === "overdue" || level === "critical") return "text-destructive";
-  if (level === "warning") return "text-primary";
-  return "text-muted-foreground";
+function SectionSuspense({ children }: { children: ReactNode }) {
+  return (
+    <Suspense fallback={<CaseDetailSectionFallback />}>{children}</Suspense>
+  );
 }
 
 export default function CaseDetailPage() {
-  const { publicUuid = "" } = useParams();
+  const { publicUuid = "", stepSlug } = useParams<{
+    publicUuid: string;
+    stepSlug?: string;
+  }>();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const focusedSection = resolveFocusedSection(
+    stepSlug,
+    searchParams.get("section"),
+  );
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const {
     selected,
-    history,
-    notes,
     documents,
     assignments,
-    deadlines,
     questionnaires,
     inspections,
     measurements,
     evidence,
-    evidenceChecklist,
-    reviewRequests,
-    documentCompleteness,
-    auditLogs,
-    trips,
-    expenses,
     technicalReports,
-    allowedNextStatuses,
-    hasUnpaidInvoices,
+    trips,
+    deadlines,
+    documentCompleteness,
     processGate,
     statusGateMissing,
-    detailLoading,
+    allowedNextStatuses,
+    hasUnpaidInvoices,
     updatingStatus,
     error,
   } = useAppSelector((s) => s.cases);
-  const { members } = useAppSelector((s) => s.portal);
   const role = useAppSelector((s) => s.auth.user?.role);
-  const [reason, setReason] = useState("");
-  const [docPreview, setDocPreview] = useState<PreviewableDocument | null>(
-    null,
-  );
-  const [docsUploading, setDocsUploading] = useState(false);
-  const [uploadCategory, setUploadCategory] =
-    useState<DocumentCategory>("lawsuit");
-  const signatureExportRef = useRef<(() => SignatureExport) | null>(null);
-  const [signaturePadKey, setSignaturePadKey] = useState(0);
-  const [locating, setLocating] = useState(false);
-  const [locationStatus, setLocationStatus] = useState<string | null>(null);
-  const [locationEditing, setLocationEditing] = useState(true);
-  const [unassigningId, setUnassigningId] = useState<number | null>(null);
 
-  const refreshDetail = () => {
-    if (publicUuid) void dispatch(fetchCaseDetail(publicUuid));
-  };
+  const showSection = (sectionId: CaseDetailSectionId) =>
+    shouldShowSection(sectionId, stepSlug, false, focusedSection);
 
   useEffect(() => {
-    if (publicUuid) void dispatch(fetchCaseDetail(publicUuid));
-    void dispatch(fetchTeamMembers({ limit: 100, sortBy: "first_name", sortDir: "ASC" }));
-  }, [dispatch, publicUuid]);
-
-  useEffect(() => {
-    if (!selected) return;
-    setLocationEditing(
-      shouldStartPropertyLocationEditing({
-        address: selected.propertyAddress,
-        city: selected.propertyCity,
-        state: selected.propertyState,
-        postalCode: selected.propertyPostalCode,
-        country: selected.propertyCountry,
-        lat: selected.propertyLat,
-        lng: selected.propertyLng,
-      }),
-    );
-  }, [selected?.publicUuid]);
-
-  useEffect(() => {
-    if (location.hash !== "#case-reviews") return;
-    if (detailLoading) return;
-    if (!selected || selected.publicUuid !== publicUuid) return;
-    if (!canViewCaseSection(role, "reviews")) return;
-    const el = document.getElementById("case-reviews");
-    el?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [
-    location.hash,
-    detailLoading,
-    reviewRequests.length,
-    publicUuid,
-    role,
-    selected?.publicUuid,
-  ]);
-
-  const locationForm = useFormik({
-    enableReinitialize: true,
-    initialValues: {
-      propertyAddress: selected?.propertyAddress || "",
-      propertyCity: selected?.propertyCity || "",
-      propertyState: selected?.propertyState || "",
-      propertyPostalCode: selected?.propertyPostalCode || "",
-      propertyCountry: selected?.propertyCountry || "MX",
-      propertyLat:
-        selected?.propertyLat != null
-          ? formatDecimalCoordinate(selected.propertyLat)
-          : "",
-      propertyLng:
-        selected?.propertyLng != null
-          ? formatDecimalCoordinate(selected.propertyLng)
-          : "",
-    },
-    onSubmit: async (values) => {
-      setLocationStatus(null);
-      const gps = resolveLocationGpsForSave({
-        latRaw: values.propertyLat,
-        lngRaw: values.propertyLng,
-        resolveOptionalLatLng,
-      });
-      let propertyLat: number | null = selected?.propertyLat ?? null;
-      let propertyLng: number | null = selected?.propertyLng ?? null;
-      if (gps.action === "clear") {
-        propertyLat = null;
-        propertyLng = null;
-      } else if (gps.action === "set") {
-        propertyLat = gps.lat;
-        propertyLng = gps.lng;
-        await locationForm.setFieldValue(
-          "propertyLat",
-          formatDecimalCoordinate(gps.lat),
-        );
-        await locationForm.setFieldValue(
-          "propertyLng",
-          formatDecimalCoordinate(gps.lng),
-        );
-      } else if (gps.warning === "need_both") {
-        toast({
-          title: t("maps.locationPartialSaved"),
-          description: t("maps.gpsNeedBoth"),
-          variant: "destructive",
-        });
-      } else if (gps.warning === "invalid") {
-        toast({
-          title: t("maps.locationPartialSaved"),
-          description: t("maps.invalidGpsText"),
-          variant: "destructive",
-        });
-      }
-      const result = await dispatch(
-        updateCaseLocation({
-          publicUuid,
-          propertyAddress: values.propertyAddress.trim() || null,
-          propertyCity: values.propertyCity.trim() || null,
-          propertyState: values.propertyState.trim() || null,
-          propertyPostalCode: values.propertyPostalCode.trim() || null,
-          propertyCountry: values.propertyCountry.trim() || "MX",
-          propertyLat,
-          propertyLng,
-        }),
-      );
-      if (updateCaseLocation.fulfilled.match(result)) {
-        setLocationStatus(t("maps.locationSaved"));
-        setLocationEditing(false);
-        toast({
-          title: t("maps.locationSaved"),
-        });
-        refreshDetail();
-      } else {
-        const message = String(result.payload || t("maps.locationSaveFailed"));
-        setLocationStatus(t("maps.locationSaveFailed"));
-        toast({
-          title: t("maps.locationSaveFailed"),
-          description: message,
-          variant: "destructive",
-        });
-      }
-    },
-  });
-
-  const noteForm = useFormik({
-    initialValues: { body: "" },
-    validationSchema: Yup.object({ body: Yup.string().trim().required() }),
-    onSubmit: async (values, helpers) => {
-      const result = await dispatch(
-        addCaseNote({ publicUuid, body: values.body.trim() }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.noteSaveSuccess"),
-          failureTitle: t("cases.noteSaveFailed"),
-          fallbackError: "note_failed",
-        })
-      ) {
-        helpers.resetForm();
-      }
-    },
-  });
-
-  const assignForm = useFormik({
-    initialValues: {
-      userId: "",
-      assignmentRole: "expert" as AssignmentRole,
-      isPrimary: true,
-      deliveryDueAt: "",
-    },
-    validationSchema: Yup.object({
-      userId: Yup.string().required(),
-      assignmentRole: Yup.string().required(),
-      deliveryDueAt: Yup.string(),
-    }),
-    onSubmit: async (values, helpers) => {
-      const result = await dispatch(
-        assignCaseMember({
-          publicUuid,
-          userId: Number(values.userId),
-          assignmentRole: values.assignmentRole,
-          isPrimary: values.isPrimary,
-          deliveryDueAt:
-            values.assignmentRole === "expert" &&
-            values.isPrimary &&
-            values.deliveryDueAt.trim()
-              ? values.deliveryDueAt.trim()
-              : undefined,
-        }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.assignSaveSuccess"),
-          failureTitle: t("cases.assignSaveFailed"),
-          fallbackError: "assign_failed",
-        })
-      ) {
-        refreshDetail();
-        helpers.resetForm({
-          values: {
-            userId: "",
-            assignmentRole: "expert",
-            isPrimary: true,
-            deliveryDueAt: "",
-          },
-        });
-      }
-    },
-  });
-
-  const primaryExpert = assignments.find(
-    (a) => a.assignmentRole === "expert" && a.isPrimary,
-  );
-  const expertDeliveryDeadline = deadlines.find(
-    (d) => d.deadlineType === "expert_delivery" && !d.completedAt,
-  );
-  const expertDeliveryForm = useFormik({
-    enableReinitialize: true,
-    initialValues: {
-      deliveryDueAt: expertDeliveryDeadline
-        ? expertDeliveryDeadline.dueAt.slice(0, 10)
-        : "",
-    },
-    onSubmit: async (values) => {
-      const result = await dispatch(
-        setExpertDeliveryDeadline({
-          publicUuid,
-          deliveryDueAt: values.deliveryDueAt.trim() || null,
-        }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.expertDeliverySaveSuccess"),
-          failureTitle: t("cases.expertDeliverySaveFailed"),
-          fallbackError: "expert_delivery_failed",
-        })
-      ) {
-        refreshDetail();
-      }
-    },
-  });
-
-  const formQuestionnaire = pickCurrentProcessArtifact(
-    questionnaires.map((q) => ({
-      status: q.status,
-      createdAt: q.createdAt,
-      contentJson: q.contentJson,
-    })),
-    QUESTIONNAIRE_STATUS_RANK,
-  );
-  const formQJson = (formQuestionnaire?.contentJson ?? {}) as Record<
-    string,
-    unknown
-  >;
-  const formQRow =
-    questionnaires.find(
-      (q) =>
-        q.status === formQuestionnaire?.status &&
-        q.createdAt === formQuestionnaire?.createdAt,
-    ) ?? questionnaires[0];
-  const canEditQuestionnaire =
-    !formQuestionnaire || canUpsertQuestionnaire(formQuestionnaire.status);
-
-  const questionnaireForm = useFormik({
-    enableReinitialize: true,
-    initialValues: {
-      propertyGps: String(formQJson.propertyGps ?? ""),
-      streetView: String(
-        formQJson.streetViewValidated ?? formQJson.streetView ?? "",
-      ),
-      powerLine: String(
-        formQJson.powerLineVerified ?? formQJson.powerLine ?? "",
-      ),
-      observations: formQRow?.technicalObservations ?? "",
-      submit: true,
-    },
-    onSubmit: async (values) => {
-      const result = await dispatch(
-        createQuestionnaire({
-          publicUuid,
-          submit: values.submit,
-          technicalObservations: values.observations.trim() || undefined,
-          contentJson: {
-            propertyGps: values.propertyGps.trim(),
-            streetViewValidated: values.streetView.trim(),
-            powerLineVerified: values.powerLine.trim(),
-          },
-        }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.questionnaireSaveSuccess"),
-          failureTitle: t("cases.questionnaireSaveFailed"),
-          fallbackError: "questionnaire_failed",
-        })
-      ) {
-        refreshDetail();
-      }
-    },
-  });
-
-  const inspectionForm = useFormik({
-    initialValues: { scheduledAt: "", notes: "" },
-    onSubmit: async (values, helpers) => {
-      const result = await dispatch(
-        createInspection({
-          publicUuid,
-          scheduledAt: values.scheduledAt || undefined,
-          notes: values.notes.trim() || undefined,
-        }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.inspectionSaveSuccess"),
-          failureTitle: t("cases.inspectionSaveFailed"),
-          fallbackError: "inspection_failed",
-        })
-      ) {
-        refreshDetail();
-        helpers.resetForm();
-      }
-    },
-  });
-
-  const measurementForm = useFormik({
-    initialValues: {
-      measurementType: "horizontal_distance" as MeasurementType,
-      valueNumeric: "",
-      unit: "m" as const,
-      poleId: "",
-    },
-    validationSchema: Yup.object({
-      valueNumeric: Yup.number().typeError("n").required(),
-    }),
-    onSubmit: async (values, helpers) => {
-      const result = await dispatch(
-        createMeasurement({
-          publicUuid,
-          measurementType: values.measurementType,
-          valueNumeric: Number(values.valueNumeric),
-          unit: values.unit,
-          poleId: values.poleId.trim() || undefined,
-          inspectionId: inspections[0]?.id ?? null,
-        }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.measurementSaveSuccess"),
-          failureTitle: t("cases.measurementSaveFailed"),
-          fallbackError: "measurement_failed",
-        })
-      ) {
-        refreshDetail();
-        helpers.resetForm({
-          values: {
-            measurementType: "horizontal_distance",
-            valueNumeric: "",
-            unit: "m",
-            poleId: "",
-          },
-        });
-      }
-    },
-  });
-
-  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
-  const evidenceForm = useFormik({
-    initialValues: {
-      evidenceType: "photo" as EvidenceType,
-      category: "facade" as EvidenceCategory,
-      title: "",
-      caption: "",
-      lat: "",
-      lng: "",
-    },
-    onSubmit: async (values, helpers) => {
-      const isSignature = values.evidenceType === "signature";
-      const needsFile = evidenceRequiresFile(values.evidenceType);
-      if (isSignature) {
-        const exported = signatureExportRef.current?.();
-        if (!exported || exported.isEmpty) {
-          helpers.setStatus(t("signature.required"));
-          return;
-        }
-        helpers.setStatus(undefined);
-        const lat =
-          values.lat.trim() === "" ? null : Number(values.lat);
-        const lng =
-          values.lng.trim() === "" ? null : Number(values.lng);
-        const result = await dispatch(
-          createEvidence({
-            publicUuid,
-            evidenceType: values.evidenceType,
-            category: values.category,
-            title: values.title.trim() || undefined,
-            caption: values.caption.trim() || undefined,
-            inspectionId: inspections[0]?.id ?? null,
-            lat,
-            lng,
-            fileName: exported.fileName,
-            contentType: exported.contentType,
-            data: exported.dataBase64,
-          }),
-        );
-        if (
-          notifyThunkSave(result, {
-            successTitle: t("cases.evidenceSaveSuccess"),
-            failureTitle: t("cases.evidenceSaveFailed"),
-            fallbackError: "evidence_failed",
-          })
-        ) {
-          helpers.resetForm();
-          setEvidenceFile(null);
-          setSignaturePadKey((k) => k + 1);
-          refreshDetail();
-        }
+    if (!focusedSection) return;
+    const id = sectionDomId(focusedSection);
+    let cancelled = false;
+    let tries = 0;
+    const tick = () => {
+      if (cancelled) return;
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
         return;
       }
-      if (needsFile && !evidenceFile) {
-        helpers.setStatus(t("cases.evidenceFileRequired"));
-        return;
+      // Lazy sections may still be suspending — retry briefly.
+      if (tries++ < 60) {
+        requestAnimationFrame(tick);
       }
-      helpers.setStatus(undefined);
-      const lat =
-        values.lat.trim() === "" ? null : Number(values.lat);
-      const lng =
-        values.lng.trim() === "" ? null : Number(values.lng);
-      const payload: Parameters<typeof createEvidence>[0] = {
-        publicUuid,
-        evidenceType: values.evidenceType,
-        category: values.category,
-        title: values.title.trim() || undefined,
-        caption: values.caption.trim() || undefined,
-        inspectionId: inspections[0]?.id ?? null,
-        lat,
-        lng,
-      };
-      if (evidenceFile) {
-        payload.fileName = evidenceFile.name;
-        payload.contentType = evidenceFile.type || "application/octet-stream";
-        payload.data = await fileToBase64(evidenceFile);
-      }
-      const result = await dispatch(createEvidence(payload));
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.evidenceSaveSuccess"),
-          failureTitle: t("cases.evidenceSaveFailed"),
-          fallbackError: "evidence_failed",
-        })
-      ) {
-        helpers.resetForm();
-        setEvidenceFile(null);
-        refreshDetail();
-      }
-    },
-  });
-
-  const persistPropertyCoords = async (lat: number, lng: number) => {
-    const next = {
-      ...locationForm.values,
-      propertyLat: String(lat),
-      propertyLng: String(lng),
     };
-    await locationForm.setValues(next);
-    setLocationStatus(null);
-    const result = await dispatch(
-      updateCaseLocation({
-        publicUuid,
-        propertyAddress: next.propertyAddress.trim() || null,
-        propertyCity: next.propertyCity.trim() || null,
-        propertyState: next.propertyState.trim() || null,
-        propertyPostalCode: next.propertyPostalCode.trim() || null,
-        propertyCountry: next.propertyCountry.trim() || "MX",
-        propertyLat: lat,
-        propertyLng: lng,
-      }),
-    );
-    if (updateCaseLocation.fulfilled.match(result)) {
-      setLocationStatus(t("maps.locationSaved"));
-      setLocationEditing(false);
-      refreshDetail();
-    } else {
-      setLocationStatus(t("maps.locationSaveFailed"));
-    }
-  };
+    const frame = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [focusedSection, location.pathname, location.search]);
 
-  const cancelLocationEdit = () => {
-    locationForm.resetForm();
-    setLocationStatus(null);
-    if (
-      selected &&
-      hasPropertyMapPreview({
-        address: selected.propertyAddress,
-        city: selected.propertyCity,
-        state: selected.propertyState,
-        postalCode: selected.propertyPostalCode,
-        country: selected.propertyCountry,
-        lat: selected.propertyLat,
-        lng: selected.propertyLng,
-      })
-    ) {
-      setLocationEditing(false);
-    }
-  };
-
-  const fillFromDevice = async (target: "property" | "evidence") => {
-    setLocating(true);
-    setLocationStatus(null);
-    const pos = await requestDevicePosition();
-    setLocating(false);
-    if (pos.ok === false) {
-      setLocationStatus(
-        pos.code === "permission_denied"
-          ? t("maps.permissionDenied")
-          : pos.code === "unsupported"
-            ? t("maps.unsupported")
-            : t("maps.locationFailed"),
-      );
-      return;
-    }
-    if (target === "property") {
-      await persistPropertyCoords(pos.lat, pos.lng);
-      return;
-    }
-    await evidenceForm.setFieldValue("lat", String(pos.lat));
-    await evidenceForm.setFieldValue("lng", String(pos.lng));
-    setLocationStatus(t("maps.coordsFilled"));
-  };
-
-  const geocodeProperty = async () => {
-    const query =
-      buildPropertyQuery({
-        address: locationForm.values.propertyAddress,
-        city: locationForm.values.propertyCity,
-        state: locationForm.values.propertyState,
-        postalCode: locationForm.values.propertyPostalCode,
-        country: locationForm.values.propertyCountry,
-      }) || locationForm.values.propertyAddress;
-    if (!query || query.trim().length < 3) {
-      setLocationStatus(t("maps.geocodeNeedAddress"));
-      return;
-    }
-    setLocating(true);
-    setLocationStatus(null);
-    const result = await dispatch(geocodeAddress(query.trim()));
-    setLocating(false);
-    if (geocodeAddress.fulfilled.match(result)) {
-      await persistPropertyCoords(
-        result.payload.lat,
-        result.payload.lng,
-      );
-    } else {
-      setLocationStatus(t("maps.geocodeFailed"));
-    }
-  };
-
-  const tripForm = useFormik({
-    initialValues: {
-      originCity: "",
-      destinationCity: "",
-      departureAt: "",
-      notes: "",
-    },
-    onSubmit: async (values, helpers) => {
-      const result = await dispatch(
-        createTrip({
-          publicUuid,
-          originCity: values.originCity.trim() || undefined,
-          destinationCity: values.destinationCity.trim() || undefined,
-          departureAt: values.departureAt || undefined,
-          notes: values.notes.trim() || undefined,
-        }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.tripSaveSuccess"),
-          failureTitle: t("cases.tripSaveFailed"),
-          fallbackError: "trip_failed",
-        })
-      ) {
-        refreshDetail();
-        helpers.resetForm();
-      }
-    },
-  });
-
-  const expenseForm = useFormik({
-    initialValues: {
-      tripId: "",
-      expenseType: "flight" as ExpenseType,
-      amount: "",
-      vendorName: "",
-    },
-    validationSchema: Yup.object({
-      tripId: Yup.string().required(),
-      amount: Yup.number().typeError("n").min(0).required(),
-    }),
-    onSubmit: async (values, helpers) => {
-      const result = await dispatch(
-        createExpense({
-          publicUuid,
-          tripId: Number(values.tripId),
-          expenseType: values.expenseType,
-          amount: Number(values.amount),
-          vendorName: values.vendorName.trim() || undefined,
-        }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.expenseSaveSuccess"),
-          failureTitle: t("cases.expenseSaveFailed"),
-          fallbackError: "expense_failed",
-        })
-      ) {
-        helpers.resetForm({
-          values: {
-            tripId: trips[0] ? String(trips[0].id) : "",
-            expenseType: "flight",
-            amount: "",
-            vendorName: "",
-          },
-        });
-      }
-    },
-  });
-
-  const reportForm = useFormik({
-    initialValues: {
-      investigationSummary: "",
-      conclusions: "",
-    },
-    onSubmit: async (values, helpers) => {
-      const result = await dispatch(
-        createTechnicalReport({
-          publicUuid,
-          investigationSummary: values.investigationSummary.trim() || undefined,
-          conclusions: values.conclusions.trim() || undefined,
-          submit: true,
-        }),
-      );
-      if (
-        notifyThunkSave(result, {
-          successTitle: t("cases.reportSaveSuccess"),
-          failureTitle: t("cases.reportSaveFailed"),
-          fallbackError: "report_failed",
-        })
-      ) {
-        refreshDetail();
-        helpers.resetForm();
-      }
-    },
-  });
-
-  const onStatus = async (status: CaseStatus) => {
+  const onStatus = async (status: CaseStatus, reason?: string) => {
     const result = await dispatch(
       updateCaseStatus({
         publicUuid,
         status,
-        reason: reason.trim() || undefined,
+        reason: reason?.trim() || undefined,
       }),
     );
     if (
@@ -827,74 +157,11 @@ export default function CaseDetailPage() {
       })
     ) {
       await dispatch(fetchCaseDetail(publicUuid));
-      setReason("");
     }
   };
 
-  const onBulkUpload = async (files: File[]) => {
-    if (files.length === 0) return;
-    setDocsUploading(true);
-    try {
-      const result = await dispatch(
-        uploadCaseDocumentsSmart({
-          publicUuid,
-          files,
-          category: uploadCategory,
-        }),
-      );
-      if (uploadCaseDocumentsSmart.fulfilled.match(result)) {
-        refreshDetail();
-        if (result.payload.failures.length > 0) {
-          toast({
-            title: t("documents.partialUpload", {
-              ok: result.payload.documents.length,
-              failed: result.payload.failures.length,
-            }),
-            description: result.payload.failures
-              .slice(0, 3)
-              .map((f) => f.name)
-              .join(", "),
-            variant: "destructive",
-          });
-        }
-        return;
-      }
-      const message = String(result.payload || "upload_failed");
-      toast({
-        title: t("documents.uploadFailed"),
-        description: isBlobTokenMissingError(message)
-          ? t("documents.blobNotConfigured")
-          : message,
-        variant: "destructive",
-      });
-    } finally {
-      setDocsUploading(false);
-    }
-  };
-
-  const detailMatchesRoute =
-    Boolean(publicUuid) &&
-    Boolean(selected) &&
-    selected.publicUuid === publicUuid;
-
-  if (!publicUuid) {
-    return (
-      <div className="p-8 text-sm text-muted-foreground">
-        {t("cases.notFound")}
-      </div>
-    );
-  }
-
-  if (detailLoading || !detailMatchesRoute) {
-    return <CaseDetailSkeleton />;
-  }
-
-  if (!selected) {
-    return (
-      <div className="p-8 text-sm text-muted-foreground">
-        {t("cases.notFound")}
-      </div>
-    );
+  if (!selected || selected.publicUuid !== publicUuid) {
+    return null;
   }
 
   const currentQuestionnaire = pickCurrentProcessArtifact(
@@ -913,77 +180,182 @@ export default function CaseDetailPage() {
     REPORT_STATUS_RANK,
   );
 
-  const latestGpsEvidence = [...evidence]
-    .reverse()
-    .find((item) => item.lat != null && item.lng != null);
+  const gateInput = buildProcessGateInput({
+    documentCategories: documents
+      .filter((d) => isActiveDocumentStatus(d.status))
+      .map((d) => d.category),
+    evidenceCategories: mergeEvidenceCategories(
+      evidence.map((e) => e.category),
+      measurements.map((m) => m.measurementType),
+    ),
+    hasPrimaryExpert: assignments.some(
+      (a) => a.isPrimary && a.assignmentRole === "expert",
+    ),
+    questionnaireStatus: currentQuestionnaire?.status ?? null,
+    questionnaireContentJson: currentQuestionnaire?.contentJson,
+    hasStreetView:
+      Boolean(selected.streetViewValidatedAt) ||
+      questionnaireHasStreetView(currentQuestionnaire?.contentJson),
+    hasPropertyGps:
+      selected.propertyLat != null && selected.propertyLng != null,
+    plaintiffQuestionnairePresent: documents.some(
+      (d) =>
+        d.category === "plaintiff_questionnaire" &&
+        isActiveDocumentStatus(d.status),
+    ),
+    inspectionComplete: inspections.some((i) => i.status === "completed"),
+    reportStatus: currentReport?.status ?? null,
+    logisticsReady: trips.some((trip) =>
+      isActiveLogisticsTripStatus(trip.status),
+    ),
+    involvesFatality: selected.involvesFatality,
+    hasUnpaidInvoices,
+    documentsHandoffConfirmed: Boolean(selected.documentsHandoffConfirmedAt),
+    ratificationScheduledAt: selected.ratificationScheduledAt,
+  });
 
-  const propertyMapDraft = resolveOptionalLatLng(
-    locationForm.values.propertyLat,
-    locationForm.values.propertyLng,
+  const stepPoint = stepSlug ? processPointForSlug(stepSlug) : null;
+  const stepGatesOk =
+    stepPoint != null
+      ? evaluateProcessGates(stepPoint, gateInput).ok
+      : null;
+
+  const showProtestaModality =
+    selected.status === "court_acceptance" ||
+    stepSlug === "court_acceptance" ||
+    stepPoint === 6;
+  const showP9Checklist =
+    selected.status === "validation_delivery" ||
+    stepSlug === "validation_delivery" ||
+    stepSlug === "court_delivery" ||
+    stepPoint === 9;
+
+  const gatesOk = Boolean(processGate?.ok ?? stepGatesOk);
+  const forwardStatus = allowedNextStatuses.find(
+    (s) =>
+      !isForwardTransitionBlockedByGates({
+        fromStatus: selected.status,
+        toStatus: s,
+        gatesOk,
+      }),
   );
-  const propertyMapLat =
-    propertyMapDraft.ok && propertyMapDraft.value
-      ? propertyMapDraft.value.lat
-      : selected.propertyLat;
-  const propertyMapLng =
-    propertyMapDraft.ok && propertyMapDraft.value
-      ? propertyMapDraft.value.lng
-      : selected.propertyLng;
 
-  return (
-    <div className="mx-auto max-w-6xl space-y-6">
-      <MetaHelmet title={selected.caseNumber} noindex />
+  const intakeEditor =
+    stepSlug === "intake" &&
+    (focusedSection === "documents" || focusedSection == null);
+  const pdfWorkspace = isPdfWorkspaceStep(stepSlug);
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <Link
-            to="/portal/cases"
-            className="inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-primary"
-          >
-            <ArrowLeft size={14} /> {t("cases.backToList")}
-          </Link>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="rounded-md bg-secondary px-2 py-1 text-[10px] font-bold tracking-wide text-primary">
-              {selected.caseNumber}
-            </span>
-            <span className="rounded-full bg-muted px-2 py-1 text-[10px] font-semibold uppercase text-muted-foreground">
-              {t(`cases.status.${selected.status}`, {
-                defaultValue: selected.status,
-              })}
-            </span>
-          </div>
-          <h1 className="mt-2 font-[Manrope] text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
-            {selected.title}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {[selected.courtName, selected.propertyCity, selected.propertyState]
-              .filter(Boolean)
-              .join(" · ") || t("cases.noLocation")}
-          </p>
-          {canChangeCaseStatus(role) ? (
-            <label className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-foreground">
-              <input
-                type="checkbox"
-                checked={Boolean(selected.involvesFatality)}
-                onChange={(e) => {
-                  void dispatch(
-                    updateCaseFlags({
-                      publicUuid,
-                      involvesFatality: e.target.checked,
-                    }),
-                  ).then(() => dispatch(fetchCaseDetail(publicUuid)));
-                }}
-                className="h-4 w-4 rounded border-input"
-              />
-              {t("cases.involvesFatality")}
-            </label>
-          ) : selected.involvesFatality ? (
-            <p className="mt-2 text-xs font-semibold text-destructive">
-              {t("cases.involvesFatalityBadge")}
-            </p>
-          ) : null}
-        </div>
-      </div>
+  if (pdfWorkspace && stepPoint != null && stepSlug) {
+    const workspace =
+      stepSlug === "questionnaire" ? (
+        <PdfStepQuestionnaireWorkspace publicUuid={publicUuid} />
+      ) : stepSlug === "assignment" ? (
+        <PdfStepAssignmentWorkspace publicUuid={publicUuid} />
+      ) : stepSlug === "legal_review_questionnaire" ? (
+        <PdfStepLegalReviewWorkspace publicUuid={publicUuid} />
+      ) : stepSlug === "court_acceptance" ? (
+        <PdfStepProtestaWorkspace publicUuid={publicUuid} />
+      ) :       stepSlug === "field_ops" ? (
+        <PdfStepFieldOpsWorkspace publicUuid={publicUuid} />
+      ) : stepSlug === "technical_report" ? (
+        <PdfStepReportWorkspace publicUuid={publicUuid} />
+      ) : stepSlug === "validation_delivery" ? (
+        <PdfStepValidationWorkspace publicUuid={publicUuid} />
+      ) : stepSlug === "accounting" ? (
+        <PdfStepAccountingWorkspace publicUuid={publicUuid} />
+      ) : null;
+    if (workspace) {
+      return (
+        <CaseStepNavProvider
+          point={stepPoint}
+          stepSlug={stepSlug}
+          viewerRole={role}
+          activeSection={focusedSection}
+        >
+          {workspace}
+        </CaseStepNavProvider>
+      );
+    }
+  }
+
+  const detailBody = (
+    <div className="min-w-0 max-w-full space-y-5 overflow-x-clip xl:space-y-6">
+      <PortalPageHeader
+        eyebrow={selected.caseNumber}
+        title={
+          stepPoint != null
+            ? `${clientStepNumber(stepPoint)} · ${t(`process.point.${stepPoint}.name`)}`
+            : selected.title
+        }
+      />
+      {intakeEditor ? null : (
+      <CaseSlaStrip
+        status={selected.status}
+        listado={selected.listado}
+        externalCourtDeadlineAt={selected.externalCourtDeadlineAt}
+      />
+      )}
+
+      {showProtestaModality ? (
+        <ProtestaModalityPanel
+          modality={selected.protestaModality}
+          protestaFiled={Boolean(selected.listado?.protestaFiled)}
+          canEdit={Boolean(canChangeCaseStatus(role) || role === "expert")}
+          saving={updatingStatus}
+          publicUuid={publicUuid}
+          documents={documents}
+          canUpload={Boolean(
+            canMutateCaseSection(role, "documents") &&
+              (canChangeCaseStatus(role) || role === "expert"),
+          )}
+          onUploaded={() => {
+            void dispatch(fetchCaseDetail(publicUuid));
+          }}
+          onChange={(next: ProtestaModality) => {
+            void (async () => {
+              const result = await dispatch(
+                updateCaseFlags({
+                  publicUuid,
+                  protestaModality: next,
+                }),
+              );
+              if (
+                notifyThunkSave(result, {
+                  successTitle: t("cases.flagsSaveSuccess", {
+                    defaultValue: "Case flags saved",
+                  }),
+                  failureTitle: t("cases.flagsFailed"),
+                  fallbackError: "flags_failed",
+                })
+              ) {
+                await dispatch(fetchCaseDetail(publicUuid));
+              }
+            })();
+          }}
+        />
+      ) : null}
+
+      {showP9Checklist ? (
+        <ValidationDeliveryChecklist
+          listado={selected.listado}
+          hasCourtFiling={documents.some(
+            (d) =>
+              d.category === "court_filing" &&
+              isActiveDocumentStatus(d.status),
+          )}
+          hasRatificationPdf={documents.some(
+            (d) =>
+              d.category === "ratification" &&
+              isActiveDocumentStatus(d.status),
+          )}
+          publicUuid={publicUuid}
+          documents={documents}
+          canUpload={Boolean(canMutateCaseSection(role, "documents"))}
+          onUploaded={() => {
+            void dispatch(fetchCaseDetail(publicUuid));
+          }}
+        />
+      ) : null}
 
       {error ? (
         <div className="text-xs text-destructive" role="alert">
@@ -1005,1569 +377,149 @@ export default function CaseDetailPage() {
           ) : null}
         </div>
       ) : null}
-      {locationStatus ? (
-        <p className="text-xs text-muted-foreground">{locationStatus}</p>
+
+      {showSection("location") ? (
+        <SectionSuspense>
+          <LazyCaseLocationSection publicUuid={publicUuid} />
+        </SectionSuspense>
       ) : null}
 
-      <ProcessTimeline
-        status={selected.status}
-        serverGate={processGate}
-        viewerRole={role}
-        gateInput={buildProcessGateInput({
-          documentCategories: documents
-            .filter((d) => isActiveDocumentStatus(d.status))
-            .map((d) => d.category),
-          evidenceCategories: mergeEvidenceCategories(
-            evidence.map((e) => e.category),
-            measurements.map((m) => m.measurementType),
-          ),
-          hasPrimaryExpert: assignments.some(
-            (a) => a.isPrimary && a.assignmentRole === "expert",
-          ),
-          questionnaireStatus: currentQuestionnaire?.status ?? null,
-          hasStreetView:
-            Boolean(selected.streetViewValidatedAt) ||
-            questionnaireHasStreetView(currentQuestionnaire?.contentJson),
-          hasPropertyGps:
-            selected.propertyLat != null && selected.propertyLng != null,
-          plaintiffQuestionnairePresent: documents.some(
-            (d) =>
-              d.category === "plaintiff_questionnaire" &&
-              isActiveDocumentStatus(d.status),
-          ),
-          inspectionComplete: inspections.some((i) => i.status === "completed"),
-          reportStatus: currentReport?.status ?? null,
-          logisticsReady: trips.some((trip) =>
-            isActiveLogisticsTripStatus(trip.status),
-          ),
-          involvesFatality: selected.involvesFatality,
-          hasUnpaidInvoices,
-        })}
-      />
-
-      <section
-        id="case-location"
-        className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="inline-flex items-center gap-2 text-sm font-bold">
-            <MapPinned className="h-4 w-4 text-primary" />
-            {t("maps.propertyLocation")}
-          </h2>
-          {canEditCaseLocation(role) ? (
-            locationEditing ? (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={locating}
-                  onClick={() => void fillFromDevice("property")}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold disabled:opacity-50"
-                >
-                  <Crosshair className="h-3.5 w-3.5" />
-                  {t("maps.useMyLocation")}
-                </button>
-                <button
-                  type="button"
-                  disabled={locating}
-                  onClick={() => void geocodeProperty()}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold disabled:opacity-50"
-                >
-                  {t("maps.geocodeAddress")}
-                </button>
-                {hasPropertyMapPreview({
-                  address: selected.propertyAddress,
-                  city: selected.propertyCity,
-                  state: selected.propertyState,
-                  postalCode: selected.propertyPostalCode,
-                  country: selected.propertyCountry,
-                  lat: selected.propertyLat,
-                  lng: selected.propertyLng,
-                }) ? (
-                  <button
-                    type="button"
-                    onClick={cancelLocationEdit}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold"
-                  >
-                    {t("maps.cancelEditLocation")}
-                  </button>
-                ) : null}
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setLocationStatus(null);
-                  setLocationEditing(true);
-                }}
-                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-                {t("maps.editLocation")}
-              </button>
-            )
-          ) : null}
-        </div>
-        {locationEditing ? (
-          <SectionHelper className="mt-3">{t("help.caseDetail.location")}</SectionHelper>
-        ) : null}
-
-        {!locationEditing ||
-        propertyMapLat != null ||
-        Boolean(
-          buildPropertyQuery({
-            address: locationEditing
-              ? locationForm.values.propertyAddress
-              : selected.propertyAddress,
-            city: locationEditing
-              ? locationForm.values.propertyCity
-              : selected.propertyCity,
-            state: locationEditing
-              ? locationForm.values.propertyState
-              : selected.propertyState,
-            postalCode: locationEditing
-              ? locationForm.values.propertyPostalCode
-              : selected.propertyPostalCode,
-            country: locationEditing
-              ? locationForm.values.propertyCountry
-              : selected.propertyCountry,
-          }),
-        ) ? (
-          <LocationMapPanel
-            className="mt-3"
-            lat={
-              locationEditing
-                ? propertyMapLat
-                : selected.propertyLat
-            }
-            lng={
-              locationEditing
-                ? propertyMapLng
-                : selected.propertyLng
-            }
-            query={buildPropertyQuery({
-              address: locationEditing
-                ? locationForm.values.propertyAddress
-                : selected.propertyAddress,
-              city: locationEditing
-                ? locationForm.values.propertyCity
-                : selected.propertyCity,
-              state: locationEditing
-                ? locationForm.values.propertyState
-                : selected.propertyState,
-              postalCode: locationEditing
-                ? locationForm.values.propertyPostalCode
-                : selected.propertyPostalCode,
-              country: locationEditing
-                ? locationForm.values.propertyCountry
-                : selected.propertyCountry,
-            })}
-            label={t("maps.propertyLocation")}
-          />
-        ) : null}
-
-        {canEditCaseLocation(role) && locationEditing ? (
-          <form
-            onSubmit={locationForm.handleSubmit}
-            className="mt-3 grid gap-2 sm:grid-cols-2"
-          >
-            <div className="sm:col-span-2">
-              <input
-                name="propertyAddress"
-                value={locationForm.values.propertyAddress}
-                onChange={locationForm.handleChange}
-                placeholder={t("maps.address")}
-                className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.maps.address")}</FieldHelper>
-            </div>
-            <div>
-              <input
-                name="propertyCity"
-                value={locationForm.values.propertyCity}
-                onChange={locationForm.handleChange}
-                placeholder={t("maps.city")}
-                className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.maps.city")}</FieldHelper>
-            </div>
-            <div>
-              <input
-                name="propertyState"
-                value={locationForm.values.propertyState}
-                onChange={locationForm.handleChange}
-                placeholder={t("maps.state")}
-                className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.maps.state")}</FieldHelper>
-            </div>
-            <div>
-              <input
-                name="propertyPostalCode"
-                value={locationForm.values.propertyPostalCode}
-                onChange={locationForm.handleChange}
-                placeholder={t("maps.postalCode")}
-                className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.maps.postal")}</FieldHelper>
-            </div>
-            <div>
-              <input
-                name="propertyCountry"
-                value={locationForm.values.propertyCountry}
-                onChange={locationForm.handleChange}
-                placeholder={t("maps.country")}
-                className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.maps.country")}</FieldHelper>
-            </div>
-            <div>
-              <input
-                name="propertyLat"
-                value={locationForm.values.propertyLat}
-                onChange={locationForm.handleChange}
-                placeholder={t("maps.lat")}
-                className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.maps.lat")}</FieldHelper>
-            </div>
-            <div>
-              <input
-                name="propertyLng"
-                value={locationForm.values.propertyLng}
-                onChange={locationForm.handleChange}
-                placeholder={t("maps.lng")}
-                className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <FieldHelper>{t("help.maps.lng")}</FieldHelper>
-            </div>
-            <PendingSubmitButton
-              pending={locationForm.isSubmitting}
-              className="sm:col-span-2 text-xs font-bold"
-            >
-              {t("maps.saveLocation")}
-            </PendingSubmitButton>
-          </form>
-        ) : null}
-
-        {!locationEditing &&
-        canEditCaseLocation(role) &&
-        !hasPropertyMapPreview({
-          address: selected.propertyAddress,
-          city: selected.propertyCity,
-          state: selected.propertyState,
-          postalCode: selected.propertyPostalCode,
-          country: selected.propertyCountry,
-          lat: selected.propertyLat,
-          lng: selected.propertyLng,
-        }) ? (
-          <button
-            type="button"
-            onClick={() => setLocationEditing(true)}
-            className="mt-3 inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border bg-muted/30 text-xs font-semibold text-foreground"
-          >
-            <Pencil className="h-3.5 w-3.5 text-primary" />
-            {t("maps.addLocation")}
-          </button>
-        ) : null}
-      </section>
-
-      {documentCompleteness &&
+      {showSection("completeness") &&
+      documentCompleteness &&
       canViewCaseSection(role, "completeness") &&
-      !canViewCaseSection(role, "documents") ? (
-        <section className="rounded-2xl border border-border bg-card p-4 shadow-sm">
-          <h2 className="text-sm font-bold">{t("cases.documentCompleteness")}</h2>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {(
-              [
-                ["intake", documentCompleteness.intake],
-                ["additionalDocs", documentCompleteness.additionalDocs],
-                ["courtFiling", documentCompleteness.courtFiling],
-              ] as const
-            )
-              .filter((entry): entry is [typeof entry[0], NonNullable<typeof entry[1]>] =>
-                Boolean(entry[1]),
-              )
-              .map(([key, info]) => (
-              <div
-                key={key}
-                className="rounded-xl border border-border bg-background px-3 py-2"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold">
-                    {t(`cases.docPhase.${key}`)}
-                  </span>
-                  <span
-                    className={
-                      info.complete
-                        ? "text-[10px] font-bold uppercase text-primary"
-                        : "text-[10px] font-bold uppercase text-destructive"
-                    }
-                  >
-                    {info.complete
-                      ? t("cases.docComplete")
-                      : t("cases.docIncomplete")}
-                  </span>
-                </div>
-                {info.missing.length > 0 ? (
-                  <p className="mt-2 text-[11px] text-muted-foreground">
-                    {t("cases.docMissing")}:{" "}
-                    {info.missing
-                      .map((c) =>
-                        t(`cases.docCategory.${c}`, { defaultValue: c }),
-                      )
-                      .join(", ")}
-                  </p>
-                ) : (
-                  <p className="mt-2 text-[11px] text-muted-foreground">
-                    {t("cases.docNoneMissing")}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {deadlines.length > 0 && canViewCaseSection(role, "deadlines") ? (
-        <section className="rounded-2xl border border-border bg-card p-4 shadow-sm">
-          <h2 className="text-sm font-bold">{t("cases.deadlines")}</h2>
-          <ul className="mt-3 flex flex-wrap gap-2">
-            {deadlines.map((d) => (
-              <li
-                key={d.id}
-                className="rounded-xl border border-border bg-background px-3 py-2 text-xs"
-              >
-                <div className="font-semibold">{d.title}</div>
-                <div className={severityClass(d.severityLevel)}>
-                  {new Date(d.dueAt).toLocaleDateString()} ·{" "}
-                  {t(`cases.deadlineType.${d.deadlineType}`, {
-                    defaultValue: d.title,
-                  })}{" "}
-                  ·{" "}
-                  {t(`cases.severity.${d.severityLevel}`, {
-                    defaultValue: d.severityLevel,
-                  })}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {(canViewCaseSection(role, "workflow") ||
-        canViewCaseSection(role, "timeline") ||
-        canViewCaseSection(role, "notes")) && (
-      <div
-        className={
-          (canViewCaseSection(role, "workflow") ||
-            canViewCaseSection(role, "timeline")) &&
-          canViewCaseSection(role, "notes")
-            ? "grid gap-4 lg:grid-cols-[1.4fr_1fr]"
-            : "grid gap-4"
-        }
-      >
-        {(canViewCaseSection(role, "workflow") ||
-          canViewCaseSection(role, "timeline")) && (
-        <section
-          id="case-workflow"
-          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
-        >
-          {canViewCaseSection(role, "workflow") ? (
-            <>
-          <h2 className="text-sm font-bold text-foreground">
-            {t("cases.workflow")}
-          </h2>
-          <SectionHelper>{t("help.caseDetail.workflow")}</SectionHelper>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("cases.workflowHint")}
-          </p>
-          {canChangeCaseStatus(role) || allowedNextStatuses.length > 0 ? (
-            <>
-          <input
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder={t("cases.reasonPlaceholder")}
-            className="mt-4 h-10 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
+      (!canViewCaseSection(role, "documents") ||
+        focusedSection === "completeness") ? (
+        <SectionSuspense>
+          <LazyCaseCompletenessSection
+            publicUuid={publicUuid}
+            focusedSection={focusedSection}
           />
-          {processGate?.ok === false ||
-          error === "Process gates not satisfied" ? (
-            <div className="mt-3 text-xs text-destructive" role="alert">
-              <p>{t("process.gatesBlocked")}</p>
-              {(
-                processGate?.missing?.length
-                  ? processGate.missing
-                  : statusGateMissing
-              ).length > 0 ? (
-                <ul className="mt-1.5 list-disc space-y-0.5 pl-4">
-                  {(processGate?.missing?.length
-                    ? processGate.missing
-                    : statusGateMissing
-                  ).map((code) => (
-                    <li key={code}>{processGateLabel(t, code)}</li>
-                  ))}
-                </ul>
-              ) : null}
-              <p className="mt-2 text-muted-foreground">
-                {t("cases.workflowGatesHint")}
-              </p>
-            </div>
-          ) : null}
-          <div className="mt-3 flex flex-wrap gap-2">
-            {allowedNextStatuses.length === 0 ? (
-              <span className="text-xs text-muted-foreground">
-                {t("cases.noTransitions")}
-              </span>
-            ) : (
-              allowedNextStatuses.map((status) => {
-                const gateBlocked =
-                  Boolean(selected) &&
-                  isForwardTransitionBlockedByGates({
-                    fromStatus: selected!.status,
-                    toStatus: status,
-                    gatesOk: processGate?.ok,
-                  });
-                return (
-                  <button
-                    key={status}
-                    type="button"
-                    disabled={updatingStatus || gateBlocked}
-                    title={
-                      gateBlocked
-                        ? t("cases.pipeline.lock.gates")
-                        : undefined
-                    }
-                    onClick={() => {
-                      if (gateBlocked) return;
-                      void onStatus(status);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {updatingStatus ? (
-                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                    ) : null}
-                    {t(`cases.status.${status}`, { defaultValue: status })}
-                  </button>
-                );
-              })
-            )}
-          </div>
-            </>
-          ) : (
-            <p className="mt-3 text-xs text-muted-foreground">
-              {t("cases.statusReadOnly")}
-            </p>
-          )}
-            </>
-          ) : null}
-
-          {canViewCaseSection(role, "timeline") ? (
-            <>
-          <h3
-            className={`${canViewCaseSection(role, "workflow") ? "mt-8" : ""} text-xs font-bold uppercase tracking-wider text-muted-foreground`}
-          >
-            {t("cases.timeline")}
-          </h3>
-          <ul className="mt-3 space-y-3">
-            {history.map((h) => (
-              <li
-                key={h.id}
-                className="rounded-xl border border-border/80 bg-muted/30 px-3 py-2"
-              >
-                <div className="text-xs font-semibold text-foreground">
-                  {h.fromStatus
-                    ? `${t(`cases.status.${h.fromStatus}`, { defaultValue: h.fromStatus })} → `
-                    : ""}
-                  {t(`cases.status.${h.toStatus}`, {
-                    defaultValue: h.toStatus,
-                  })}
-                </div>
-                {h.reason ? (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    {h.reason}
-                  </p>
-                ) : null}
-                <p className="mt-1 text-[10px] text-muted-foreground">
-                  {new Date(h.createdAt).toLocaleString()}
-                </p>
-              </li>
-            ))}
-          </ul>
-            </>
-          ) : null}
-        </section>
-        )}
-
-        {canViewCaseSection(role, "notes") ? (
-          <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-bold text-foreground">
-                {t("cases.notes")}
-              </h2>
-              <MessageSquarePlus size={16} className="text-primary" />
-            </div>
-            <SectionHelper className="mt-2">{t("help.caseDetail.notes")}</SectionHelper>
-            <form onSubmit={noteForm.handleSubmit} className="mt-3 space-y-2">
-              <textarea
-                name="body"
-                rows={3}
-                value={noteForm.values.body}
-                onChange={noteForm.handleChange}
-                className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
-                placeholder={t("cases.notePlaceholder")}
-              />
-              <PendingSubmitButton pending={noteForm.isSubmitting}>
-                {t("cases.addNote")}
-              </PendingSubmitButton>
-            </form>
-            <ul className="mt-4 space-y-2">
-              {notes.map((n) => (
-                <li
-                  key={n.id}
-                  className="rounded-xl bg-muted/40 px-3 py-2 text-xs text-foreground"
-                >
-                  {n.body}
-                  <div className="mt-1 text-[10px] text-muted-foreground">
-                    {new Date(n.createdAt).toLocaleString()}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-      </div>
-      )}
-
-      {canViewCaseSection(role, "documents") ? (
-        <CaseDocumentsPanel
-          documents={documents}
-          uploadCategory={uploadCategory}
-          onUploadCategoryChange={setUploadCategory}
-          uploading={docsUploading}
-          onUploadFiles={onBulkUpload}
-          onPreview={(d) => setDocPreview(asPreviewableDocument(d))}
-          missingGateCodes={processGate?.missing ?? statusGateMissing}
-          documentCompleteness={
-            canViewCaseSection(role, "completeness")
-              ? documentCompleteness
-              : null
-          }
-          canUpload={canMutateCaseSection(role, "documents")}
-          onUpdateCategory={async ({ documentUuid, category }) => {
-            const result = await dispatch(
-              updateDocumentCategory({
-                publicUuid,
-                documentUuid,
-                category,
-              }),
-            );
-            if (updateDocumentCategory.fulfilled.match(result)) {
-              refreshDetail();
-              return true;
-            }
-            return false;
-          }}
-        />
+        </SectionSuspense>
       ) : null}
 
-      <DocumentPreviewSheet
-        open={Boolean(docPreview)}
-        document={docPreview}
-        onOpenChange={(open) => {
-          if (!open) setDocPreview(null);
-        }}
-        onRunOcr={async (doc, ocrText) => {
-          const result = await dispatch(
-            runDocumentOcr({
-              publicUuid,
-              documentUuid: doc.publicUuid,
-              ocrText,
-            }),
-          );
-          if (runDocumentOcr.fulfilled.match(result)) {
-            setDocPreview(asPreviewableDocument(result.payload));
-          }
-        }}
-      />
+      {showSection("deadlines") &&
+      deadlines.length > 0 &&
+      canViewCaseSection(role, "deadlines") ? (
+        <SectionSuspense>
+          <LazyCaseDeadlinesSection publicUuid={publicUuid} />
+        </SectionSuspense>
+      ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {canViewCaseSection(role, "assignments") ? (
-        <section
-          id="case-assignments"
-          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
-        >
-          <h2 className="text-sm font-bold">{t("cases.assignments")}</h2>
-          <SectionHelper>{t("help.caseDetail.assignments")}</SectionHelper>
-          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            {t("cases.assignmentHowItWorks")}
-          </p>
-          {canManageCaseAssignments(role) ? (
-          <form
-            onSubmit={assignForm.handleSubmit}
-            className="mt-3 grid gap-2 sm:grid-cols-2"
-          >
-            <select
-              name="userId"
-              value={assignForm.values.userId}
-              onChange={assignForm.handleChange}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
-            >
-              <option value="">{t("cases.selectMember")}</option>
-              {members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.firstName} {m.lastName} (
-                  {t(`team.role.${m.role}`, { defaultValue: m.role })})
-                </option>
-              ))}
-            </select>
-            <select
-              name="assignmentRole"
-              value={assignForm.values.assignmentRole}
-              onChange={assignForm.handleChange}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            >
-              {ASSIGNMENT_ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {t(`cases.assignmentRole.${r}`, { defaultValue: r })}
-                </option>
-              ))}
-            </select>
-            {assignForm.values.assignmentRole === "expert" &&
-            assignForm.values.isPrimary ? (
-              <label className="text-xs font-semibold text-muted-foreground">
-                {t("cases.expertDeliveryDate")}
-                <input
-                  type="date"
-                  name="deliveryDueAt"
-                  value={assignForm.values.deliveryDueAt}
-                  onChange={assignForm.handleChange}
-                  className="mt-1.5 h-10 w-full rounded-xl border border-input bg-background px-3 text-sm font-normal text-foreground"
-                />
-                <FieldHelper>{t("help.caseDetail.expertDelivery")}</FieldHelper>
-              </label>
-            ) : (
-              <div />
-            )}
-            <label className="flex items-center gap-2 text-xs text-muted-foreground sm:col-span-2">
-              <input
-                type="checkbox"
-                name="isPrimary"
-                checked={assignForm.values.isPrimary}
-                onChange={assignForm.handleChange}
-              />
-              {t("cases.primaryAssignment")}
-            </label>
-            <PendingSubmitButton
-              pending={assignForm.isSubmitting}
-              disabled={!assignForm.values.userId}
-              className="sm:col-span-2"
-            >
-              {t("cases.assign")}
-            </PendingSubmitButton>
-          </form>
-          ) : null}
-          {canManageCaseAssignments(role) && primaryExpert ? (
-            <form
-              onSubmit={expertDeliveryForm.handleSubmit}
-              className="mt-4 rounded-xl border border-border bg-muted/20 p-3"
-            >
-              <p className="text-xs font-bold text-foreground">
-                {t("cases.expertDeliveryActionTitle")}
-              </p>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {t("cases.expertDeliveryActionHint", {
-                  name: primaryExpert.userName,
-                })}
-              </p>
-              <label className="mt-3 block text-xs font-semibold text-muted-foreground">
-                {t("cases.expertDeliveryDate")}
-                <input
-                  type="date"
-                  name="deliveryDueAt"
-                  value={expertDeliveryForm.values.deliveryDueAt}
-                  onChange={expertDeliveryForm.handleChange}
-                  className="mt-1.5 h-10 w-full rounded-xl border border-input bg-background px-3 text-sm font-normal text-foreground"
-                />
-              </label>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <PendingSubmitButton
-                  pending={expertDeliveryForm.isSubmitting}
-                  disabled={!expertDeliveryForm.values.deliveryDueAt.trim()}
-                  className="h-9 px-4 text-xs"
-                >
-                  {t("cases.expertDeliverySave")}
-                </PendingSubmitButton>
-                {expertDeliveryDeadline ? (
-                  <button
-                    type="button"
-                    disabled={expertDeliveryForm.isSubmitting}
-                    onClick={() => {
-                      void (async () => {
-                        const result = await dispatch(
-                          setExpertDeliveryDeadline({
-                            publicUuid,
-                            deliveryDueAt: null,
-                          }),
-                        );
-                        if (
-                          notifyThunkSave(result, {
-                            successTitle: t("cases.expertDeliveryClearSuccess"),
-                            failureTitle: t("cases.expertDeliverySaveFailed"),
-                            fallbackError: "expert_delivery_failed",
-                          })
-                        ) {
-                          refreshDetail();
-                        }
-                      })();
-                    }}
-                    className="inline-flex h-9 items-center rounded-xl border border-border px-4 text-xs font-semibold text-muted-foreground transition hover:border-destructive hover:text-destructive disabled:opacity-60"
-                  >
-                    {t("cases.expertDeliveryClear")}
-                  </button>
-                ) : null}
-              </div>
-            </form>
-          ) : null}
-          <ul className="mt-4 space-y-2">
-            {assignments.map((a) => (
-              <li
-                key={a.id}
-                className="flex items-center justify-between gap-2 rounded-xl border border-border px-3 py-2 text-xs"
-              >
-                <div>
-                  <div className="font-semibold">{a.userName}</div>
-                  <div className="text-muted-foreground">
-                    {t(`cases.assignmentRole.${a.assignmentRole}`, {
-                      defaultValue: a.assignmentRole,
-                    })}
-                    {a.isPrimary ? ` · ${t("cases.primary")}` : ""}
-                  </div>
-                </div>
-                <PendingSubmitButton
-                  type="button"
-                  pending={unassigningId === a.id}
-                  pendingLabel={t("common.saving")}
-                  className="h-8 bg-transparent px-2 text-[10px] font-bold uppercase text-destructive shadow-none hover:bg-destructive/10"
-                  onClick={() => {
-                    void (async () => {
-                      setUnassigningId(a.id);
-                      try {
-                        const result = await dispatch(
-                          unassignCaseMember({
-                            publicUuid,
-                            assignmentId: a.id,
-                          }),
-                        );
-                        if (
-                          notifyThunkSave(result, {
-                            successTitle: t("cases.unassignSaveSuccess"),
-                            failureTitle: t("cases.unassignSaveFailed"),
-                            fallbackError: "unassign_failed",
-                          })
-                        ) {
-                          refreshDetail();
-                        }
-                      } finally {
-                        setUnassigningId(null);
-                      }
-                    })();
-                  }}
-                >
-                  {t("cases.unassign")}
-                </PendingSubmitButton>
-              </li>
-            ))}
-          </ul>
-        </section>
+      {(showSection("workflow") || showSection("timeline")) &&
+      (canViewCaseSection(role, "workflow") ||
+        canViewCaseSection(role, "timeline")) ? (
+        <SectionSuspense>
+          <LazyCaseWorkflowSection publicUuid={publicUuid} />
+        </SectionSuspense>
+      ) : null}
+
+      {showSection("notes") && canViewCaseSection(role, "notes") ? (
+        <SectionSuspense>
+          <LazyCaseNotesSection publicUuid={publicUuid} />
+        </SectionSuspense>
+      ) : null}
+
+      {showSection("documents") && canViewCaseSection(role, "documents") ? (
+        <SectionSuspense>
+          <LazyCaseDocumentsSection publicUuid={publicUuid} />
+        </SectionSuspense>
+      ) : null}
+
+      <div className="flex min-w-0 max-w-full flex-col gap-6 overflow-x-clip">
+        {showSection("assignments") &&
+        canViewCaseSection(role, "assignments") ? (
+          <SectionSuspense>
+            <LazyCaseAssignmentsSection publicUuid={publicUuid} />
+          </SectionSuspense>
         ) : null}
 
-        {canViewCaseSection(role, "questionnaire") ? (
-        <section
-          id="case-questionnaire"
-          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
-        >
-          <h2 className="text-sm font-bold">{t("cases.questionnaire")}</h2>
-          <SectionHelper>{t("help.caseDetail.questionnaire")}</SectionHelper>
-          {!canEditQuestionnaire ? (
-            <p className="mt-3 text-xs text-muted-foreground">
-              {t("cases.questionnaireLocked")}
-            </p>
-          ) : null}
-          <form
-            onSubmit={questionnaireForm.handleSubmit}
-            className="mt-3 space-y-2"
-          >
-            <input
-              name="propertyGps"
-              value={questionnaireForm.values.propertyGps}
-              onChange={questionnaireForm.handleChange}
-              disabled={!canEditQuestionnaire}
-              placeholder={t("cases.gpsPlaceholder")}
-              className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm disabled:opacity-60"
-            />
-            <FieldHelper>{t("help.maps.gpsText")}</FieldHelper>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold"
-                onClick={() => {
-                  const parsed = parseGpsText(
-                    questionnaireForm.values.propertyGps,
-                  );
-                  if (parsed.ok === false) {
-                    setLocationStatus(t("maps.invalidGpsText"));
-                    return;
-                  }
-                  void persistPropertyCoords(parsed.lat, parsed.lng);
-                }}
-              >
-                {t("maps.applyGpsToProperty")}
-              </button>
-              <button
-                type="button"
-                className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold"
-                onClick={() => {
-                  const parsed = parseGpsText(
-                    questionnaireForm.values.propertyGps,
-                  );
-                  if (parsed.ok === false) {
-                    setLocationStatus(t("maps.invalidGpsText"));
-                    return;
-                  }
-                  const url = googleStreetViewUrl({
-                    lat: parsed.lat,
-                    lng: parsed.lng,
-                  });
-                  if (url) window.open(url, "_blank", "noreferrer");
-                }}
-              >
-                {t("maps.streetView")}
-              </button>
-            </div>
-            <input
-              name="streetView"
-              value={questionnaireForm.values.streetView}
-              onChange={questionnaireForm.handleChange}
-              disabled={!canEditQuestionnaire}
-              placeholder={t("cases.streetViewPlaceholder")}
-              className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm disabled:opacity-60"
-            />
-            <input
-              name="powerLine"
-              value={questionnaireForm.values.powerLine}
-              onChange={questionnaireForm.handleChange}
-              disabled={!canEditQuestionnaire}
-              placeholder={t("cases.powerLinePlaceholder")}
-              className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm disabled:opacity-60"
-            />
-            <textarea
-              name="observations"
-              rows={2}
-              value={questionnaireForm.values.observations}
-              onChange={questionnaireForm.handleChange}
-              disabled={!canEditQuestionnaire}
-              placeholder={t("cases.observationsPlaceholder")}
-              className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm disabled:opacity-60"
-            />
-            <PendingSubmitButton
-              pending={questionnaireForm.isSubmitting}
-              disabled={!canEditQuestionnaire}
-              className="bg-accent text-accent-foreground"
-            >
-              {t("cases.saveQuestionnaire")}
-            </PendingSubmitButton>
-          </form>
-          <ul className="mt-4 space-y-2">
-            {questionnaires.map((q) => (
-              <li
-                key={q.publicUuid}
-                className="rounded-xl bg-muted/40 px-3 py-2 text-xs"
-              >
-                <div className="font-semibold">
-                  {t(`cases.questionnaireStatus.${q.status}`, {
-                    defaultValue: q.status,
-                  })}
-                  {q.submittedAt
-                    ? ` · ${new Date(q.submittedAt).toLocaleString()}`
-                    : ""}
-                </div>
-                {(q.allowedNextStatuses?.length ?? 0) > 0 ? (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {q.allowedNextStatuses!.map((st) => (
-                      <button
-                        key={st}
-                        type="button"
-                        className="rounded-full border border-border px-2 py-1 text-[10px] font-semibold hover:border-primary hover:text-primary"
-                        onClick={() =>
-                          void dispatch(
-                            updateQuestionnaireStatus({
-                              publicUuid,
-                              questionnaireUuid: q.publicUuid,
-                              status: st as QuestionnaireStatus,
-                            }),
-                          ).then(() => {
-                            void dispatch(fetchCaseDetail(publicUuid));
-                          })
-                        }
-                      >
-                        →{" "}
-                        {t(`cases.questionnaireStatus.${st}`, {
-                          defaultValue: st,
-                        })}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </section>
+        {showSection("questionnaire") &&
+        canViewCaseSection(role, "questionnaire") ? (
+          <SectionSuspense>
+            <LazyCaseQuestionnaireSection publicUuid={publicUuid} />
+          </SectionSuspense>
         ) : null}
 
-        {canViewCaseSection(role, "reviews") ? (
-        <section
-          id="case-reviews"
-          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
-        >
-          <h2 className="text-sm font-bold">{t("cases.reviewRequests")}</h2>
-          <SectionHelper>{t("help.caseDetail.reviewRequests")}</SectionHelper>
-          <ul className="mt-3 space-y-2">
-            {reviewRequests.filter((r) => r.status === "pending").length ===
-            0 ? (
-              <li className="text-xs text-muted-foreground">
-                {t("cases.noPendingReviews")}
-              </li>
-            ) : (
-              reviewRequests
-                .filter((r) => r.status === "pending")
-                .map((r) => (
-                  <li
-                    key={r.id}
-                    className="rounded-xl border border-border px-3 py-2 text-xs"
-                  >
-                    <div className="font-semibold">
-                      {t(`cases.reviewEntity.${r.entityType}`, {
-                        defaultValue: r.entityType,
-                      })}{" "}
-                      ·{" "}
-                      {t(`cases.reviewStage.${r.reviewStage}`, {
-                        defaultValue: r.reviewStage,
-                      })}
-                    </div>
-                    {r.dueAt ? (
-                      <div className="mt-1 text-muted-foreground">
-                        {t("cases.reviewDue")}:{" "}
-                        {new Date(r.dueAt).toLocaleString()}
-                      </div>
-                    ) : null}
-                    {canCompleteReviewStage(role, r.reviewStage) ? (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {(
-                        [
-                          ["approved", "cases.reviewApprove"],
-                          ["changes_requested", "cases.reviewChanges"],
-                          ["rejected", "cases.reviewReject"],
-                        ] as const
-                      ).map(([outcome, labelKey]) => (
-                        <button
-                          key={outcome}
-                          type="button"
-                          className="rounded-full border border-border px-2 py-1 text-[10px] font-semibold hover:border-primary hover:text-primary"
-                          onClick={() =>
-                            void dispatch(
-                              completeReviewRequest({
-                                publicUuid,
-                                reviewId: r.id,
-                                outcome,
-                              }),
-                            ).then(() => {
-                              void dispatch(fetchCaseDetail(publicUuid));
-                            })
-                          }
-                        >
-                          {t(labelKey)}
-                        </button>
-                      ))}
-                    </div>
-                    ) : (
-                      <p className="mt-2 text-[10px] text-muted-foreground">
-                        {t("cases.reviewAwaitingRole")}
-                      </p>
-                    )}
-                  </li>
-                ))
-            )}
-          </ul>
-        </section>
+        {showSection("reviews") && canViewCaseSection(role, "reviews") ? (
+          <SectionSuspense>
+            <LazyCaseReviewsSection publicUuid={publicUuid} />
+          </SectionSuspense>
         ) : null}
 
-        {canViewCaseSection(role, "inspections") ? (
-        <section
-          id="case-inspections"
-          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
-        >
-          <h2 className="text-sm font-bold">{t("cases.inspections")}</h2>
-          <SectionHelper>{t("help.caseDetail.inspections")}</SectionHelper>
-          <form
-            onSubmit={inspectionForm.handleSubmit}
-            className="mt-3 grid gap-2 sm:grid-cols-2"
-          >
-            <input
-              type="datetime-local"
-              name="scheduledAt"
-              value={inspectionForm.values.scheduledAt}
-              onChange={inspectionForm.handleChange}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <input
-              name="notes"
-              value={inspectionForm.values.notes}
-              onChange={inspectionForm.handleChange}
-              placeholder={t("cases.inspectionNotes")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <PendingSubmitButton
-              pending={inspectionForm.isSubmitting}
-              className="sm:col-span-2"
-            >
-              {t("cases.scheduleInspection")}
-            </PendingSubmitButton>
-          </form>
-          <form
-            onSubmit={measurementForm.handleSubmit}
-            className="mt-4 grid gap-2 sm:grid-cols-3"
-          >
-            <div className="sm:col-span-3">
-              <SectionHelper>{t("help.caseDetail.measurements")}</SectionHelper>
-            </div>
-            <select
-              name="measurementType"
-              value={measurementForm.values.measurementType}
-              onChange={measurementForm.handleChange}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
-            >
-              {MEASUREMENT_TYPES.map((mt) => (
-                <option key={mt} value={mt}>
-                  {t(`cases.measurement.${mt}`, { defaultValue: mt })}
-                </option>
-              ))}
-            </select>
-            <input
-              name="valueNumeric"
-              value={measurementForm.values.valueNumeric}
-              onChange={measurementForm.handleChange}
-              placeholder={t("cases.value")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <input
-              name="poleId"
-              value={measurementForm.values.poleId}
-              onChange={measurementForm.handleChange}
-              placeholder={t("cases.poleId")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
-            />
-            <PendingSubmitButton
-              pending={measurementForm.isSubmitting}
-              className="border border-border bg-background text-foreground"
-            >
-              {t("cases.addMeasurement")}
-            </PendingSubmitButton>
-          </form>
-          <ul className="mt-4 space-y-2 text-xs">
-            {inspections.map((i) => (
-              <li
-                key={i.publicUuid}
-                className="rounded-xl border border-border px-3 py-2"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span>
-                    {t(`cases.inspectionStatus.${i.status}`, {
-                      defaultValue: i.status,
-                    })}
-                    {i.scheduledAt
-                      ? ` · ${new Date(i.scheduledAt).toLocaleString()}`
-                      : ""}
-                  </span>
-                  {i.status === "scheduled" || i.status === "in_progress" ? (
-                    <button
-                      type="button"
-                      className="rounded-full border border-border px-2 py-1 text-[10px] font-semibold hover:border-primary hover:text-primary"
-                      onClick={() =>
-                        void dispatch(
-                          updateInspectionStatus({
-                            publicUuid,
-                            inspectionUuid: i.publicUuid,
-                            status: "completed",
-                          }),
-                        ).then(() => refreshDetail())
-                      }
-                    >
-                      {t("cases.markInspectionCompleted")}
-                    </button>
-                  ) : null}
-                </div>
-              </li>
-            ))}
-            {measurements.map((m) => (
-              <li key={m.id} className="rounded-xl bg-muted/40 px-3 py-2">
-                {t(`cases.measurement.${m.measurementType}`, {
-                  defaultValue: m.measurementType,
-                })}
-                : {m.valueNumeric}
-                {m.unit}
-                {m.poleId ? ` · ${m.poleId}` : ""}
-              </li>
-            ))}
-          </ul>
-        </section>
+        {showSection("inspections") &&
+        canViewCaseSection(role, "inspections") ? (
+          <SectionSuspense>
+            <LazyCaseInspectionsSection publicUuid={publicUuid} />
+          </SectionSuspense>
         ) : null}
 
-        {canViewCaseSection(role, "evidence") ? (
-        <section
-          id="case-evidence"
-          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
-        >
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <h2 className="text-sm font-bold">{t("cases.evidence")}</h2>
-            {evidenceChecklist && (
-              <p className="text-xs text-muted-foreground">
-                {t("cases.evidenceChecklistProgress", {
-                  covered: evidenceChecklist.coveredCount,
-                  total: evidenceChecklist.totalCount,
-                })}
-                {evidenceChecklist.complete
-                  ? ` · ${t("cases.evidenceChecklistComplete")}`
-                  : ""}
-              </p>
-            )}
-          </div>
-          <SectionHelper className="mt-2">{t("help.caseDetail.evidence")}</SectionHelper>
-          {evidenceChecklist && evidenceChecklist.missing.length > 0 && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {t("cases.evidenceChecklistMissing")}:{" "}
-              {evidenceChecklist.missing
-                .map((c) =>
-                  t(`cases.evidenceCategory.${c}`, { defaultValue: c }),
-                )
-                .join(", ")}
-            </p>
-          )}
-          <form
-            onSubmit={evidenceForm.handleSubmit}
-            className="mt-3 grid gap-2 sm:grid-cols-2"
-          >
-            <select
-              name="evidenceType"
-              value={evidenceForm.values.evidenceType}
-              onChange={evidenceForm.handleChange}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            >
-              {EVIDENCE_TYPES.map((et) => (
-                <option key={et} value={et}>
-                  {t(`cases.evidenceType.${et}`, { defaultValue: et })}
-                </option>
-              ))}
-            </select>
-            <select
-              name="category"
-              value={evidenceForm.values.category}
-              onChange={evidenceForm.handleChange}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            >
-              {EVIDENCE_CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {t(`cases.evidenceCategory.${cat}`, { defaultValue: cat })}
-                </option>
-              ))}
-            </select>
-            <input
-              name="title"
-              value={evidenceForm.values.title}
-              onChange={evidenceForm.handleChange}
-              placeholder={t("cases.evidenceTitle")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <input
-              name="caption"
-              value={evidenceForm.values.caption}
-              onChange={evidenceForm.handleChange}
-              placeholder={t("cases.evidenceCaption")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <input
-              name="lat"
-              value={evidenceForm.values.lat}
-              onChange={evidenceForm.handleChange}
-              placeholder={t("cases.evidenceLat")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <input
-              name="lng"
-              value={evidenceForm.values.lng}
-              onChange={evidenceForm.handleChange}
-              placeholder={t("cases.evidenceLng")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <button
-              type="button"
-              disabled={locating}
-              onClick={() => void fillFromDevice("evidence")}
-              className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-border bg-background px-3 text-xs font-semibold sm:col-span-2 disabled:opacity-50"
-            >
-              <Crosshair className="h-3.5 w-3.5" />
-              {t("maps.useMyLocation")}
-            </button>
-            {evidenceForm.values.evidenceType === "signature" ? (
-              <div className="sm:col-span-2">
-                <DigitalSignaturePad
-                  key={signaturePadKey}
-                  exportRef={signatureExportRef}
-                />
-              </div>
-            ) : (
-              <label className="flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-dashed border-border bg-background px-3 text-xs text-muted-foreground sm:col-span-2">
-                <FileUp className="h-3.5 w-3.5" />
-                {evidenceFile
-                  ? evidenceFile.name
-                  : t("cases.evidencePickFile")}
-                <input
-                  type="file"
-                  className="hidden"
-                  accept="image/*,video/*,audio/*,.pdf"
-                  onChange={(e) =>
-                    setEvidenceFile(e.target.files?.[0] ?? null)
-                  }
-                />
-              </label>
-            )}
-            {evidenceForm.status && (
-              <p className="text-xs text-destructive sm:col-span-2">
-                {String(evidenceForm.status)}
-              </p>
-            )}
-            <PendingSubmitButton
-              pending={evidenceForm.isSubmitting}
-              className="sm:col-span-2 bg-accent text-accent-foreground"
-            >
-              {t("cases.addEvidence")}
-            </PendingSubmitButton>
-          </form>
-          {latestGpsEvidence ? (
-            <div className="mt-4">
-              <LocationMapPanel
-                compact
-                lat={latestGpsEvidence.lat}
-                lng={latestGpsEvidence.lng}
-                label={
-                  latestGpsEvidence.title ||
-                  latestGpsEvidence.caption ||
-                  undefined
-                }
-              />
-            </div>
-          ) : null}
-          <ul className="mt-4 space-y-2">
-            {evidence.length === 0 && (
-              <li className="text-xs text-muted-foreground">
-                {t("cases.noEvidence")}
-              </li>
-            )}
-            {evidence.map((item) => (
-              <li
-                key={item.publicUuid}
-                className="flex items-start justify-between gap-2 rounded-xl border border-border px-3 py-2 text-xs"
-              >
-                <div className="min-w-0">
-                  <div className="font-semibold">
-                    {t(`cases.evidenceType.${item.evidenceType}`, {
-                      defaultValue: item.evidenceType,
-                    })}
-                    {" · "}
-                    {t(`cases.evidenceCategory.${item.category}`, {
-                      defaultValue: item.category,
-                    })}
-                  </div>
-                  {(item.title || item.caption) && (
-                    <div className="mt-0.5 text-muted-foreground">
-                      {item.title || item.caption}
-                    </div>
-                  )}
-                  {item.lat != null && item.lng != null && (
-                    <div className="mt-0.5 text-muted-foreground">
-                      {item.lat}, {item.lng}
-                    </div>
-                  )}
-                  {item.storageKey && (
-                    <a
-                      href={item.storageKey}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-1 inline-block text-accent underline"
-                    >
-                      {t("cases.open")}
-                    </a>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  aria-label={t("cases.removeEvidence")}
-                  onClick={() =>
-                    void dispatch(
-                      deleteEvidence({
-                        publicUuid,
-                        evidenceUuid: item.publicUuid,
-                      }),
-                    ).then(() => refreshDetail())
-                  }
-                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
+        {showSection("evidence") && canViewCaseSection(role, "evidence") ? (
+          <SectionSuspense>
+            <LazyCaseEvidenceSection publicUuid={publicUuid} />
+          </SectionSuspense>
         ) : null}
 
-        {canViewCaseSection(role, "logistics") ? (
-        <section
-          id="case-logistics"
-          className="scroll-mt-24 rounded-2xl border border-border bg-card p-5 shadow-sm"
-        >
-          <h2 className="text-sm font-bold">{t("cases.logistics")}</h2>
-          <SectionHelper>{t("help.caseDetail.logistics")}</SectionHelper>
-          <form onSubmit={tripForm.handleSubmit} className="mt-3 grid gap-2 sm:grid-cols-2">
-            <input
-              name="originCity"
-              value={tripForm.values.originCity}
-              onChange={tripForm.handleChange}
-              placeholder={t("cases.origin")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <input
-              name="destinationCity"
-              value={tripForm.values.destinationCity}
-              onChange={tripForm.handleChange}
-              placeholder={t("cases.destination")}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-            />
-            <input
-              type="datetime-local"
-              name="departureAt"
-              value={tripForm.values.departureAt}
-              onChange={tripForm.handleChange}
-              className="h-10 rounded-xl border border-input bg-background px-3 text-sm sm:col-span-2"
-            />
-            <PendingSubmitButton
-              pending={tripForm.isSubmitting}
-              className="sm:col-span-2"
-            >
-              {t("cases.addTrip")}
-            </PendingSubmitButton>
-          </form>
-          <ul className="mt-4 space-y-2">
-            {trips.map((tr) => (
-              <li
-                key={tr.publicUuid}
-                className="rounded-xl border border-border px-3 py-2 text-xs"
-              >
-                <div className="font-semibold">
-                  {[tr.originCity, tr.destinationCity].filter(Boolean).join(" → ") ||
-                    tr.status}
-                </div>
-                <div className="text-muted-foreground">
-                  {tr.status}
-                  {tr.departureAt
-                    ? ` · ${new Date(tr.departureAt).toLocaleString()}`
-                    : ""}
-                </div>
-                {tr.destinationCity ? (
-                  <div className="mt-2">
-                    <LocationMapPanel
-                      compact
-                      query={tr.destinationCity}
-                      label={tr.destinationCity}
-                    />
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-          {trips.length > 0 ? (
-            <form
-              onSubmit={expenseForm.handleSubmit}
-              className="mt-4 grid gap-2 sm:grid-cols-2"
-            >
-              <select
-                name="tripId"
-                value={expenseForm.values.tripId}
-                onChange={expenseForm.handleChange}
-                className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-              >
-                {trips.map((tr) => (
-                  <option key={tr.id} value={tr.id}>
-                    {[tr.originCity, tr.destinationCity].filter(Boolean).join(" → ") ||
-                      `#${tr.id}`}
-                  </option>
-                ))}
-              </select>
-              <select
-                name="expenseType"
-                value={expenseForm.values.expenseType}
-                onChange={expenseForm.handleChange}
-                className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-              >
-                {(
-                  [
-                    "flight",
-                    "hotel",
-                    "rental_car",
-                    "fuel",
-                    "meals",
-                    "other",
-                  ] as const
-                ).map((et) => (
-                  <option key={et} value={et}>
-                    {t(`cases.expenseType.${et}`, { defaultValue: et })}
-                  </option>
-                ))}
-              </select>
-              <input
-                name="amount"
-                value={expenseForm.values.amount}
-                onChange={expenseForm.handleChange}
-                placeholder={t("finance.amountPlaceholder")}
-                className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <input
-                name="vendorName"
-                value={expenseForm.values.vendorName}
-                onChange={expenseForm.handleChange}
-                placeholder={t("cases.vendor")}
-                className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
-              />
-              <PendingSubmitButton
-                pending={expenseForm.isSubmitting}
-                className="sm:col-span-2 border border-border bg-background text-foreground"
-              >
-                {t("cases.addExpense")}
-              </PendingSubmitButton>
-            </form>
-          ) : null}
-          <ul className="mt-3 space-y-2 text-xs">
-            {expenses.map((e) => (
-              <li key={e.id} className="rounded-xl bg-muted/40 px-3 py-2">
-                {t(`cases.expenseType.${e.expenseType}`, {
-                  defaultValue: e.expenseType,
-                })}{" "}
-                · {e.amount.toLocaleString()} {e.currency}
-                {e.vendorName ? ` · ${e.vendorName}` : ""}
-              </li>
-            ))}
-          </ul>
-        </section>
+        {showSection("logistics") && canViewCaseSection(role, "logistics") ? (
+          <SectionSuspense>
+            <LazyCaseLogisticsSection publicUuid={publicUuid} />
+          </SectionSuspense>
         ) : null}
 
-        {canViewCaseSection(role, "reports") ? (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm lg:col-span-2">
-          <h2 className="text-sm font-bold">{t("cases.technicalReport")}</h2>
-          <SectionHelper>{t("help.caseDetail.report")}</SectionHelper>
-          <form
-            onSubmit={reportForm.handleSubmit}
-            className="mt-3 grid gap-2 sm:grid-cols-2"
-          >
-            <textarea
-              name="investigationSummary"
-              rows={3}
-              value={reportForm.values.investigationSummary}
-              onChange={reportForm.handleChange}
-              placeholder={t("cases.investigationSummary")}
-              className="rounded-xl border border-input bg-background px-3 py-2 text-sm sm:col-span-2"
-            />
-            <textarea
-              name="conclusions"
-              rows={3}
-              value={reportForm.values.conclusions}
-              onChange={reportForm.handleChange}
-              placeholder={t("cases.conclusions")}
-              className="rounded-xl border border-input bg-background px-3 py-2 text-sm sm:col-span-2"
-            />
-            <PendingSubmitButton
-              pending={reportForm.isSubmitting}
-              className="sm:col-span-2"
-            >
-              {t("cases.submitReport")}
-            </PendingSubmitButton>
-          </form>
-          <ul className="mt-4 space-y-3">
-            {technicalReports.map((r) => (
-              <li
-                key={r.publicUuid}
-                className="rounded-xl border border-border px-3 py-3 text-xs"
-              >
-                <div className="font-semibold">
-                  v{r.versionNumber} ·{" "}
-                  {t(`cases.reportStatus.${r.status}`, {
-                    defaultValue: r.status,
-                  })}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {r.allowedNextStatuses.map((st) => (
-                    <button
-                      key={st}
-                      type="button"
-                      className="rounded-full border border-border px-2 py-1 text-[10px] font-semibold hover:border-primary hover:text-primary"
-                      onClick={() =>
-                        void dispatch(
-                          updateTechnicalReportStatus({
-                            publicUuid,
-                            reportUuid: r.publicUuid,
-                            status: st,
-                          }),
-                        ).then(() => refreshDetail())
-                      }
-                    >
-                      →{" "}
-                      {t(`cases.reportStatus.${st}`, {
-                        defaultValue: st,
-                      })}
-                    </button>
-                  ))}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
+        {showSection("reports") && canViewCaseSection(role, "reports") ? (
+          <SectionSuspense>
+            <LazyCaseReportsSection publicUuid={publicUuid} />
+          </SectionSuspense>
         ) : null}
 
-        {canViewCaseSection(role, "audit") ? (
-        <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
-          <h2 className="text-sm font-bold">{t("cases.auditLogs")}</h2>
-          <ul className="mt-3 max-h-64 space-y-2 overflow-y-auto">
-            {auditLogs.length === 0 ? (
-              <li className="text-xs text-muted-foreground">
-                {t("cases.noAuditLogs")}
-              </li>
-            ) : (
-              auditLogs.slice(0, 40).map((log) => (
-                <li
-                  key={log.id}
-                  className="rounded-xl bg-muted/40 px-3 py-2 text-[11px]"
-                >
-                  <div className="font-semibold text-foreground">
-                    {log.action}
-                    {log.entityType ? ` · ${log.entityType}` : ""}
-                  </div>
-                  <div className="text-muted-foreground">
-                    {new Date(log.createdAt).toLocaleString()}
-                    {log.comment ? ` · ${log.comment}` : ""}
-                  </div>
-                </li>
-              ))
-            )}
-          </ul>
-        </section>
+        {showSection("finance") && canViewCaseSection(role, "finance") ? (
+          <SectionSuspense>
+            <LazyCaseFinanceSection publicUuid={publicUuid} />
+          </SectionSuspense>
+        ) : null}
+
+        {showSection("audit") && canViewCaseSection(role, "audit") ? (
+          <SectionSuspense>
+            <LazyCaseAuditSection publicUuid={publicUuid} />
+          </SectionSuspense>
         ) : null}
       </div>
+
+      <StickyAdvanceBar
+        publicUuid={publicUuid}
+        stepSlug={stepSlug}
+        gatesOk={gatesOk}
+        viewerRole={role}
+        nextStatusLabel={
+          forwardStatus
+            ? t(`cases.status.${forwardStatus}`, {
+                defaultValue: forwardStatus,
+              })
+            : null
+        }
+        advancing={updatingStatus}
+        onAdvance={
+          forwardStatus
+            ? (reason) => {
+                void onStatus(forwardStatus, reason);
+              }
+            : undefined
+        }
+      />
     </div>
   );
+
+  if (stepPoint != null && stepSlug) {
+    return (
+      <CaseStepNavProvider
+        point={stepPoint}
+        stepSlug={stepSlug}
+        viewerRole={role}
+        activeSection={focusedSection}
+      >
+        {detailBody}
+      </CaseStepNavProvider>
+    );
+  }
+
+  return detailBody;
 }

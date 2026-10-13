@@ -8,10 +8,11 @@ alwaysApply: false
 
 - TailwindCSS utilities; tokens from `client/global.css` / `tailwind.config.ts`
 - **NEVER** arbitrary palette classes (`text-emerald-500`, `bg-amber-400`, `border-red-500`, etc.)
-- Use semantic tokens: `primary`, `accent`, `destructive`, `muted`, `secondary`, `foreground`, `background`, `border`, `card`, `input`, `ring`
-- Brand: `primary` ≈ `#E6AB40` (gold; dark `primary-foreground`), `accent` ≈ near-black ink. Use `delache-50`…`delache-950` gold scale for surfaces — no navy/blue. Dark shell `bg-delache-950`. Logos: only `logo-full.png` + `logo.png` via `BrandLogo` (`full` | `mark`)
+- Use semantic tokens: `primary`, `accent`, `destructive`, `success`, `info`, `info-muted`, `muted`, `secondary`, `foreground`, `background`, `border`, `card`, `input`, `ring`
+- Brand (CRM PDF): `primary` ≈ `#F8C018` marigold with white `primary-foreground`, `accent` ≈ near-black ink, `success` green checks, `info` / `info-muted` blue panels. Logo assets stay `#E6AB40`. `delache-50`…`delache-950` for surfaces. Dark shell `bg-delache-950`. Logos: only `logo-full.png` + `logo.png` via `BrandLogo` (`full` | `mark`)
 - Prefer existing `client/components/ui/` (Radix) before inventing new primitives
 - Icons: Lucide first (`lucide-react`); `react-icons` only if needed
 - Mobile-responsive; simple, cool, engaging UX with purposeful motion
+- **No page-level horizontal scroll on mobile** — contained scroll only inside widgets (see `mobile-responsive.mdc`)
 - Reuse `PortalPageHeader` and shared portal patterns for admin pages
 - Design-system docs: update `DESIGN_SYSTEM.md` when relevant

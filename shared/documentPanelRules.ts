@@ -18,6 +18,10 @@ const PHASE_ORDER = [
 export function documentCategoryFromGateCode(
   code: string,
 ): string | null {
+  if (code.startsWith("doc_approved:")) {
+    const category = code.slice("doc_approved:".length).trim();
+    return category || null;
+  }
   if (!code.startsWith("doc:")) return null;
   const category = code.slice(4).trim();
   return category || null;

@@ -4,6 +4,7 @@ import {
   authoringDeadlineSpec,
   caseStatusAfterArtifactReject,
   deadlineTypesToCompleteOnTransition,
+  QUESTIONNAIRE_REOPEN_FROM_STATUSES,
   shouldEnsureAuthoringDeadlineAfterReject,
   shouldNotifyLawFirmAfterArtifactReject,
   shouldReopenArtifactAfterCaseReturn,
@@ -20,7 +21,7 @@ describe("rejectLoopRules", () => {
     ).toBe("questionnaire");
     expect(
       caseStatusAfterArtifactReject({
-        caseStatus: "legal_validation",
+        caseStatus: "validation_delivery",
         artifact: "technical_report",
         outcome: "rejected",
       }),
@@ -59,6 +60,11 @@ describe("rejectLoopRules", () => {
     expect(shouldReopenArtifactAfterCaseReturn("on_hold")).toBeNull();
   });
 
+  it("questionnaire reopen statuses cover grammar QA workflow", () => {
+    expect(QUESTIONNAIRE_REOPEN_FROM_STATUSES).toContain("grammar_qa");
+    expect(QUESTIONNAIRE_REOPEN_FROM_STATUSES).toContain("legal_review");
+  });
+
   it("completes typed deadlines when leaving or holding the owning status", () => {
     expect(
       deadlineTypesToCompleteOnTransition(
@@ -74,7 +80,7 @@ describe("rejectLoopRules", () => {
     ).toEqual(["legal_review"]);
     expect(
       deadlineTypesToCompleteOnTransition(
-        "legal_validation",
+        "validation_delivery",
         "technical_report",
       ),
     ).toEqual(["external_legal_validation"]);

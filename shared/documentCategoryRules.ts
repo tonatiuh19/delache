@@ -21,10 +21,11 @@ export const DOCUMENT_CATEGORIES: readonly DocumentCategory[] = [
   "invoice",
   "receipt",
   "logistics",
+  "street_view",
   "other",
 ] as const;
 
-/** Categories the despacho is responsible for (P1 intake + P5 additional docs). */
+/** Categories the despacho may upload (P1 intake, P5 additional docs, optional extras). */
 export const CLIENT_DOCUMENT_CATEGORIES: readonly DocumentCategory[] = [
   "lawsuit",
   "medical_record",
@@ -34,6 +35,7 @@ export const CLIENT_DOCUMENT_CATEGORIES: readonly DocumentCategory[] = [
   "death_certificate",
   "sketch",
   "plaintiff_questionnaire",
+  "other",
 ] as const;
 
 export function isDocumentCategory(value: unknown): value is DocumentCategory {

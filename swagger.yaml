@@ -46,7 +46,7 @@ paths:
           description: Profile
   /api/auth/staff/preferences:
     patch:
-      summary: Update current staff user preferences (form helpers toggle)
+      summary: Update current staff user preferences (process guidance / legacy helpers)
       security:
         - bearerAuth: []
       requestBody:
@@ -55,11 +55,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [showFormHelpers]
+              minProperties: 1
               properties:
+                showProcessGuidance:
+                  type: boolean
+                  description: Show process coaching panel on case detail (default false)
                 showFormHelpers:
                   type: boolean
-                  description: Show inline form field helpers (default true)
+                  description: Legacy form tip helpers flag (default false; tips removed from UI)
       responses:
         "200":
           description: Updated user profile
@@ -73,7 +76,7 @@ paths:
           description: OK
   /api/auth/client/request-otp:
     post:
-      summary: Request law-firm client portal login OTP
+      summary: Request law-firm login OTP
       responses:
         "200":
           description: Code emailed (sent=true)
@@ -99,7 +102,7 @@ paths:
           description: Profile
   /api/auth/client/preferences:
     patch:
-      summary: Update current law-firm user preferences (form helpers toggle)
+      summary: Update current law-firm user preferences (process guidance / legacy helpers)
       security:
         - bearerAuth: []
       requestBody:
@@ -108,11 +111,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [showFormHelpers]
+              minProperties: 1
               properties:
+                showProcessGuidance:
+                  type: boolean
+                  description: Show process coaching panel on case detail (default false)
                 showFormHelpers:
                   type: boolean
-                  description: Show inline form field helpers (default true)
+                  description: Legacy form tip helpers flag (default false; tips removed from UI)
       responses:
         "200":
           description: Updated user profile
@@ -126,10 +132,44 @@ paths:
           description: OK
   /api/auth/request-otp:
     post:
-      summary: Alias of /api/auth/staff/request-otp
+      summary: Unified OTP request (staff first, then law_firm; single rate-limit bucket)
+      description: |
+        Resolves the email against staff_users, then law_firm_users on account_not_found.
+        Returns `actor` so the client can call the matching verify endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                locale:
+                  type: string
       responses:
         "200":
-          description: Generic success
+          description: Code sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  sent:
+                    type: boolean
+                  message:
+                    type: string
+                  actor:
+                    type: string
+                    enum: [staff, law_firm]
+        "404":
+          description: Account not found / inactive / not allowed
+        "429":
+          description: Rate limited
   /api/auth/verify-otp:
     post:
       summary: Alias of /api/auth/staff/verify-otp
@@ -167,7 +207,7 @@ paths:
           description: Updated
   /api/cases:
     get:
-      summary: List cases (server-side filter, sort, pagination). Admin and case_coordinator see all; expert/legal/logistics/accountant only see cases they are assigned to.
+      summary: List cases (staff visibility or law-firm own cases)
       security:
         - bearerAuth: []
       parameters:
@@ -194,9 +234,9 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Cases + pagination. Each case includes listado progress flags (including gatesOk for the current process point), lawFirmName, and primaryExpertName. Search (q) matches number, title, court, city, firm, or primary expert.
+          description: Cases + pagination. Each case includes listado progress flags (including gatesOk for the current process point), lawFirmName, primaryExpertName, and activeAssignments (role + name for ownership badges). Search (q) matches number, title, court, city, firm, or primary expert.
     post:
-      summary: Create case (admin and case_coordinator only)
+      summary: Create case (staff or law firm)
       security:
         - bearerAuth: []
       responses:
@@ -204,7 +244,7 @@ paths:
           description: Created
   /api/cases/pipeline:
     get:
-      summary: Cases pipeline board (per-status columns with pagination)
+      summary: Cases pipeline board (staff only; per-status columns with pagination)
       security:
         - bearerAuth: []
       parameters:
@@ -237,7 +277,11 @@ paths:
             forward drops.
   /api/cases/{publicUuid}:
     get:
-      summary: Case detail with history, notes, documents, reviews, completeness, audit
+      summary: Case detail (staff full payload; law firm limited notes/docs/reports + listado)
+      description: |
+        Role-scoped payload. `invoices` is included only for admin and accountant (`finance` section). `case.listado` mirrors pipeline progress
+        flags (including `documentsHandoffConfirmedAt`, `ratificationScheduledAt`, and
+        `gatesOk` for the current process point).
       security:
         - bearerAuth: []
       parameters:
@@ -248,11 +292,15 @@ paths:
             type: string
       responses:
         "200":
-          description: Detail payload (includes hasUnpaidInvoices and processGate snapshot for the current 12-point step)
+          description: Role-scoped case detail payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseDetailResponse"
         "404":
           description: Case not found
     patch:
-      summary: Update case flags (involvesFatality)
+      summary: Update case flags — staff: full pack; law firm: involvesFatality only
       security:
         - bearerAuth: []
       parameters:
@@ -267,20 +315,49 @@ paths:
           application/json:
             schema:
               type: object
-              required: [involvesFatality]
               properties:
                 involvesFatality:
                   type: boolean
+                protestaModality:
+                  type: string
+                  nullable: true
+                  enum: [presencial, virtual]
+                  description: P6 protesta path; clock starts on artifact upload, not modality alone
+                externalCourtDeadlineAt:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: Optional external court plazo; null clears (process SLAs only when unset)
+                dictamenDueAt:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: Field-ops date the technical report must be finished; null clears. Required before leaving logistics.
+                title:
+                  type: string
+                  maxLength: 255
+                  description: Paso 1 folio. Staff with document access.
+                description:
+                  type: string
+                  nullable: true
+                  maxLength: 500
+                  description: Paso 1 note. Empty clears.
+                lawFirmId:
+                  type: integer
+                  nullable: true
+                  description: Despacho that owns the expediente. Staff with document access. Null clears. Unknown id returns 400.
       responses:
         "200":
           description: Updated case
         "400":
           description: Invalid body
+        "403":
+          description: Insufficient permissions for the requested flag
         "404":
           description: Case not found
   /api/cases/{publicUuid}/location:
     patch:
-      summary: Update case property address and GPS coordinates
+      summary: Update case property address and GPS coordinates (staff only)
       security:
         - bearerAuth: []
       parameters:
@@ -314,7 +391,7 @@ paths:
           description: Case not found
   /api/geo/geocode:
     post:
-      summary: Geocode an address or lat,lng text (Nominatim / coordinate parse)
+      summary: Geocode an address or lat,lng text (staff only)
       security:
         - bearerAuth: []
       requestBody:
@@ -340,7 +417,7 @@ paths:
           description: Upstream geocoder failure
   /api/cases/{publicUuid}/status:
     patch:
-      summary: Transition case status
+      summary: Transition case status (staff only)
       security:
         - bearerAuth: []
       parameters:
@@ -369,7 +446,7 @@ paths:
                       type: string
   /api/cases/{publicUuid}/notes:
     post:
-      summary: Add case note
+      summary: Add case note (staff only)
       security:
         - bearerAuth: []
       responses:
@@ -377,7 +454,7 @@ paths:
           description: Note created
   /api/cases/{publicUuid}/documents:
     post:
-      summary: Upload case document to Vercel Blob (runs PDF OCR when possible)
+      summary: Upload case document (staff or owning law firm; firm limited to intake/additional categories)
       security:
         - bearerAuth: []
       responses:
@@ -389,7 +466,7 @@ paths:
           description: Blob token missing
   /api/cases/{publicUuid}/documents/from-blob:
     post:
-      summary: Register a case document already uploaded to private Vercel Blob
+      summary: Register a case document already uploaded to private Vercel Blob (staff or owning law firm)
       security:
         - bearerAuth: []
       requestBody:
@@ -415,7 +492,7 @@ paths:
           description: Blob token missing
   /api/cases/{publicUuid}/documents/{documentUuid}:
     patch:
-      summary: Recategorize a case document
+      summary: Recategorize a case document (staff or owning law firm; firm locked after approval)
       security:
         - bearerAuth: []
       parameters:
@@ -443,7 +520,7 @@ paths:
           description: Invalid category
   /api/cases/{publicUuid}/documents/bulk:
     post:
-      summary: Bulk upload case documents (max 20; PDF OCR on upload)
+      summary: Bulk upload case documents (staff only; max 20; PDF OCR on upload)
       security:
         - bearerAuth: []
       requestBody:
@@ -474,7 +551,7 @@ paths:
           description: Blob token missing
   /api/cases/{publicUuid}/documents/{documentUuid}/ocr:
     post:
-      summary: Run or save OCR for a document version (client ocrText or server PDF extract)
+      summary: Run or save OCR for a document version (staff only)
       security:
         - bearerAuth: []
       parameters:
@@ -504,7 +581,7 @@ paths:
           description: Document not found
   /api/cases/{publicUuid}/assignments:
     post:
-      summary: Assign team member to case
+      summary: Assign team member to case (staff only)
       security:
         - bearerAuth: []
       requestBody:
@@ -530,7 +607,7 @@ paths:
           description: Assignment created/reactivated
   /api/cases/{publicUuid}/expert-delivery-deadline:
     patch:
-      summary: Set or clear primary expert delivery deadline (action item + notification)
+      summary: Set or clear primary expert delivery deadline (staff only)
       security:
         - bearerAuth: []
       parameters:
@@ -556,7 +633,7 @@ paths:
           description: No primary expert assigned
   /api/cases/{publicUuid}/assignments/{assignmentId}:
     delete:
-      summary: Soft-unassign case member
+      summary: Soft-unassign case member (staff only)
       description: >
         Unassigning the primary expert also clears expert_delivery deadline,
         linked calendar events, and notifies the expert when a delivery date existed.
@@ -565,19 +642,109 @@ paths:
       responses:
         "200":
           description: Unassigned
+  /api/cases/{publicUuid}/handoff/confirm:
+    post:
+      summary: Confirm P2 document handoff to primary expert (staff only)
+      description: Coordinator confirms intake documents reached the assigned expert intact.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Handoff confirmed
+        "403":
+          description: Not allowed for role
+  /api/cases/{publicUuid}/documents/{documentUuid}/approve:
+    post:
+      summary: Approve an intake document (staff admin)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Document approved
+        "403":
+          description: Not allowed for role
+        "409":
+          description: Document not in an approvable status
+  /api/cases/{publicUuid}/documents/{documentUuid}/reject:
+    post:
+      summary: Reject document / request correction (staff admin)
+      description: |
+        Sets status=rejected, clears expediente approval, and opens a 3-business-day
+        intake_correction deadline when the category is an intake requirement.
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Correction requested
+        "403":
+          description: Not allowed for role
+        "409":
+          description: Document not rejectable
+  /api/cases/{publicUuid}/expediente/approve:
+    post:
+      summary: Approve expediente package (staff admin)
+      description: Requires all four intake document categories to be approved.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Expediente approved
+        "400":
+          description: Intake documents not all approved
+        "403":
+          description: Not allowed for role
+        "409":
+          description: Already approved
+  /api/cases/{publicUuid}/ratification-scheduled:
+    patch:
+      summary: Set or clear ratification hearing schedule (staff only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ratificationScheduledAt:
+                  type: string
+                  format: date-time
+                  nullable: true
+      responses:
+        "200":
+          description: Ratification schedule updated
   /api/cases/{publicUuid}/questionnaires:
     post:
-      summary: Create questionnaire (draft or submitted)
+      summary: Create questionnaire (staff only)
+      description: |
+        Submit (`submit: true`) requires an active `questionnaire` document (Miro PDF)
+        plus Street View URL and preexistence on `contentJson`.
       security:
         - bearerAuth: []
       responses:
         "201":
           description: Questionnaire created
+        "400":
+          description: Missing defendant questionnaire PDF or Street View fields
         "409":
           description: Questionnaire is in legal_review or another non-editable status
   /api/cases/{publicUuid}/questionnaires/{questionnaireUuid}/status:
     patch:
-      summary: Transition questionnaire status (opens legal review / advance invoice automation)
+      summary: Transition questionnaire status (staff only)
+      description: |
+        Direct status PATCH cannot move `grammar_qa → legal_review` or
+        `legal_review → approved`; those transitions require completing the matching
+        review request via `/reviews/{reviewId}/complete`.
+        Transitioning to `grammar_qa` requires the same PDF + Street View checks as submit.
       security:
         - bearerAuth: []
       parameters:
@@ -593,10 +760,10 @@ paths:
         "200":
           description: Questionnaire updated
         "400":
-          description: Invalid transition
+          description: Invalid transition, or missing PDF / Street View when entering grammar_qa
   /api/cases/{publicUuid}/reviews/{reviewId}/complete:
     post:
-      summary: Complete a pending review request
+      summary: Complete a pending review request (staff only)
       security:
         - bearerAuth: []
       parameters:
@@ -615,7 +782,7 @@ paths:
           description: Not pending or invalid outcome
   /api/cases/{publicUuid}/inspections:
     post:
-      summary: Schedule inspection
+      summary: Schedule inspection (staff only)
       security:
         - bearerAuth: []
       responses:
@@ -623,7 +790,7 @@ paths:
           description: Inspection created
   /api/cases/{publicUuid}/inspections/{inspectionUuid}/status:
     patch:
-      summary: Update inspection status (completed triggers QA notify)
+      summary: Update inspection status (staff only)
       security:
         - bearerAuth: []
       parameters:
@@ -639,10 +806,10 @@ paths:
         "200":
           description: Inspection updated
         "400":
-          description: Invalid status
+          description: Invalid status or soft_parallel_blocked (complete only during field_ops, or on_hold resume from field_ops)
   /api/cases/{publicUuid}/measurements:
     post:
-      summary: Record field measurement
+      summary: Record field measurement (staff only)
       security:
         - bearerAuth: []
       responses:
@@ -650,17 +817,17 @@ paths:
           description: Measurement created
   /api/cases/{publicUuid}/evidence:
     post:
-      summary: Capture field evidence (photo, video, GPS, observation, etc.)
+      summary: Capture field evidence (staff only)
       security:
         - bearerAuth: []
       responses:
         "201":
           description: Evidence created with updated checklist coverage
         "400":
-          description: Validation error
+          description: Validation error or soft_parallel_blocked (field evidence only during field_ops, or on_hold resume from field_ops)
   /api/cases/{publicUuid}/evidence/{evidenceUuid}:
     delete:
-      summary: Soft-delete field evidence
+      summary: Soft-delete field evidence (staff only)
       security:
         - bearerAuth: []
       responses:
@@ -670,15 +837,19 @@ paths:
           description: Evidence or case not found
   /api/cases/{publicUuid}/trips:
     post:
-      summary: Create logistics trip
+      summary: Create logistics trip (staff only)
       security:
         - bearerAuth: []
       responses:
         "201":
           description: Trip created
+        "400":
+          description: soft_parallel_blocked outside assignment→field_ops (or on_hold resume outside that window)
+        "403":
+          description: Insufficient permissions
   /api/cases/{publicUuid}/expenses:
     post:
-      summary: Add logistics expense to a trip
+      summary: Add logistics expense to a trip (staff only)
       security:
         - bearerAuth: []
       responses:
@@ -686,20 +857,28 @@ paths:
           description: Expense created
   /api/cases/{publicUuid}/technical-reports:
     post:
-      summary: Create technical report
+      summary: Create technical report (staff only)
+      description: |
+        Submit (`submit: true`) requires an active `technical_report` document (Miro dictamen PDF).
       security:
         - bearerAuth: []
       responses:
         "201":
           description: Report created
+        "400":
+          description: Technical report PDF required when submitting
   /api/cases/{publicUuid}/technical-reports/{reportUuid}/status:
     patch:
-      summary: Advance technical report review status
+      summary: Advance technical report review status (staff only; law firm uses /review)
+      description: |
+        Transitioning to `grammar_qa` requires an active `technical_report` document.
       security:
         - bearerAuth: []
       responses:
         "200":
           description: Report updated
+        "400":
+          description: Invalid transition or missing technical report PDF
   /api/notifications:
     get:
       summary: List current user notifications
@@ -724,6 +903,55 @@ paths:
       responses:
         "200":
           description: OK
+  /api/team/members:
+    get:
+      summary: List team members (admin) — staff or despacho roster
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: roster
+          schema: { type: string, enum: [staff, firm], default: staff }
+          description: staff = DELACHE users; firm = law_firm_users with firm name
+      responses:
+        "200":
+          description: Roster page (firm roster includes memberRole + lawFirmName)
+    post:
+      summary: Invite staff or despacho user (admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, firstName, lastName, role]
+              properties:
+                email: { type: string }
+                firstName: { type: string }
+                lastName: { type: string }
+                role:
+                  type: string
+                  enum: [admin, expert, legal, logistics, accountant, law_firm_user]
+                lawFirmId: { type: integer, nullable: true }
+                createLawFirm:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    city: { type: string }
+                    state: { type: string }
+                    defaultCourtName: { type: string }
+                memberRole:
+                  type: string
+                  enum: [owner, admin, member, viewer]
+      responses:
+        "201":
+          description: Invited
+        "400":
+          description: Invalid payload
+        "409":
+          description: Email actor conflict or already registered
   /api/law-firms:
     get:
       summary: List law firms (admin)
@@ -733,115 +961,74 @@ paths:
         "200":
           description: Law firms
     post:
-      summary: Create law firm (admin)
+      summary: Create law firm with primary owner invite (admin)
       security:
         - bearerAuth: []
-      responses:
-        "201":
-          description: Created
-  /api/client/cases:
-    get:
-      summary: Law firm portal — list own cases
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Cases
-    post:
-      summary: Law firm portal — submit new case
-      security:
-        - bearerAuth: []
-      responses:
-        "201":
-          description: Created
-  /api/client/cases/{publicUuid}:
-    get:
-      summary: Law firm portal — case detail
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Case + shared notes/docs/reports + documentCompleteness (P1/P5)
-    patch:
-      summary: Law firm portal — update case flags (involvesFatality)
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: path
-          name: publicUuid
-          required: true
-          schema:
-            type: string
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [involvesFatality]
+              required: [name, ownerEmail, ownerFirstName, ownerLastName]
               properties:
-                involvesFatality:
-                  type: boolean
+                name: { type: string }
+                ownerEmail: { type: string }
+                ownerFirstName: { type: string }
+                ownerLastName: { type: string }
+                email: { type: string }
+                city: { type: string }
+                state: { type: string }
+                defaultCourtName: { type: string }
+      responses:
+        "201":
+          description: Created firm + invited owner
+        "400":
+          description: Missing name or owner identity
+        "409":
+          description: Email already used by staff or despacho user
+  /api/firm/members:
+    get:
+      summary: List members of the caller's despacho
+      security:
+        - bearerAuth: []
       responses:
         "200":
-          description: Updated case
-        "400":
-          description: Invalid body
-  /api/client/cases/{publicUuid}/documents:
+          description: Firm roster + canManage + memberRole on auth/me for UI gates
+        "401":
+          description: Unauthorized
+        "403":
+          description: No firm membership
     post:
-      summary: Law firm portal — upload intake/additional-doc (category required)
+      summary: Invite a colleague to the caller's despacho (owner/admin)
       security:
         - bearerAuth: []
-      responses:
-        "201":
-          description: Document uploaded
-        "400":
-          description: Invalid category (P1/P5 types only)
-        "503":
-          description: Blob token missing
-  /api/client/cases/{publicUuid}/documents/from-blob:
-    post:
-      summary: Law firm portal — register a document already uploaded to private Blob
-      security:
-        - bearerAuth: []
-      responses:
-        "201":
-          description: Document uploaded
-        "400":
-          description: Invalid blob metadata or category
-        "503":
-          description: Blob token missing
-  /api/client/cases/{publicUuid}/documents/{documentUuid}:
-    patch:
-      summary: Law firm portal — recategorize an intake/additional document
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: path
-          name: publicUuid
-          required: true
-          schema: { type: string }
-        - in: path
-          name: documentUuid
-          required: true
-          schema: { type: string }
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [category]
+              required: [email, firstName, lastName]
               properties:
-                category: { type: string }
+                email: { type: string }
+                firstName: { type: string }
+                lastName: { type: string }
+                memberRole:
+                  type: string
+                  enum: [admin, member, viewer]
       responses:
-        "200":
-          description: Document with updated category
+        "201":
+          description: Invited
         "400":
-          description: Category not allowed, or document is a staff-only type (protesta, ratification, …)
-  /api/client/cases/{publicUuid}/technical-reports/{reportUuid}/review:
+          description: Invalid payload or memberRole
+        "403":
+          description: Not firm owner/admin
+        "409":
+          description: Email actor conflict
+  /api/cases/{publicUuid}/technical-reports/{reportUuid}/review:
     post:
-      summary: Law firm portal — complete external technical report review
+      summary: Law firm — complete external technical report review
       security:
         - bearerAuth: []
       parameters:
@@ -857,249 +1044,10 @@ paths:
         "200":
           description: Report updated. changes_requested returns the case to P9; rejected holds the case.
         "400":
-          description: Report not in external_review or invalid outcome
-  /api/dashboard/stats:
-    get:
-      summary: Dashboard counters scoped by staff case visibility (assigned-only for expert/legal/logistics/accountant)
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Stats
-  /api/reviews/pending:
-    get:
-      summary: Pending review queue for dashboard CTA (scoped by case visibility + actionable stage)
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: limit
-          schema: { type: integer, default: 50, maximum: 100 }
-      responses:
-        "200":
-          description: Pending review requests with case summary
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PendingReviewsResponse"
-        "401":
-          description: Unauthorized
-        "403":
-          description: Role cannot access reviews or has no actionable stages
-        "500":
-          description: Internal server error
-  /api/documents:
-    get:
-      summary: Documents index across cases (filter, pagination)
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: page
-          schema: { type: integer }
-        - in: query
-          name: limit
-          schema: { type: integer }
-        - in: query
-          name: q
-          schema: { type: string }
-      responses:
-        "200":
-          description: Documents + pagination
-  /api/search:
-    get:
-      summary: Global search across cases, documents, invoices, team
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: q
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Search hits
-  /api/reports/kpis:
-    get:
-      summary: Reporting KPIs scoped by staff case visibility (cases-by-expert only for admin/coordinator)
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: KPI payload
-  /api/calendar/events:
-    get:
-      summary: Calendar events
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: from
-          schema:
-            type: string
-            format: date-time
-          description: Inclusive range start (ISO). Optional with `to`.
-        - in: query
-          name: to
-          schema:
-            type: string
-            format: date-time
-          description: Inclusive range end (ISO). Optional with `from`.
-      responses:
-        "200":
-          description: Events list
-    post:
-      summary: Create calendar event
-      security:
-        - bearerAuth: []
-      responses:
-        "201":
-          description: Event created
-  /api/finance/invoices:
-    get:
-      summary: Invoices list (server-side filter, sort, pagination)
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: page
-          schema: { type: integer }
-        - in: query
-          name: limit
-          schema: { type: integer }
-        - in: query
-          name: sortBy
-          schema: { type: string }
-        - in: query
-          name: sortDir
-          schema: { type: string, enum: [ASC, DESC] }
-        - in: query
-          name: q
-          schema: { type: string }
-        - in: query
-          name: status
-          schema: { type: string }
-      responses:
-        "200":
-          description: Invoices + pagination
-    post:
-      summary: Create invoice
-      security:
-        - bearerAuth: []
-      responses:
-        "201":
-          description: Invoice created
-  /api/finance/invoices/{publicUuid}/payments:
-    post:
-      summary: Record payment against invoice
-      security:
-        - bearerAuth: []
-      responses:
-        "201":
-          description: Payment recorded
-  /api/team/members:
-    get:
-      summary: Team members (server-side filter, sort, pagination)
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: page
-          schema: { type: integer }
-        - in: query
-          name: limit
-          schema: { type: integer }
-        - in: query
-          name: sortBy
-          schema: { type: string }
-        - in: query
-          name: sortDir
-          schema: { type: string, enum: [ASC, DESC] }
-        - in: query
-          name: q
-          schema: { type: string }
-        - in: query
-          name: role
-          schema: { type: string }
-        - in: query
-          name: status
-          schema: { type: string }
-      responses:
-        "200":
-          description: Members + pagination
-    post:
-      summary: Invite team member
-      security:
-        - bearerAuth: []
-      responses:
-        "201":
-          description: Member invited
-        "409":
-          description: Email already exists
-  /api/team/members/{publicUuid}/resend-invite:
-    post:
-      summary: Resend invite email for an invited member
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: path
-          name: publicUuid
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Invite resent
-        "400":
-          description: Member is not in invited status
+          description: Invalid outcome or report not in external_review
         "404":
-          description: Not found
-  /api/team/members/{publicUuid}:
-    get:
-      summary: Team member detail with login sessions and audit log
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: path
-          name: publicUuid
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Member detail
-        "404":
-          description: Not found
-    patch:
-      summary: Update team member (name, role, status)
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: path
-          name: publicUuid
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Member updated
-        "400":
-          description: Validation error
-        "404":
-          description: Not found
-    delete:
-      summary: Soft-delete team member
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: path
-          name: publicUuid
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Member removed
-        "400":
-          description: Cannot remove self
-        "404":
-          description: Not found
+          description: Case or report not found
+
   /api/blob/client-upload:
     post:
       summary: Issue a client token for direct private Blob uploads
@@ -1147,3 +1095,82 @@ components:
           items:
             $ref: "#/components/schemas/PendingReviewQueueItem"
         total: { type: integer }
+    ListadoProgress:
+      type: object
+      description: Pipeline progress flags for kanban and case finance panel
+      properties:
+        processPoint: { type: integer, nullable: true }
+        gatesOk: { type: boolean }
+        holdResumeStatus: { type: string, nullable: true }
+        primaryExpert: { type: boolean }
+        intakeComplete: { type: boolean }
+        questionnaireApproved: { type: boolean }
+        streetViewDone: { type: boolean }
+        advanceReleased: { type: boolean }
+        advancePaid: { type: boolean }
+        plaintiffQuestionnaire: { type: boolean }
+        protestaFiled: { type: boolean }
+        clock10DueAt: { type: string, format: date-time, nullable: true }
+        logisticsReady: { type: boolean }
+        inspectionComplete: { type: boolean }
+        reportInternalOk: { type: boolean }
+        reportFirmOk: { type: boolean }
+        ratified: { type: boolean }
+        attendedWithReport: { type: boolean }
+        finalReleased: { type: boolean }
+        finalPaid: { type: boolean }
+    CaseProcessGateSnapshot:
+      type: object
+      properties:
+        point: { type: integer, nullable: true }
+        ok: { type: boolean }
+        missing:
+          type: array
+          items: { type: string }
+    CaseDetail:
+      type: object
+      properties:
+        publicUuid: { type: string }
+        caseNumber: { type: string }
+        title: { type: string }
+        status: { type: string }
+        documentsHandoffConfirmedAt:
+          { type: string, format: date-time, nullable: true }
+        ratificationScheduledAt:
+          { type: string, format: date-time, nullable: true }
+        protestaModality:
+          type: string
+          nullable: true
+          enum: [presencial, virtual]
+        dictamenDueAt:
+          type: string
+          format: date-time
+          nullable: true
+        listado:
+          $ref: "#/components/schemas/ListadoProgress"
+    InvoiceSummary:
+      type: object
+      properties:
+        publicUuid: { type: string }
+        invoiceType: { type: string, enum: [advance, final, other] }
+        status: { type: string }
+        amountCents: { type: integer }
+        currency: { type: string }
+    CaseDetailResponse:
+      type: object
+      description: |
+        Staff case detail. `invoices` is empty unless the viewer has finance
+        section access (admin, accountant).
+      properties:
+        case:
+          $ref: "#/components/schemas/CaseDetail"
+        hasUnpaidInvoices: { type: boolean }
+        processGate:
+          $ref: "#/components/schemas/CaseProcessGateSnapshot"
+        invoices:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvoiceSummary"
+        allowedNextStatuses:
+          type: array
+          items: { type: string }

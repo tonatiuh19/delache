@@ -79,6 +79,9 @@ import type {
   GlobalSearchResponse,
   InspectionItem,
   InspectionStatus,
+  FirmMemberItem,
+  FirmMembersResponse,
+  InviteFirmMemberRequest,
   InviteTeamMemberRequest,
   InvoiceSummary,
   InvoicesListResponse,
@@ -237,7 +240,6 @@ function computeDeadlineSeverity(
 // ---- inlined from shared/rbac.ts ----
 const STAFF_ROLES: readonly UserRole[] = [
   "admin",
-  "case_coordinator",
   "expert",
   "legal",
   "logistics",
@@ -374,7 +376,7 @@ function sessionExpiresAt(ttlDays: number): Date {
   return new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000);
 }
 
-/** MySQL DATETIME in UTC (TiDB/Cloud sessions use UTC NOW()). */
+/** MySQL DATETIME in UTC. Compare with UTC_TIMESTAMP(), not session NOW(). */
 function toMysqlDateTimeUtc(date: Date): string {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
@@ -465,6 +467,17 @@ const OTP_RATE_LIMIT_MAX_ATTEMPTS = 5;
 /** Separate IP spray limit (tighter window still uses same helper). */
 const OTP_IP_RATE_LIMIT_MAX_ATTEMPTS = 20;
 
+/**
+ * Vitest must not hit sticky DB rate buckets (shared TiDB IP keys → flaky 429).
+ * Mirrors optimum-credit: tests never send real OTP email and must not block on
+ * production-like rate limits. Callers still create OTP rows; sendEmail no-ops.
+ */
+function shouldEnforceOtpRateLimits(
+  vitestFlag: string | undefined,
+): boolean {
+  return vitestFlag !== "true";
+}
+
 type OtpRateLimitBucket = {
   count: number;
   windowStartedAt: number;
@@ -484,7 +497,7 @@ type OtpRateLimitScope = "email" | "ip";
 
 function buildOtpRateLimitKey(opts: {
   scope: OtpRateLimitScope;
-  portal: "staff" | "client";
+  portal: "staff" | "client" | "unified";
   value: string;
 }): string {
   const normalized = opts.value.trim().toLowerCase();
@@ -560,13 +573,14 @@ function peekOtpRateLimit(
 
 // ---- inlined from shared/formHelperRules.ts ----
 /**
- * User preference: show inline form field helpers (ON by default).
+ * User preference flags for optional coaching UI.
+ * Defaults OFF — platform stays clean; users opt in from Profile.
  */
 
-function isShowFormHelpersEnabled(
+function isPreferenceFlagEnabled(
   value: boolean | number | string | null | undefined,
 ): boolean {
-  if (value === null || value === undefined) return true;
+  if (value === null || value === undefined) return false;
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
   if (typeof value === "string") {
@@ -574,30 +588,336 @@ function isShowFormHelpersEnabled(
     if (v === "" || v === "0" || v === "false" || v === "off" || v === "no") {
       return false;
     }
-    return true;
+    if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
+    return false;
   }
-  return true;
+  return false;
+}
+
+function isShowFormHelpersEnabled(
+  value: boolean | number | string | null | undefined,
+): boolean {
+  return isPreferenceFlagEnabled(value);
+}
+
+function isShowProcessGuidanceEnabled(
+  value: boolean | number | string | null | undefined,
+): boolean {
+  return isPreferenceFlagEnabled(value);
 }
 
 type UpdatePreferencesResult =
-  { ok: true; showFormHelpers: boolean } | { ok: false; error: string };
+  | {
+      ok: true;
+      showFormHelpers?: boolean;
+      showProcessGuidance?: boolean;
+    }
+  | { ok: false; error: string };
 
 /**
  * Validate PATCH body for self-serve preferences.
- * Currently only `showFormHelpers` (required boolean).
+ * At least one of `showFormHelpers` / `showProcessGuidance` must be a boolean.
+ * Omitted fields are left unchanged by the API handler.
  */
 function parseUpdatePreferences(body: unknown): UpdatePreferencesResult {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "Invalid body" };
   }
-  if (!("showFormHelpers" in body)) {
-    return { ok: false, error: "showFormHelpers is required" };
+  const record = body as Record<string, unknown>;
+  const hasHelpers = Object.prototype.hasOwnProperty.call(
+    record,
+    "showFormHelpers",
+  );
+  const hasGuidance = Object.prototype.hasOwnProperty.call(
+    record,
+    "showProcessGuidance",
+  );
+  if (!hasHelpers && !hasGuidance) {
+    return {
+      ok: false,
+      error: "showProcessGuidance or showFormHelpers is required",
+    };
   }
-  const raw = (body as { showFormHelpers: unknown }).showFormHelpers;
-  if (typeof raw !== "boolean") {
-    return { ok: false, error: "showFormHelpers must be a boolean" };
+
+  const out: {
+    ok: true;
+    showFormHelpers?: boolean;
+    showProcessGuidance?: boolean;
+  } = { ok: true };
+
+  if (hasHelpers) {
+    if (typeof record.showFormHelpers !== "boolean") {
+      return { ok: false, error: "showFormHelpers must be a boolean" };
+    }
+    out.showFormHelpers = record.showFormHelpers;
   }
-  return { ok: true, showFormHelpers: raw };
+  if (hasGuidance) {
+    if (typeof record.showProcessGuidance !== "boolean") {
+      return { ok: false, error: "showProcessGuidance must be a boolean" };
+    }
+    out.showProcessGuidance = record.showProcessGuidance;
+  }
+  return out;
+}
+
+// ---- inlined from shared/lawFirmMemberRules.ts ----
+/**
+ * Despacho membership + firm create/invite rules.
+ * External lawyers are law_firm_users (never staff.legal).
+ */
+
+const LAW_FIRM_MEMBER_ROLES = [
+  "owner",
+  "admin",
+  "member",
+  "viewer",
+] as const;
+
+type LawFirmMemberRole = (typeof LAW_FIRM_MEMBER_ROLES)[number];
+
+function isLawFirmMemberRole(
+  role: string | null | undefined,
+): role is LawFirmMemberRole {
+  return (LAW_FIRM_MEMBER_ROLES as readonly string[]).includes(String(role));
+}
+
+/** Owner/admin can invite and manage firm roster. */
+function canManageFirmMembers(
+  role: string | null | undefined,
+): boolean {
+  return role === "owner" || role === "admin";
+}
+
+/** Viewer is read-only; member+ can upload/review on cases they own as firm. */
+function canMutateFirmCaseWork(
+  role: string | null | undefined,
+): boolean {
+  return role === "owner" || role === "admin" || role === "member";
+}
+
+/**
+ * One email = one actor (Q5-A).
+ * Intending to create staff while law_firm exists (or vice versa) is forbidden.
+ */
+function emailActorConflict(opts: {
+  intendingActor: "staff" | "law_firm";
+  staffExists: boolean;
+  lawFirmExists: boolean;
+}): { ok: true } | { ok: false; error: string; code: "email_actor_conflict" } {
+  if (opts.intendingActor === "staff" && opts.lawFirmExists) {
+    return {
+      ok: false,
+      error: "Email already registered as a despacho user",
+      code: "email_actor_conflict",
+    };
+  }
+  if (opts.intendingActor === "law_firm" && opts.staffExists) {
+    return {
+      ok: false,
+      error: "Email already registered as DELACHE staff",
+      code: "email_actor_conflict",
+    };
+  }
+  return { ok: true };
+}
+
+type EmailActorRow = { id: number; deleted: boolean };
+
+/**
+ * Invite occupancy: cross-actor forever blocked; same-actor soft-delete → reactivate.
+ */
+function resolveEmailInviteOccupancy(opts: {
+  intendingActor: "staff" | "law_firm";
+  staff: EmailActorRow | null;
+  lawFirm: EmailActorRow | null;
+}):
+  | { ok: true; action: "create" }
+  | {
+      ok: true;
+      action: "reactivate";
+      actor: "staff" | "law_firm";
+      id: number;
+    }
+  | {
+      ok: false;
+      error: string;
+      code: "email_actor_conflict" | "email_already_registered";
+    } {
+  const other =
+    opts.intendingActor === "staff" ? opts.lawFirm : opts.staff;
+  if (other) {
+    return {
+      ok: false,
+      error:
+        opts.intendingActor === "staff"
+          ? "Email already registered as a despacho user"
+          : "Email already registered as DELACHE staff",
+      code: "email_actor_conflict",
+    };
+  }
+  const same =
+    opts.intendingActor === "staff" ? opts.staff : opts.lawFirm;
+  if (!same) {
+    return { ok: true, action: "create" };
+  }
+  if (!same.deleted) {
+    return {
+      ok: false,
+      error: "Email already registered",
+      code: "email_already_registered",
+    };
+  }
+  return {
+    ok: true,
+    action: "reactivate",
+    actor: opts.intendingActor,
+    id: same.id,
+  };
+}
+
+/** Login blocked when the same email is alive in both actor tables. */
+function resolveLoginEmailDualActor(opts: {
+  staffAlive: boolean;
+  lawFirmAlive: boolean;
+}):
+  | { ok: true }
+  | { ok: false; error: string; code: "email_actor_conflict" } {
+  if (opts.staffAlive && opts.lawFirmAlive) {
+    return {
+      ok: false,
+      error:
+        "This email is registered as both staff and despacho. Contact an admin to resolve.",
+      code: "email_actor_conflict",
+    };
+  }
+  return { ok: true };
+}
+
+type CreateLawFirmDraft = {
+  name: string;
+  email?: string | null;
+  city?: string | null;
+  state?: string | null;
+  defaultCourtName?: string | null;
+};
+
+type FirmInviteTarget =
+  | { mode: "existing"; lawFirmId: number }
+  | { mode: "create"; firm: CreateLawFirmDraft };
+
+/**
+ * Despacho invite must attach to an existing firm or create one inline.
+ * New firm primary contact defaults to owner.
+ */
+function resolveDespachoInviteTarget(input: {
+  lawFirmId?: number | null;
+  createLawFirm?: Partial<CreateLawFirmDraft> | null;
+  memberRole?: string | null;
+  isPrimaryContact?: boolean;
+}):
+  | {
+      ok: true;
+      target: FirmInviteTarget;
+      memberRole: LawFirmMemberRole;
+      isPrimaryContact: boolean;
+    }
+  | {
+      ok: false;
+      error: string;
+      code: "law_firm_required" | "invalid_firm_name" | "invalid_member_role";
+    } {
+  const createName = String(input.createLawFirm?.name || "").trim();
+  const lawFirmId = Number(input.lawFirmId);
+  const hasExisting = Number.isFinite(lawFirmId) && lawFirmId > 0;
+  const hasCreate = createName.length > 0;
+
+  if (!hasExisting && !hasCreate) {
+    return {
+      ok: false,
+      error: "Select an existing despacho or create a new one",
+      code: "law_firm_required",
+    };
+  }
+  if (hasCreate && createName.length < 2) {
+    return {
+      ok: false,
+      error: "Despacho name is required",
+      code: "invalid_firm_name",
+    };
+  }
+
+  const creating = hasCreate && !hasExisting;
+  const rawRole = String(input.memberRole || "").trim();
+  const memberRole: LawFirmMemberRole = creating
+    ? "owner"
+    : isLawFirmMemberRole(rawRole)
+      ? rawRole
+      : "member";
+
+  if (rawRole && !creating && !isLawFirmMemberRole(rawRole)) {
+    return {
+      ok: false,
+      error: "Invalid despacho member role",
+      code: "invalid_member_role",
+    };
+  }
+
+  if (creating) {
+    return {
+      ok: true,
+      target: {
+        mode: "create",
+        firm: {
+          name: createName,
+          email: input.createLawFirm?.email?.trim() || null,
+          city: input.createLawFirm?.city?.trim() || null,
+          state: input.createLawFirm?.state?.trim() || null,
+          defaultCourtName:
+            input.createLawFirm?.defaultCourtName?.trim() || null,
+        },
+      },
+      memberRole,
+      isPrimaryContact: true,
+    };
+  }
+
+  return {
+    ok: true,
+    target: { mode: "existing", lawFirmId },
+    memberRole,
+    isPrimaryContact: Boolean(input.isPrimaryContact),
+  };
+}
+
+/**
+ * Creating a despacho org always requires a primary owner invite (Q2-C).
+ */
+function validateCreateLawFirmWithOwner(input: {
+  name: string;
+  ownerEmail: string;
+  ownerFirstName: string;
+  ownerLastName: string;
+}):
+  | {
+      ok: true;
+      name: string;
+      ownerEmail: string;
+      ownerFirstName: string;
+      ownerLastName: string;
+    }
+  | { ok: false; error: string; code: "invalid_payload" } {
+  const name = String(input.name || "").trim();
+  const ownerEmail = String(input.ownerEmail || "").trim().toLowerCase();
+  const ownerFirstName = String(input.ownerFirstName || "").trim();
+  const ownerLastName = String(input.ownerLastName || "").trim();
+  if (!name || !ownerEmail || !ownerFirstName || !ownerLastName) {
+    return {
+      ok: false,
+      error: "name and primary owner (email, firstName, lastName) are required",
+      code: "invalid_payload",
+    };
+  }
+  return { ok: true, name, ownerEmail, ownerFirstName, ownerLastName };
 }
 
 // ---- inlined from shared/teamMemberRules.ts ----
@@ -608,7 +928,6 @@ function parseUpdatePreferences(body: unknown): UpdatePreferencesResult {
 
 const STAFF_EDIT_ROLES: readonly UserRole[] = [
   "admin",
-  "case_coordinator",
   "expert",
   "legal",
   "logistics",
@@ -776,12 +1095,19 @@ type InviteValidationOk = {
   lastName: string;
   role: UserRole | "law_firm_user";
   lawFirmId: number | null;
+  createLawFirm: CreateLawFirmDraft | null;
+  memberRole: LawFirmMemberRole | null;
+  isPrimaryContact: boolean;
 };
 
 type InviteValidationErr = {
   ok: false;
   error: string;
-  code: "invalid_payload" | "law_firm_required";
+  code:
+    | "invalid_payload"
+    | "law_firm_required"
+    | "invalid_firm_name"
+    | "invalid_member_role";
 };
 
 function validateTeamInvite(input: {
@@ -790,6 +1116,8 @@ function validateTeamInvite(input: {
   lastName: string;
   role: string;
   lawFirmId?: number | null;
+  createLawFirm?: Partial<CreateLawFirmDraft> | null;
+  memberRole?: string | null;
 }): InviteValidationOk | InviteValidationErr {
   const email = String(input.email || "")
     .trim()
@@ -807,12 +1135,16 @@ function validateTeamInvite(input: {
   }
 
   if (role === "law_firm_user") {
-    const lawFirmId = Number(input.lawFirmId);
-    if (!Number.isFinite(lawFirmId) || lawFirmId <= 0) {
+    const target = resolveDespachoInviteTarget({
+      lawFirmId: input.lawFirmId,
+      createLawFirm: input.createLawFirm,
+      memberRole: input.memberRole,
+    });
+    if (target.ok === false) {
       return {
         ok: false,
-        error: "lawFirmId required for law firm users",
-        code: "law_firm_required",
+        error: target.error,
+        code: target.code,
       };
     }
     return {
@@ -821,7 +1153,12 @@ function validateTeamInvite(input: {
       firstName,
       lastName,
       role: "law_firm_user",
-      lawFirmId,
+      lawFirmId:
+        target.target.mode === "existing" ? target.target.lawFirmId : null,
+      createLawFirm:
+        target.target.mode === "create" ? target.target.firm : null,
+      memberRole: target.memberRole,
+      isPrimaryContact: target.isPrimaryContact,
     };
   }
 
@@ -832,6 +1169,9 @@ function validateTeamInvite(input: {
     lastName,
     role: role as UserRole,
     lawFirmId: null,
+    createLawFirm: null,
+    memberRole: null,
+    isPrimaryContact: false,
   };
 }
 
@@ -927,10 +1267,10 @@ function canTransitionReport(
 const QUESTIONNAIRE_STATUS_FORWARD: Partial<
   Record<QuestionnaireStatus, QuestionnaireStatus[]>
 > = {
-  draft: ["submitted", "rejected"],
-  submitted: ["legal_review", "changes_requested", "rejected"],
+  draft: ["grammar_qa", "rejected"],
+  grammar_qa: ["legal_review", "changes_requested", "rejected"],
   legal_review: ["approved", "changes_requested", "rejected"],
-  changes_requested: ["draft", "submitted"],
+  changes_requested: ["draft", "grammar_qa"],
   approved: ["changes_requested"],
   rejected: ["changes_requested", "draft"],
 };
@@ -956,9 +1296,47 @@ function canTransitionQuestionnaire(
   return { ok: true };
 }
 
+const REVIEW_ONLY_DIRECT_PATCH = new Set([
+  "grammar_qa→legal_review",
+  "legal_review→approved",
+]);
+
+function canDirectPatchQuestionnaireStatus(
+  from: QuestionnaireStatus,
+  to: QuestionnaireStatus,
+): { ok: true } | { ok: false; reason: string } {
+  const base = canTransitionQuestionnaire(from, to);
+  if (!base.ok) return base;
+  if (REVIEW_ONLY_DIRECT_PATCH.has(`${from}→${to}`)) {
+    return {
+      ok: false,
+      reason: "Complete the pending review in the Reviews panel",
+    };
+  }
+  return { ok: true };
+}
+
+function getAllowedQuestionnaireStatusesForDirectPatch(
+  from: QuestionnaireStatus,
+): QuestionnaireStatus[] {
+  return getAllowedQuestionnaireStatuses(from).filter(
+    (to) => canDirectPatchQuestionnaireStatus(from, to).ok,
+  );
+}
+
+/** Entering grammar_qa opens QA review (P3). */
+function shouldOpenGrammarQaReview(to: QuestionnaireStatus): boolean {
+  return to === "grammar_qa";
+}
+
 /** Entering legal_review should open an internal_legal review request. */
 function shouldOpenInternalLegalReview(to: QuestionnaireStatus): boolean {
   return to === "legal_review";
+}
+
+/** QA passed — P3 advance milestone (before legal approval). */
+function questionnaireQaComplete(status: string | null | undefined): boolean {
+  return status === "legal_review" || status === "approved";
 }
 
 // ---- inlined from shared/reviewRequestRules.ts ----
@@ -1048,7 +1426,21 @@ function resolveReviewCompletion(
   return { ok: true, nextStatus: outcome, completed: true };
 }
 
-/** Map review outcome → questionnaire status. */
+/** Map review outcome → questionnaire status from stage. */
+function questionnaireStatusFromReviewStage(
+  stage: ReviewStage,
+  outcome: ReviewOutcome,
+): QuestionnaireStatus | null {
+  if (outcome === "changes_requested") return "changes_requested";
+  if (outcome === "rejected") return "rejected";
+  if (outcome === "approved") {
+    if (stage === "grammar_qa") return "legal_review";
+    if (stage === "internal_legal") return "approved";
+  }
+  return null;
+}
+
+/** @deprecated Use questionnaireStatusFromReviewStage. */
 function questionnaireStatusFromReview(
   outcome: ReviewOutcome,
 ): "approved" | "changes_requested" | "rejected" {
@@ -1193,7 +1585,7 @@ function shouldEmitMissingDocumentsAlert(
     return caseStatus === "intake" || caseStatus === "assignment";
   }
   if (completeness.phase === "court_filing") {
-    return caseStatus === "court_delivery";
+    return caseStatus === "validation_delivery";
   }
   return caseStatus === "additional_docs";
 }
@@ -1216,7 +1608,7 @@ function activeCompletenessForCaseStatus(
   documentCategories: readonly string[],
   opts: AdditionalDocsOptions = {},
 ): DocumentCompletenessStatus {
-  if (caseStatus === "court_delivery") {
+  if (caseStatus === "validation_delivery") {
     return getCourtFilingCompleteness(documentCategories);
   }
   if (caseStatus === "additional_docs") {
@@ -1230,7 +1622,7 @@ const MISSING_DOCS_KPI_STATUSES = [
   "intake",
   "assignment",
   "additional_docs",
-  "court_delivery",
+  "validation_delivery",
 ] as const;
 
 function caseStatusCountsTowardMissingDocsKpi(caseStatus: string): boolean {
@@ -1251,6 +1643,194 @@ function shouldWriteLawFirmMissingDocsNote(completeness: {
   return completeness.phase === "additional_docs";
 }
 
+// ---- inlined from shared/documentApprovalRules.ts ----
+const DOCUMENT_LOCKED_STATUSES = [
+  "uploaded",
+  "under_review",
+  "approved",
+] as const;
+
+const INTAKE_CORRECTION_BUSINESS_DAYS = 3;
+const INTAKE_CORRECTION_DEADLINE_TYPE = "intake_correction" as const;
+const INTAKE_CORRECTION_DEADLINE_TITLE =
+  "Intake document correction (3 business days)";
+
+type DocumentApprovalRow = {
+  category: string;
+  status: string | null | undefined;
+};
+
+function isIntakeDocumentCategory(
+  category: string | null | undefined,
+): boolean {
+  if (!category) return false;
+  return (INTAKE_REQUIRED_CATEGORIES as readonly string[]).includes(category);
+}
+
+function canApproveIntakeDocument(role: string | null | undefined): boolean {
+  return role === "admin";
+}
+
+function canRejectIntakeDocument(role: string | null | undefined): boolean {
+  return role === "admin";
+}
+
+function canApproveExpediente(role: string | null | undefined): boolean {
+  return role === "admin";
+}
+
+function canSetExternalCourtDeadline(
+  role: string | null | undefined,
+): boolean {
+  return role === "admin" || role === "legal";
+}
+
+/** Keep in sync with canEditIntakePack (document mutators). */
+function canEditIntakePackInline(role: string | null | undefined): boolean {
+  return (
+    role === "admin" ||
+    role === "expert" ||
+    role === "legal" ||
+    role === "accountant"
+  );
+}
+
+function isDocumentStatusLocked(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return (DOCUMENT_LOCKED_STATUSES as readonly string[]).includes(status);
+}
+
+function canLawFirmMutateDocument(opts: {
+  status: string | null | undefined;
+}): boolean {
+  return !isDocumentStatusLocked(opts.status);
+}
+
+function canLawFirmUploadCategory(opts: {
+  existingStatuses: readonly (string | null | undefined)[];
+}): boolean {
+  return !opts.existingStatuses.some((s) => isDocumentStatusLocked(s));
+}
+
+function documentIsApprovable(status: string | null | undefined): boolean {
+  return status === "uploaded" || status === "under_review";
+}
+
+function documentIsRejectable(status: string | null | undefined): boolean {
+  return (
+    status === "uploaded" ||
+    status === "under_review" ||
+    status === "approved"
+  );
+}
+
+function approvedCategoriesFromDocs(
+  docs: readonly DocumentApprovalRow[],
+): string[] {
+  const set = new Set<string>();
+  for (const d of docs) {
+    if (d.status === "approved" && d.category) set.add(d.category);
+  }
+  return [...set];
+}
+
+function intakeDocsAllApproved(docs: readonly DocumentApprovalRow[]): boolean {
+  const approved = new Set(approvedCategoriesFromDocs(docs));
+  return INTAKE_REQUIRED_CATEGORIES.every((c) => approved.has(c));
+}
+
+function missingApprovedIntakeCategories(
+  docs: readonly DocumentApprovalRow[],
+): string[] {
+  const approved = new Set(approvedCategoriesFromDocs(docs));
+  return INTAKE_REQUIRED_CATEGORIES.filter((c) => !approved.has(c));
+}
+
+function canApproveExpedienteNow(opts: {
+  role: string | null | undefined;
+  docs: readonly DocumentApprovalRow[];
+  alreadyApproved: boolean;
+}): { ok: true } | { ok: false; error: string; code: string } {
+  if (!canApproveExpediente(opts.role)) {
+    return { ok: false, error: "Insufficient permissions", code: "forbidden" };
+  }
+  if (opts.alreadyApproved) {
+    return {
+      ok: false,
+      error: "Expediente already approved",
+      code: "already_approved",
+    };
+  }
+  const missing = missingApprovedIntakeCategories(opts.docs);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      error: `Approve all intake documents first (missing: ${missing.join(", ")})`,
+      code: "intake_docs_not_approved",
+    };
+  }
+  return { ok: true };
+}
+
+function intakeCorrectionDeadlineSpec(): {
+  deadlineType: typeof INTAKE_CORRECTION_DEADLINE_TYPE;
+  title: string;
+  businessDays: number;
+} {
+  return {
+    deadlineType: INTAKE_CORRECTION_DEADLINE_TYPE,
+    title: INTAKE_CORRECTION_DEADLINE_TITLE,
+    businessDays: INTAKE_CORRECTION_BUSINESS_DAYS,
+  };
+}
+
+function normalizeRejectionReason(reason: unknown): string | null {
+  if (reason == null) return null;
+  const trimmed = String(reason).trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 2000);
+}
+
+function parseDocumentRejectBody(body: unknown):
+  | { ok: true; reason: string | null }
+  | { ok: false; error: string } {
+  if (body == null) return { ok: true, reason: null };
+  if (typeof body !== "object") {
+    return { ok: false, error: "Invalid body" };
+  }
+  const rec = body as Record<string, unknown>;
+  if (!("reason" in rec) && !("rejectionReason" in rec)) {
+    return { ok: true, reason: null };
+  }
+  const raw = "reason" in rec ? rec.reason : rec.rejectionReason;
+  if (raw != null && typeof raw !== "string") {
+    return { ok: false, error: "reason must be a string" };
+  }
+  return { ok: true, reason: normalizeRejectionReason(raw) };
+}
+
+/** Optional external court deadline — null/empty clears; invalid → error. */
+function parseExternalCourtDeadlineAtInline(
+  raw: unknown,
+):
+  | { ok: true; value: string | null }
+  | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === "") {
+    return { ok: true, value: null };
+  }
+  if (typeof raw !== "string" && typeof raw !== "number") {
+    return {
+      ok: false,
+      error: "externalCourtDeadlineAt must be a date string or null",
+    };
+  }
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) {
+    return { ok: false, error: "Invalid externalCourtDeadlineAt" };
+  }
+  return { ok: true, value: d.toISOString() };
+}
+
 // ---- inlined from shared/documentCategoryRules.ts ----
 const DOCUMENT_CATEGORIES: readonly DocumentCategory[] = [
   "lawsuit",
@@ -1269,6 +1849,7 @@ const DOCUMENT_CATEGORIES: readonly DocumentCategory[] = [
   "invoice",
   "receipt",
   "logistics",
+  "street_view",
   "other",
 ];
 
@@ -1281,6 +1862,7 @@ const CLIENT_DOCUMENT_CATEGORIES: readonly DocumentCategory[] = [
   "death_certificate",
   "sketch",
   "plaintiff_questionnaire",
+  "other",
 ];
 
 function isDocumentCategory(value: unknown): value is DocumentCategory {
@@ -2066,6 +2648,34 @@ function resolveOptionalLatLng(
   return { ok: true, value: { lat: parsed.lat, lng: parsed.lng } };
 }
 
+/** Prefer explicit court; else despacho default_court_name (keep in sync with shared/caseCourtNameRules). */
+function resolveCaseCourtNameInline(opts: {
+  provided?: string | null;
+  firmDefaultCourtName?: string | null;
+}): string | null {
+  const provided = (opts.provided ?? "").trim();
+  if (provided) return provided;
+  const fallback = (opts.firmDefaultCourtName ?? "").trim();
+  return fallback || null;
+}
+
+async function fetchLawFirmDefaultCourtName(
+  lawFirmId: number | null | undefined,
+): Promise<string | null> {
+  if (lawFirmId == null || !Number.isFinite(lawFirmId) || lawFirmId <= 0) {
+    return null;
+  }
+  const db = getPool();
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT default_court_name FROM law_firms
+     WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    [lawFirmId],
+  );
+  if (!rows[0]) return null;
+  const v = String(rows[0].default_court_name || "").trim();
+  return v || null;
+}
+
 function googleMapsSearchUrl(opts: {
   lat?: number | null;
   lng?: number | null;
@@ -2209,19 +2819,23 @@ type AutomationAction =
       reason: string;
     };
 
-function automationOnQuestionnaireApproved(): AutomationAction[] {
+function automationOnQuestionnaireQaApproved(): AutomationAction[] {
   return [
     {
       type: "create_invoice",
       invoiceType: "advance",
-      reason: "Questionnaire approved — trigger advance payment",
+      reason: "Questionnaire passed QA — trigger advance payment (P3)",
     },
     {
       type: "notify",
       notificationType: "invoice_pending",
-      reason: "Advance invoice pending after questionnaire approval",
+      reason: "Advance invoice pending after questionnaire QA approval",
     },
   ];
+}
+
+function automationOnQuestionnaireApproved(): AutomationAction[] {
+  return automationOnQuestionnaireQaApproved();
 }
 
 function automationOnInspectionCompleted(): AutomationAction[] {
@@ -2346,22 +2960,129 @@ function toneForNotificationType(
 }
 
 // ---- inlined from shared/caseWorkflow.ts ----
-/** Primary forward workflow (Product.md phases 1–12 → completed) */
+/** Primary forward workflow (10 process points → completed) */
 const CASE_STATUS_FLOW: CaseStatus[] = [
   "intake",
-  "assignment",
   "questionnaire",
+  "assignment",
   "legal_review_questionnaire",
   "additional_docs",
   "court_acceptance",
-  "logistics",
-  "inspection",
+  "field_ops",
   "technical_report",
-  "legal_validation",
-  "court_delivery",
+  "validation_delivery",
   "accounting",
   "completed",
 ];
+
+const LEGACY_CASE_STATUS_MAP: Record<string, CaseStatus> = {
+  logistics: "field_ops",
+  inspection: "field_ops",
+  legal_validation: "validation_delivery",
+  court_delivery: "validation_delivery",
+};
+
+function normalizeCaseStatus(status: string): CaseStatus | null {
+  if (LEGACY_CASE_STATUS_MAP[status]) return LEGACY_CASE_STATUS_MAP[status];
+  if ((CASE_STATUS_FLOW as string[]).includes(status)) {
+    return status as CaseStatus;
+  }
+  if (status === "on_hold" || status === "cancelled") {
+    return status;
+  }
+  return null;
+}
+
+// ---- inlined from shared/softParallelRules.ts ----
+type SoftParallelAction =
+  | "draft_logistics_trip"
+  | "draft_gps_street_view"
+  | "field_prep_notes"
+  | "mark_inspection_complete"
+  | "upload_field_evidence";
+
+type SoftParallelOpts = {
+  holdResumeStatus?: CaseStatus | string | null;
+};
+
+function softParallelEffectiveStatus(
+  status: CaseStatus | string,
+  opts?: SoftParallelOpts,
+): CaseStatus | null {
+  const normalized = normalizeCaseStatus(String(status));
+  if (!normalized || normalized === "completed" || normalized === "cancelled") {
+    return null;
+  }
+  if (normalized === "on_hold") {
+    const resume = opts?.holdResumeStatus
+      ? normalizeCaseStatus(String(opts.holdResumeStatus))
+      : null;
+    return resume && resume !== "completed" && resume !== "cancelled"
+      ? resume
+      : null;
+  }
+  return normalized;
+}
+
+function softParallelAllowed(
+  status: CaseStatus | string,
+  action: SoftParallelAction,
+  opts?: SoftParallelOpts,
+): boolean {
+  const effective = softParallelEffectiveStatus(status, opts);
+  if (!effective) return false;
+
+  const idx = CASE_STATUS_FLOW.indexOf(effective);
+  const questionnaireIdx = CASE_STATUS_FLOW.indexOf("questionnaire");
+  const assignmentIdx = CASE_STATUS_FLOW.indexOf("assignment");
+  const fieldOpsIdx = CASE_STATUS_FLOW.indexOf("field_ops");
+
+  switch (action) {
+    case "draft_gps_street_view":
+      return idx >= questionnaireIdx && idx <= fieldOpsIdx;
+    case "draft_logistics_trip":
+      return idx >= assignmentIdx && idx <= fieldOpsIdx;
+    case "field_prep_notes":
+      return idx >= assignmentIdx && idx < fieldOpsIdx;
+    case "mark_inspection_complete":
+    case "upload_field_evidence":
+      return idx === fieldOpsIdx;
+    default:
+      return false;
+  }
+}
+
+function softParallelBlockMessage(action: SoftParallelAction): string {
+  switch (action) {
+    case "draft_logistics_trip":
+      return "Logistics trips can be drafted from assignment through field_ops only";
+    case "draft_gps_street_view":
+      return "GPS / Street View drafts are allowed from assignment through field_ops only";
+    case "field_prep_notes":
+      return "Field prep notes are allowed after assignment until field_ops begins";
+    case "mark_inspection_complete":
+      return "Inspection can only be marked complete while the case is in field_ops (or on hold from field_ops)";
+    case "upload_field_evidence":
+      return "Field evidence uploads are only allowed during field_ops (or on hold from field_ops)";
+    default:
+      return "This action is not allowed at the current process stage";
+  }
+}
+
+async function softParallelOptsForCaseRow(
+  caseRow: RowDataPacket,
+): Promise<SoftParallelOpts> {
+  if (String(caseRow.status) !== "on_hold") return {};
+  const holdResumeStatus = await loadHoldResumeStatus(Number(caseRow.id));
+  return { holdResumeStatus };
+}
+
+function requiresProtestaScanUpload(
+  modality: "presencial" | "virtual" | null | undefined,
+): boolean {
+  return modality === "presencial";
+}
+// ---- end softParallelRules ----
 
 const CASE_PIPELINE_STATUSES: CaseStatus[] = [
   ...CASE_STATUS_FLOW,
@@ -2387,7 +3108,7 @@ type WorkflowTransitionOpts = {
   role?: UserRole | null;
   /** Workflow status the case left when it went on_hold. */
   lastWorkflowStatus?: CaseStatus | null;
-  /** Last to_status still on the 12-point flow (legacy hold with no from_status). */
+  /** Last to_status still on the 10-point flow (legacy hold with no from_status). */
   fallbackWorkflowStatus?: CaseStatus | null;
 };
 
@@ -2400,12 +3121,13 @@ function resolveHoldResumeStatus(
     lastWorkflowToStatus,
     "intake" as const,
   ]) {
+    if (!candidate) continue;
+    const normalized = normalizeCaseStatus(candidate) ?? candidate;
     if (
-      candidate &&
-      CASE_STATUS_FLOW.includes(candidate) &&
-      candidate !== "completed"
+      CASE_STATUS_FLOW.includes(normalized) &&
+      normalized !== "completed"
     ) {
-      return candidate;
+      return normalized;
     }
   }
   return "intake";
@@ -2476,11 +3198,11 @@ function getAllowedNextStatuses(
   }
 
   if (current === "legal_review_questionnaire") {
-    return ["additional_docs", "questionnaire", "on_hold", "cancelled"];
+    return ["court_acceptance", "questionnaire", "on_hold", "cancelled"];
   }
 
-  if (current === "legal_validation") {
-    return ["court_delivery", "technical_report", "on_hold", "cancelled"];
+  if (current === "validation_delivery") {
+    return ["accounting", "technical_report", "on_hold", "cancelled"];
   }
 
   const idx = CASE_STATUS_FLOW.indexOf(current);
@@ -2518,10 +3240,10 @@ function caseStatusAfterArtifactReject(opts: {
   const atP4 =
     opts.artifact === "questionnaire" &&
     opts.caseStatus === "legal_review_questionnaire";
-  const atP10 =
+  const atP9 =
     opts.artifact === "technical_report" &&
-    opts.caseStatus === "legal_validation";
-  if (!atP4 && !atP10) return null;
+    opts.caseStatus === "validation_delivery";
+  if (!atP4 && !atP9) return null;
   if (opts.outcome === "changes_requested") {
     return atP4 ? "questionnaire" : "technical_report";
   }
@@ -2541,7 +3263,7 @@ function shouldReopenArtifactAfterCaseReturn(
 function deadlineTypesForCaseStatus(status: CaseStatus): readonly string[] {
   if (status === "questionnaire") return ["questionnaire"];
   if (status === "legal_review_questionnaire") return ["legal_review"];
-  if (status === "legal_validation") return ["external_legal_validation"];
+  if (status === "validation_delivery") return ["external_legal_validation"];
   return [];
 }
 
@@ -2560,7 +3282,7 @@ function deadlineTypesToCompleteOnTransition(
 }
 
 const QUESTIONNAIRE_REOPEN_FROM_STATUSES = [
-  "submitted",
+  "grammar_qa",
   "legal_review",
   "approved",
   "rejected",
@@ -2966,6 +3688,7 @@ const CASE_SECTIONS = [
   "evidence",
   "logistics",
   "reports",
+  "finance",
   "audit",
   "completeness",
 ] as const;
@@ -2988,7 +3711,6 @@ const ALL = new Set<CaseSection>(CASE_SECTIONS);
 
 const BY_ROLE: Record<UserRole, ReadonlySet<CaseSection>> = {
   admin: ALL,
-  case_coordinator: ALL,
   expert: new Set([
     "workflow",
     "timeline",
@@ -2998,6 +3720,7 @@ const BY_ROLE: Record<UserRole, ReadonlySet<CaseSection>> = {
     "questionnaire",
     "inspections",
     "evidence",
+    "logistics",
     "reports",
     "reviews",
     "completeness",
@@ -3029,15 +3752,16 @@ const BY_ROLE: Record<UserRole, ReadonlySet<CaseSection>> = {
     "notes",
     "documents",
     "deadlines",
+    "finance",
     "audit",
     "completeness",
   ]),
 };
 
 const REVIEW_STAGE_ROLES: Record<ReviewStage, readonly UserRole[]> = {
-  grammar_qa: ["admin", "case_coordinator", "expert"],
-  technical_director: ["admin", "case_coordinator", "expert"],
-  internal_legal: ["admin", "case_coordinator", "legal"],
+  grammar_qa: ["admin", "expert"],
+  technical_director: ["admin", "expert"],
+  internal_legal: ["admin", "legal"],
   /** External law-firm stage is completed via client portal; staff admin can override. */
   external_law_firm: ["admin"],
 };
@@ -3060,7 +3784,9 @@ function canMutateCaseSection(
   role: string | null | undefined,
   section: CaseMutateSection,
 ): boolean {
-  return canViewCaseSection(role, section);
+  if (!canViewCaseSection(role, section)) return false;
+  if (role === "expert" && section === "logistics") return false;
+  return true;
 }
 
 function canCompleteReviewStage(
@@ -3125,22 +3851,19 @@ function canStaffApproveExternalReview(
 function canDecideQuestionnaireReview(
   role: string | null | undefined,
 ): boolean {
-  return role === "admin" || role === "case_coordinator" || role === "legal";
+  return role === "admin" || role === "legal";
 }
 
 /** Edit property GPS / address on a case. */
 function canEditCaseLocation(role: string | null | undefined): boolean {
   return (
-    role === "admin" ||
-    role === "case_coordinator" ||
-    role === "expert" ||
-    role === "logistics"
+    role === "admin" || role === "expert" || role === "logistics"
   );
 }
 
 /** Case workflow status transitions — coordinators and admins. */
 function canChangeCaseStatus(role: string | null | undefined): boolean {
-  return role === "admin" || role === "case_coordinator";
+  return role === "admin";
 }
 
 function canApplyCaseStatusChange(
@@ -3154,16 +3877,13 @@ function canApplyCaseStatusChange(
 
 /** Assignments — coordinators and admins. */
 function canManageCaseAssignments(role: string | null | undefined): boolean {
-  return role === "admin" || role === "case_coordinator";
+  return role === "admin";
 }
 
 /** Calendar create/update — ops roles. */
 function canManageCalendar(role: string | null | undefined): boolean {
   return (
-    role === "admin" ||
-    role === "case_coordinator" ||
-    role === "logistics" ||
-    role === "expert"
+    role === "admin" || role === "logistics" || role === "expert"
   );
 }
 
@@ -3191,6 +3911,7 @@ type CaseDetailSectionsPayload = {
   trips: unknown[];
   expenses: unknown[];
   technicalReports: unknown[];
+  invoices?: unknown[];
 };
 
 /**
@@ -3230,17 +3951,18 @@ function filterCaseDetailSectionsForRole<T extends CaseDetailSectionsPayload>(
     next.expenses = [];
   }
   if (!canViewCaseSection(role, "reports")) next.technicalReports = [];
+  if (!canViewCaseSection(role, "finance")) next.invoices = [];
   return next;
 }
 
 // ---- inlined from shared/processGates.ts ----
 /**
- * Canonical 12-point electrical expert-witness process.
- * Operational narrative: docs/Proceso_Peritaje_Electrico_12_Puntos.md
- * Case statuses stay aligned with CASE_STATUS_FLOW (Product.md phases 1–12).
+ * Canonical 10-point electrical expert-witness process (decision Y).
+ * Operational narrative: docs/Proceso_Peritaje_Electrico_10_Puntos.md
+ * Case statuses stay aligned with CASE_STATUS_FLOW.
  */
 
-const PROCESS_POINT_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
+const PROCESS_POINT_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 
 type ProcessPointId = (typeof PROCESS_POINT_IDS)[number];
 
@@ -3267,7 +3989,7 @@ type ProcessSla = {
     | "external_legal_validation";
   /** Starts when this event happens, not merely when the status is entered. */
   startsOn: "status_enter" | "protesta_filed" | "report_sent_to_firm";
-  /** Nested inside another point's clock (P10 inside the 10-day P6 clock). */
+  /** Nested inside another point's clock (P9 validation SLA inside the 10-day P6 clock). */
   nestedInside: ProcessPointId | null;
 };
 
@@ -3346,19 +4068,6 @@ const PROCESS_POINTS: Record<ProcessPointId, ProcessPointDef> = {
   },
   2: {
     id: 2,
-    caseStatus: "assignment",
-    slug: "assignment",
-    sla: null,
-    boundedByPoint: null,
-    raci: { coordinator: "A", expert: "I", logistics: "I", accountant: "I" },
-    requiredDocumentCategories: [],
-    conditionalDocumentCategories: [],
-    requiredEvidenceCategories: [],
-    rejectReturnsTo: null,
-    listadoFlags: ["primaryExpert"],
-  },
-  3: {
-    id: 3,
     caseStatus: "questionnaire",
     slug: "questionnaire",
     sla: {
@@ -3370,19 +4079,32 @@ const PROCESS_POINTS: Record<ProcessPointId, ProcessPointDef> = {
     boundedByPoint: null,
     raci: {
       questionnaire_author: "R",
-      expert: "A",
+      coordinator: "A",
       qa: "C",
-      accountant: "I",
+      expert: "I",
     },
     requiredDocumentCategories: ["questionnaire"],
     conditionalDocumentCategories: [],
     requiredEvidenceCategories: [],
-    rejectReturnsTo: 3,
+    rejectReturnsTo: 2,
     listadoFlags: [
       "questionnaireApproved",
       "streetViewDone",
       "advanceReleased",
     ],
+  },
+  3: {
+    id: 3,
+    caseStatus: "assignment",
+    slug: "assignment",
+    sla: null,
+    boundedByPoint: null,
+    raci: { coordinator: "A", expert: "I", logistics: "I", accountant: "I" },
+    requiredDocumentCategories: [],
+    conditionalDocumentCategories: [],
+    requiredEvidenceCategories: [],
+    rejectReturnsTo: null,
+    listadoFlags: ["primaryExpert"],
   },
   4: {
     id: 4,
@@ -3395,11 +4117,11 @@ const PROCESS_POINTS: Record<ProcessPointId, ProcessPointDef> = {
       nestedInside: null,
     },
     boundedByPoint: null,
-    raci: { legal_internal: "A", expert: "C", qa: "I", law_firm: "I" },
+    raci: { law_firm: "A", legal_internal: "C", expert: "C", qa: "I" },
     requiredDocumentCategories: ["questionnaire"],
     conditionalDocumentCategories: [],
     requiredEvidenceCategories: [],
-    rejectReturnsTo: 3,
+    rejectReturnsTo: 2,
     listadoFlags: ["questionnaireApproved"],
   },
   5: {
@@ -3429,40 +4151,32 @@ const PROCESS_POINTS: Record<ProcessPointId, ProcessPointDef> = {
     },
     boundedByPoint: null,
     raci: { expert: "A", coordinator: "C", legal_internal: "I" },
-    requiredDocumentCategories: ["protesta"],
-    conditionalDocumentCategories: [],
+    requiredDocumentCategories: ["protesta", "plaintiff_questionnaire"],
+    conditionalDocumentCategories: ["death_certificate"],
     requiredEvidenceCategories: [],
     rejectReturnsTo: null,
     listadoFlags: ["protestaFiled", "clock10DueAt", "plaintiffQuestionnaire"],
   },
   7: {
     id: 7,
-    caseStatus: "logistics",
-    slug: "logistics",
+    caseStatus: "field_ops",
+    slug: "field_ops",
     sla: null,
     boundedByPoint: 6,
-    raci: { logistics: "A", expert: "C", coordinator: "I", accountant: "I" },
-    requiredDocumentCategories: [],
-    conditionalDocumentCategories: [],
-    requiredEvidenceCategories: [],
-    rejectReturnsTo: null,
-    listadoFlags: ["logisticsReady"],
-  },
-  8: {
-    id: 8,
-    caseStatus: "inspection",
-    slug: "inspection",
-    sla: null,
-    boundedByPoint: 6,
-    raci: { expert: "A", logistics: "C" },
+    raci: {
+      expert: "A",
+      logistics: "C",
+      coordinator: "I",
+      accountant: "I",
+    },
     requiredDocumentCategories: [],
     conditionalDocumentCategories: [],
     requiredEvidenceCategories: [...EVIDENCE_CHECKLIST_CATEGORIES],
-    rejectReturnsTo: 8,
-    listadoFlags: ["inspectionComplete"],
+    rejectReturnsTo: 7,
+    listadoFlags: ["logisticsReady", "inspectionComplete"],
   },
-  9: {
-    id: 9,
+  8: {
+    id: 8,
     caseStatus: "technical_report",
     slug: "technical_report",
     sla: null,
@@ -3476,13 +4190,13 @@ const PROCESS_POINTS: Record<ProcessPointId, ProcessPointDef> = {
     requiredDocumentCategories: ["technical_report"],
     conditionalDocumentCategories: [],
     requiredEvidenceCategories: [],
-    rejectReturnsTo: 9,
+    rejectReturnsTo: 8,
     listadoFlags: ["reportInternalOk"],
   },
-  10: {
-    id: 10,
-    caseStatus: "legal_validation",
-    slug: "legal_validation",
+  9: {
+    id: 9,
+    caseStatus: "validation_delivery",
+    slug: "validation_delivery",
     sla: {
       businessDays: 3,
       deadlineType: "external_legal_validation",
@@ -3490,28 +4204,29 @@ const PROCESS_POINTS: Record<ProcessPointId, ProcessPointDef> = {
       nestedInside: 6,
     },
     boundedByPoint: 6,
-    raci: { law_firm: "A", expert: "C", technical_director: "I" },
-    requiredDocumentCategories: ["technical_report"],
+    raci: {
+      expert: "A",
+      law_firm: "C",
+      technical_director: "I",
+      coordinator: "C",
+    },
+    requiredDocumentCategories: [
+      "technical_report",
+      "court_filing",
+      "ratification",
+    ],
     conditionalDocumentCategories: [],
     requiredEvidenceCategories: [],
-    rejectReturnsTo: 9,
-    listadoFlags: ["reportFirmOk"],
+    rejectReturnsTo: 8,
+    listadoFlags: [
+      "reportFirmOk",
+      "ratified",
+      "attendedWithReport",
+      "finalReleased",
+    ],
   },
-  11: {
-    id: 11,
-    caseStatus: "court_delivery",
-    slug: "court_delivery",
-    sla: null,
-    boundedByPoint: 6,
-    raci: { expert: "A", coordinator: "C", law_firm: "I" },
-    requiredDocumentCategories: ["court_filing", "ratification"],
-    conditionalDocumentCategories: [],
-    requiredEvidenceCategories: [],
-    rejectReturnsTo: null,
-    listadoFlags: ["ratified", "attendedWithReport", "finalReleased"],
-  },
-  12: {
-    id: 12,
+  10: {
+    id: 10,
     caseStatus: "accounting",
     slug: "accounting",
     sla: null,
@@ -3534,7 +4249,7 @@ function processPointForStatus(status: CaseStatus): ProcessPointId | null {
 }
 
 /**
- * Forward advance along the 12-point flow evaluates gates on the *current* point.
+ * Forward advance along the 10-point flow evaluates gates on the *current* point.
  * Hold, cancel, and resume from hold are not gated.
  */
 function processPointToEnforceOnTransition(
@@ -3556,7 +4271,57 @@ function questionnaireHasStreetView(contentJson: unknown): boolean {
   if (!contentJson || typeof contentJson !== "object") return false;
   const rec = contentJson as Record<string, unknown>;
   const raw = rec.streetViewValidated ?? rec.streetView;
-  return typeof raw === "string" && raw.trim().length > 0;
+  const url = typeof raw === "string" ? raw.trim() : "";
+  if (!url) return false;
+  const pre = rec.streetViewPreexistence;
+  return (
+    typeof pre === "string" &&
+    ["preexists", "not_preexists", "inconclusive"].includes(pre)
+  );
+}
+
+function questionnaireDefendantBodyCompleteInline(
+  contentJson: unknown,
+): boolean {
+  if (!contentJson || typeof contentJson !== "object") return false;
+  const body = (contentJson as Record<string, unknown>).defendantQuestionnaire;
+  return Boolean(typeof body === "string" && body.trim().length >= 20);
+}
+
+function validateQuestionnaireSubmitContentInline(
+  contentJson: unknown,
+  opts?: { hasQuestionnairePdf?: boolean },
+): { ok: true } | { ok: false; error: string } {
+  if (opts?.hasQuestionnairePdf === false) {
+    return {
+      ok: false,
+      error: "Defendant questionnaire PDF required",
+    };
+  }
+  if (!questionnaireHasStreetView(contentJson)) {
+    return {
+      ok: false,
+      error: "Street View URL and preexistence conclusion required",
+    };
+  }
+  return { ok: true };
+}
+
+function ratificationGateSatisfiedInline(input: {
+  ratificationPresent: boolean;
+  courtFilingPresent: boolean;
+  ratificationScheduledAt: string | null | undefined;
+}): boolean {
+  return input.ratificationPresent === true;
+}
+
+function ratificationGateMissingCodeInline(input: {
+  ratificationPresent: boolean;
+  courtFilingPresent: boolean;
+  ratificationScheduledAt: string | null | undefined;
+}): string | null {
+  if (ratificationGateSatisfiedInline(input)) return null;
+  return "doc:ratification";
 }
 
 function anyQuestionnaireHasStreetView(contents: readonly unknown[]): boolean {
@@ -3577,17 +4342,16 @@ function createdAtMs(value: RankedArtifact["createdAt"]): number {
 
 /** Higher rank wins when several questionnaire rows exist. */
 const QUESTIONNAIRE_STATUS_RANK: Record<string, number> = {
-  approved: 5,
-  legal_review: 4,
-  submitted: 3,
+  approved: 6,
+  legal_review: 5,
+  grammar_qa: 4,
   changes_requested: 2,
   draft: 1,
   rejected: 0,
 };
 
-/** Leaving P3 requires the questionnaire to be in legal's hands (or already approved). */
+/** Leaving P3 requires QA passed (legal_review or approved). */
 const QUESTIONNAIRE_READY_TO_LEAVE_P3 = new Set([
-  "submitted",
   "legal_review",
   "approved",
 ]);
@@ -3645,7 +4409,6 @@ function pickCurrentProcessArtifact<T extends RankedArtifact>(
 const QUESTIONNAIRE_UPSERT_STATUSES = new Set([
   "draft",
   "changes_requested",
-  "submitted",
 ]);
 
 function canUpsertQuestionnaire(status: string | null | undefined): boolean {
@@ -3663,28 +4426,24 @@ function resolveQuestionnaireUpsert(opts: {
     return {
       ok: true,
       reuse: false,
-      nextStatus: opts.submit ? "submitted" : "draft",
+      nextStatus: opts.submit ? "grammar_qa" : "draft",
     };
   }
   if (!canUpsertQuestionnaire(current)) {
     return {
       ok: false,
       error:
-        current === "legal_review"
-          ? "Questionnaire is in legal review; request changes before editing"
-          : "Questionnaire cannot be edited in its current status",
+        current === "grammar_qa"
+          ? "Questionnaire is in QA review; wait for QA or request changes"
+          : current === "legal_review"
+            ? "Questionnaire is in legal review; request changes before editing"
+            : "Questionnaire cannot be edited in its current status",
     };
   }
-  if (!opts.submit || current === "submitted") {
+  if (!opts.submit) {
     return { ok: true, reuse: true, nextStatus: current };
   }
-  if (current !== "draft" && current !== "changes_requested") {
-    return {
-      ok: false,
-      error: `Cannot move questionnaire from ${current} to submitted`,
-    };
-  }
-  return { ok: true, reuse: true, nextStatus: "submitted" };
+  return { ok: true, reuse: true, nextStatus: "grammar_qa" };
 }
 
 function isActiveLogisticsTripStatus(
@@ -3727,6 +4486,7 @@ function hasPropertyGpsFromCoordsInline(
 
 type ProcessGateInputSourceInline = {
   documentCategories: readonly string[];
+  approvedDocumentCategories?: readonly string[];
   evidenceCategories?: readonly string[];
   measurementTypes?: readonly string[];
   hasPrimaryExpert: boolean;
@@ -3735,11 +4495,15 @@ type ProcessGateInputSourceInline = {
   streetViewValidatedAt?: unknown;
   propertyLat?: unknown;
   propertyLng?: unknown;
+  documentsHandoffConfirmedAt?: unknown;
+  expedienteApprovedAt?: unknown;
+  ratificationScheduledAt?: unknown;
   involvesFatality?: boolean;
   inspectionComplete: boolean;
   reportStatus?: string | null;
   logisticsReady: boolean;
   invoices: readonly FinanceInvoiceInput[];
+  dictamenDueAt?: unknown;
 };
 
 function buildProcessGateInputFromSourceInline(
@@ -3748,12 +4512,14 @@ function buildProcessGateInputFromSourceInline(
   const documentCategories = source.documentCategories;
   return {
     documentCategories,
+    approvedDocumentCategories: source.approvedDocumentCategories ?? [],
     evidenceCategories: mergeEvidenceCategories(
       source.evidenceCategories ?? [],
       source.measurementTypes ?? [],
     ),
     hasPrimaryExpert: source.hasPrimaryExpert,
     questionnaireStatus: source.questionnaireStatus ?? null,
+    questionnaireContentJson: source.questionnaireContentJson,
     hasStreetView:
       Boolean(source.streetViewValidatedAt) ||
       questionnaireHasStreetView(source.questionnaireContentJson),
@@ -3761,6 +4527,12 @@ function buildProcessGateInputFromSourceInline(
       source.propertyLat,
       source.propertyLng,
     ),
+    documentsHandoffConfirmed: Boolean(source.documentsHandoffConfirmedAt),
+    expedienteApproved: Boolean(source.expedienteApprovedAt),
+    ratificationScheduledAt:
+      source.ratificationScheduledAt != null
+        ? String(source.ratificationScheduledAt)
+        : null,
     plaintiffQuestionnairePresent: documentCategories.includes(
       "plaintiff_questionnaire",
     ),
@@ -3772,6 +4544,9 @@ function buildProcessGateInputFromSourceInline(
     involvesFatality: Boolean(source.involvesFatality),
     logisticsReady: source.logisticsReady,
     hasUnpaidInvoices: hasBlockingFinanceForCompletion(source.invoices),
+    dictamenDueAt: source.dictamenDueAt
+      ? toIso(source.dictamenDueAt)
+      : null,
   };
 }
 
@@ -3794,7 +4569,7 @@ type FinanceInvoiceInput = {
   invoiceType?: string | null;
 };
 
-/** P12: unpaid issued invoices, plus draft advance/final that were never squared. */
+/** P10: unpaid issued invoices, plus draft advance/final that were never squared. */
 function isPendingFinanceInvoice(inv: FinanceInvoiceInput): boolean {
   if (hasBlockingUnpaidInvoices([inv.status])) return true;
   return (
@@ -3866,7 +4641,7 @@ function buildListadoProgress(opts: {
   const finalPaid = invoices.some(
     (i) => i.invoiceType === "final" && i.status === "paid",
   );
-  const intake = evaluateProcessGates(1, input).ok;
+  const intake = getIntakeCompleteness(input.documentCategories).complete;
   const currentPoint = processPointForStatus(opts.status);
   const gatesOk = currentPoint
     ? evaluateProcessGates(currentPoint, input).ok
@@ -3894,7 +4669,8 @@ function buildListadoProgress(opts: {
     intakeComplete: intake,
     questionnaireApproved: qApproved,
     streetViewDone: Boolean(input.hasStreetView),
-    advanceReleased: qApproved || hasAdvance,
+    advanceReleased:
+      questionnaireQaComplete(input.questionnaireStatus) || hasAdvance,
     advancePaid,
     plaintiffQuestionnaire: Boolean(input.plaintiffQuestionnairePresent),
     protestaFiled: Boolean(
@@ -3915,16 +4691,131 @@ function buildListadoProgress(opts: {
 function parseUpdateCaseFlags(
   body: unknown,
 ):
-  | { ok: true; value: { involvesFatality: boolean } }
+  | {
+      ok: true;
+      value: {
+        involvesFatality?: boolean;
+        protestaModality?: "presencial" | "virtual" | null;
+        externalCourtDeadlineAt?: string | null;
+        dictamenDueAt?: string | null;
+        title?: string;
+        description?: string | null;
+        lawFirmId?: number | null;
+      };
+    }
   | { ok: false; error: string } {
   if (!body || typeof body !== "object") {
     return { ok: false, error: "Invalid body" };
   }
   const rec = body as Record<string, unknown>;
-  if (typeof rec.involvesFatality !== "boolean") {
-    return { ok: false, error: "involvesFatality must be a boolean" };
+  const value: {
+    involvesFatality?: boolean;
+    protestaModality?: "presencial" | "virtual" | null;
+    externalCourtDeadlineAt?: string | null;
+    dictamenDueAt?: string | null;
+    title?: string;
+    description?: string | null;
+    lawFirmId?: number | null;
+  } = {};
+  let touched = false;
+  if ("involvesFatality" in rec) {
+    if (typeof rec.involvesFatality !== "boolean") {
+      return { ok: false, error: "involvesFatality must be a boolean" };
+    }
+    value.involvesFatality = rec.involvesFatality;
+    touched = true;
   }
-  return { ok: true, value: { involvesFatality: rec.involvesFatality } };
+  if ("protestaModality" in rec) {
+    const m = rec.protestaModality;
+    if (m !== null && m !== "presencial" && m !== "virtual") {
+      return {
+        ok: false,
+        error: "protestaModality must be presencial, virtual, or null",
+      };
+    }
+    value.protestaModality = m as "presencial" | "virtual" | null;
+    touched = true;
+  }
+  if ("externalCourtDeadlineAt" in rec) {
+    const raw = rec.externalCourtDeadlineAt;
+    if (raw === null || raw === "") {
+      value.externalCourtDeadlineAt = null;
+      touched = true;
+    } else if (typeof raw === "string" || typeof raw === "number") {
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) {
+        return { ok: false, error: "Invalid externalCourtDeadlineAt" };
+      }
+      value.externalCourtDeadlineAt = d.toISOString();
+      touched = true;
+    } else {
+      return {
+        ok: false,
+        error: "externalCourtDeadlineAt must be a date string or null",
+      };
+    }
+  }
+  if ("dictamenDueAt" in rec) {
+    const raw = rec.dictamenDueAt;
+    if (raw === null || raw === "") {
+      value.dictamenDueAt = null;
+      touched = true;
+    } else if (typeof raw === "string" || typeof raw === "number") {
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) {
+        return { ok: false, error: "Invalid dictamenDueAt" };
+      }
+      value.dictamenDueAt = d.toISOString();
+      touched = true;
+    } else {
+      return {
+        ok: false,
+        error: "dictamenDueAt must be a date string or null",
+      };
+    }
+  }
+  if ("title" in rec) {
+    if (typeof rec.title !== "string" || !rec.title.trim()) {
+      return { ok: false, error: "Title is required" };
+    }
+    if (rec.title.trim().length > 255) {
+      return { ok: false, error: "Title is too long" };
+    }
+    value.title = rec.title.trim();
+    touched = true;
+  }
+  if ("description" in rec) {
+    if (rec.description != null && typeof rec.description !== "string") {
+      return { ok: false, error: "description must be a string or null" };
+    }
+    const note = String(rec.description ?? "");
+    if (note.length > 500) {
+      return { ok: false, error: "description exceeds 500 characters" };
+    }
+    value.description = note.trim() || null;
+    touched = true;
+  }
+  if ("lawFirmId" in rec) {
+    if (rec.lawFirmId === null || rec.lawFirmId === "") {
+      value.lawFirmId = null;
+      touched = true;
+    } else {
+      const id = Number(rec.lawFirmId);
+      if (!Number.isFinite(id) || id <= 0) {
+        return { ok: false, error: "Invalid lawFirmId" };
+      }
+      value.lawFirmId = id;
+      touched = true;
+    }
+  }
+  if (!touched) {
+    return {
+      ok: false,
+      error:
+        "Provide involvesFatality, protestaModality, externalCourtDeadlineAt, dictamenDueAt, title, description, and/or lawFirmId",
+    };
+  }
+  return { ok: true, value };
 }
 
 function accountableActor(point: ProcessPointId): ProcessActor | null {
@@ -3937,9 +4828,11 @@ function accountableActor(point: ProcessPointId): ProcessActor | null {
 
 type ProcessGateInput = {
   documentCategories: readonly string[];
+  approvedDocumentCategories?: readonly string[];
   evidenceCategories?: readonly string[];
   hasPrimaryExpert?: boolean;
   questionnaireStatus?: string | null;
+  questionnaireContentJson?: unknown;
   hasStreetView?: boolean;
   hasPropertyGps?: boolean;
   protestaFiled?: boolean;
@@ -3948,9 +4841,13 @@ type ProcessGateInput = {
   reportStatus?: string | null;
   ratificationPresent?: boolean;
   courtFilingPresent?: boolean;
+  ratificationScheduledAt?: string | null;
   involvesFatality?: boolean;
   logisticsReady?: boolean;
   hasUnpaidInvoices?: boolean;
+  documentsHandoffConfirmed?: boolean;
+  expedienteApproved?: boolean;
+  dictamenDueAt?: string | null;
 };
 
 type ProcessGateResult =
@@ -3962,8 +4859,8 @@ function hasCategory(present: readonly string[], category: string): boolean {
 
 /**
  * Blocking gates to *leave* a process point (advance to the next status).
- * Missing plaintiff questionnaire does not block protesta (P6) — it blocks
- * inspection (P8) and the technical report (P9).
+ * Plaintiff questionnaire is required to leave protesta (P6) together with
+ * the signed protesta. Field ops also requires a dictamen due date.
  */
 function evaluateProcessGates(
   point: ProcessPointId,
@@ -3974,22 +4871,8 @@ function evaluateProcessGates(
   const missing: string[] = [];
 
   for (const cat of def.requiredDocumentCategories) {
-    if (
-      cat === "questionnaire" &&
-      input.questionnaireStatus &&
-      input.questionnaireStatus !== "rejected"
-    ) {
-      continue;
-    }
-    if (
-      cat === "technical_report" &&
-      (input.reportStatus === "approved_internal" ||
-        input.reportStatus === "external_review" ||
-        input.reportStatus === "approved" ||
-        input.reportStatus === "delivered")
-    ) {
-      continue;
-    }
+    // Miro / sample-flow PDFs are required file artifacts.
+    // Form content / report status / schedule do not substitute for the file.
     if (!hasCategory(docs, cat)) missing.push(`doc:${cat}`);
   }
   if (input.involvesFatality) {
@@ -4006,15 +4889,34 @@ function evaluateProcessGates(
       const key = `doc:${cat}`;
       if (!missing.includes(key)) missing.push(key);
     }
+    const approved = input.approvedDocumentCategories ?? [];
+    for (const cat of INTAKE_REQUIRED_CATEGORIES) {
+      if (!hasCategory(approved, cat)) {
+        const key = `doc_approved:${cat}`;
+        if (!missing.includes(key)) missing.push(key);
+      }
+    }
+    if (input.expedienteApproved !== true) {
+      missing.push("expediente:approved");
+    }
   }
 
-  if (point === 2 && !input.hasPrimaryExpert) {
+  if (point === 3 && !input.hasPrimaryExpert) {
     missing.push("assignment:primary_expert");
   }
 
-  if (point === 3) {
+  if (point === 3 && input.documentsHandoffConfirmed !== true) {
+    missing.push("handoff:documents_confirmed");
+  }
+
+  if (point === 2) {
     if (!input.hasPropertyGps) missing.push("location:gps");
-    if (!input.hasStreetView) missing.push("location:street_view");
+    if (
+      !input.hasStreetView &&
+      !questionnaireHasStreetView(input.questionnaireContentJson)
+    ) {
+      missing.push("location:street_view");
+    }
     if (!QUESTIONNAIRE_READY_TO_LEAVE_P3.has(input.questionnaireStatus ?? "")) {
       missing.push("questionnaire:ready");
     }
@@ -4028,15 +4930,17 @@ function evaluateProcessGates(
     missing.push("doc:protesta");
   }
 
-  if ((point === 8 || point === 9) && !input.plaintiffQuestionnairePresent) {
+  if ((point === 7 || point === 8) && !input.plaintiffQuestionnairePresent) {
     missing.push("doc:plaintiff_questionnaire");
   }
 
-  if (point === 7 && input.logisticsReady !== true) {
-    missing.push("logistics:ready");
-  }
-
-  if (point === 8) {
+  if (point === 7) {
+    if (!input.dictamenDueAt) {
+      missing.push("dictamen:due");
+    }
+    if (input.logisticsReady !== true) {
+      missing.push("logistics:ready");
+    }
     const evidence = input.evidenceCategories || [];
     for (const cat of def.requiredEvidenceCategories) {
       if (!evidence.includes(cat)) missing.push(`evidence:${cat}`);
@@ -4046,7 +4950,7 @@ function evaluateProcessGates(
     }
   }
 
-  if (point === 9) {
+  if (point === 8) {
     const ok =
       input.reportStatus === "approved_internal" ||
       input.reportStatus === "external_review" ||
@@ -4055,22 +4959,14 @@ function evaluateProcessGates(
     if (!ok) missing.push("report:internal_approved");
   }
 
-  if (point === 10) {
-    const ok =
+  if (point === 9) {
+    const firmOk =
       input.reportStatus === "approved" || input.reportStatus === "delivered";
-    if (!ok) missing.push("report:firm_approved");
+    if (!firmOk) missing.push("report:firm_approved");
+    // court_filing + ratification PDFs come from requiredDocumentCategories.
   }
 
-  if (point === 11) {
-    if (!input.courtFilingPresent && !hasCategory(docs, "court_filing")) {
-      missing.push("doc:court_filing");
-    }
-    if (!input.ratificationPresent && !hasCategory(docs, "ratification")) {
-      missing.push("doc:ratification");
-    }
-  }
-
-  if (point === 12 && input.hasUnpaidInvoices) {
+  if (point === 10 && input.hasUnpaidInvoices) {
     missing.push("finance:unpaid_invoices");
   }
 
@@ -4102,7 +4998,7 @@ const RECOMMENDED_ASSIGNMENT_ROLES_AFTER_P2: AssignmentRole[] = [
   "accountant",
 ];
 
-/** Status flow 1–12 matches process points; completed is after P12. */
+/** Status flow 1–10 matches process points; completed is after P10. */
 function assertProcessAlignsWithCaseFlow(): {
   ok: true;
   statuses: CaseStatus[];
@@ -4666,7 +5562,7 @@ function buildInviteStaffEmail(opts: {
 }): EmailPayload {
   const s = emailStrings(opts.locale);
   const roleLabel = emailStaffRoleLabelInline(opts.role, opts.locale);
-  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/portal/login`;
+  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/login`;
   const banner =
     opts.locale === "es"
       ? opts.resend
@@ -4708,7 +5604,7 @@ function buildInviteClientEmail(opts: {
   resend?: boolean;
 }): EmailPayload {
   const s = emailStrings(opts.locale);
-  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/client/login`;
+  const loginUrl = `${opts.appUrl.replace(/\/$/, "")}/login`;
   const banner =
     opts.locale === "es"
       ? opts.resend
@@ -5065,7 +5961,6 @@ function emailStaffRoleLabelInline(
   const key = role.trim().toLowerCase();
   const es: Record<string, string> = {
     admin: "Admin",
-    case_coordinator: "Coordinador",
     expert: "Perito",
     legal: "Legal",
     logistics: "Logística",
@@ -5074,7 +5969,6 @@ function emailStaffRoleLabelInline(
   };
   const en: Record<string, string> = {
     admin: "Admin",
-    case_coordinator: "Coordinator",
     expert: "Expert",
     legal: "Legal",
     logistics: "Logistics",
@@ -5261,7 +6155,6 @@ let pool: Pool | null = null;
 
 const UPLOAD_JSON_PATH_PREFIXES = [
   "/api/cases/",
-  "/api/client/cases/",
   "/api/uploads",
 ] as const;
 
@@ -5322,12 +6215,19 @@ async function saveOtpRateBucket(
 async function enforceOtpRequestRateLimits(opts: {
   email: string;
   ip: string | undefined;
-  portal: "staff" | "client";
+  portal: "staff" | "client" | "unified";
   chargeIp: boolean;
   chargeEmail: boolean;
 }): Promise<
   { ok: true } | { ok: false; error: string; retryAfterSec: number }
 > {
+  // Optimum-credit pattern: under VITEST, never send real OTP email (sendEmail
+  // no-ops) and do not enforce sticky IP/email rate buckets — shared TiDB keys
+  // from prior suite runs otherwise flake as 429 on localhost.
+  if (!shouldEnforceOtpRateLimits(process.env.VITEST)) {
+    return { ok: true };
+  }
+
   const now = Date.now();
   const ipKey = buildOtpRateLimitKey({
     scope: "ip",
@@ -5478,6 +6378,11 @@ function getPool(): Pool {
       database: process.env.DB_NAME,
       waitForConnections: true,
       connectionLimit: 5,
+      // UTC so session/OTP datetimes match UTC_TIMESTAMP() / toMysqlDateTimeUtc.
+      timezone: "+00:00",
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000,
+      connectTimeout: 60000,
       ssl:
         process.env.DB_SSL === "false"
           ? undefined
@@ -5567,6 +6472,8 @@ function mapCaseSummary(row: RowDataPacket): CaseSummary {
     assignedExpertId: (row.assigned_expert_id as number | null) ?? null,
     primaryExpertName: (row.primary_expert_name as string | null) ?? null,
     inspectionDeadlineAt: toIso(row.inspection_deadline_at),
+    externalCourtDeadlineAt: toIso(row.external_court_deadline_at),
+    dictamenDueAt: toIso(row.dictamen_due_at),
     involvesFatality: Boolean(row.involves_fatality),
     createdAt: toIso(row.created_at) || new Date().toISOString(),
     updatedAt: toIso(row.updated_at) || new Date().toISOString(),
@@ -5591,6 +6498,14 @@ function mapCaseDetail(row: RowDataPacket): CaseDetail {
     intakeReceivedAt: toIso(row.intake_received_at),
     completedAt: toIso(row.completed_at),
     streetViewValidatedAt: toIso(row.street_view_validated_at),
+    documentsHandoffConfirmedAt: toIso(row.documents_handoff_confirmed_at),
+    expedienteApprovedAt: toIso(row.expediente_approved_at),
+    ratificationScheduledAt: toIso(row.ratification_scheduled_at),
+    protestaModality:
+      row.protesta_modality === "presencial" ||
+      row.protesta_modality === "virtual"
+        ? row.protesta_modality
+        : null,
   };
 }
 
@@ -5635,6 +6550,9 @@ function mapUserRow(row: RowDataPacket): AuthUser {
     showFormHelpers: isShowFormHelpersEnabled(
       row.show_form_helpers as boolean | number | null | undefined,
     ),
+    showProcessGuidance: isShowProcessGuidanceEnabled(
+      row.show_process_guidance as boolean | number | null | undefined,
+    ),
     lastLoginAt: row.last_login_at
       ? new Date(row.last_login_at as string | Date).toISOString()
       : null,
@@ -5658,6 +6576,9 @@ function mapLawFirmUserRow(row: RowDataPacket): AuthUser {
       (row.preferred_theme as AuthUser["preferredTheme"]) || "system",
     showFormHelpers: isShowFormHelpersEnabled(
       row.show_form_helpers as boolean | number | null | undefined,
+    ),
+    showProcessGuidance: isShowProcessGuidanceEnabled(
+      row.show_process_guidance as boolean | number | null | undefined,
     ),
     lastLoginAt: row.last_login_at
       ? new Date(row.last_login_at as string | Date).toISOString()
@@ -5759,7 +6680,7 @@ async function consumeOtp(
   const [rows] = await db.query<RowDataPacket[]>(
     `SELECT id, attempts, max_attempts FROM ${table}
      WHERE ${idCol} = ? AND purpose = ?
-       AND consumed_at IS NULL AND expires_at > NOW()
+       AND consumed_at IS NULL AND expires_at > UTC_TIMESTAMP()
      ORDER BY id DESC LIMIT 1`,
     [actorId, purpose],
   );
@@ -5778,7 +6699,7 @@ async function consumeOtp(
 
   const [match] = await db.query<RowDataPacket[]>(
     `SELECT id FROM ${table}
-     WHERE id = ? AND code_hash = ? AND consumed_at IS NULL AND expires_at > NOW()
+     WHERE id = ? AND code_hash = ? AND consumed_at IS NULL AND expires_at > UTC_TIMESTAMP()
      LIMIT 1`,
     [otp.id, codeHash],
   );
@@ -5825,7 +6746,7 @@ async function isSessionActive(payload: JwtPayload): Promise<boolean> {
   const { table } = actorSessionTable(payload.actor);
   const [rows] = await db.query<RowDataPacket[]>(
     `SELECT id FROM ${table}
-     WHERE token_hash = ? AND is_active = 1 AND expires_at > NOW()
+     WHERE token_hash = ? AND is_active = 1 AND expires_at > UTC_TIMESTAMP()
        AND revoked_at IS NULL
      LIMIT 1`,
     [sha256(payload.jti)],
@@ -5840,7 +6761,7 @@ async function revokeSession(token: string): Promise<void> {
   const { table } = actorSessionTable(payload.actor);
   await db.query<ResultSetHeader>(
     `UPDATE ${table}
-     SET is_active = 0, revoked_at = NOW()
+     SET is_active = 0, revoked_at = UTC_TIMESTAMP()
      WHERE token_hash = ?`,
     [sha256(payload.jti)],
   );
@@ -5978,17 +6899,119 @@ async function requireLawFirm(
   );
 }
 
+async function requireStaffOrLawFirm(
+  req: AuthedRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  return attachAuth(
+    req,
+    res,
+    next,
+    (p) => p.actor === "staff" || p.actor === "law_firm",
+    "Authentication required",
+  );
+}
+
+async function lawFirmOwnsCaseRow(
+  auth: JwtPayload,
+  caseRow: RowDataPacket,
+): Promise<boolean> {
+  if (auth.actor !== "law_firm") return false;
+  const firmId = await getLawFirmIdForUser(auth.id);
+  if (firmId == null) return false;
+  return Number(caseRow.law_firm_id) === firmId;
+}
+
 async function getLawFirmIdForUser(
   lawFirmUserId: number,
 ): Promise<number | null> {
+  const membership = await getLawFirmMembershipForUser(lawFirmUserId);
+  return membership?.lawFirmId ?? null;
+}
+
+async function getLawFirmMembershipForUser(
+  lawFirmUserId: number,
+): Promise<{ lawFirmId: number; memberRole: LawFirmMemberRole } | null> {
   const db = getPool();
   const [rows] = await db.query<RowDataPacket[]>(
-    `SELECT law_firm_id FROM law_firm_members
+    `SELECT law_firm_id, member_role FROM law_firm_members
      WHERE law_firm_user_id = ? AND deleted_at IS NULL
      LIMIT 1`,
     [lawFirmUserId],
   );
-  return rows[0]?.law_firm_id != null ? Number(rows[0].law_firm_id) : null;
+  if (!rows[0]?.law_firm_id) return null;
+  const memberRole = String(rows[0].member_role || "member");
+  return {
+    lawFirmId: Number(rows[0].law_firm_id),
+    memberRole: isLawFirmMemberRole(memberRole) ? memberRole : "member",
+  };
+}
+
+/**
+ * Q5-A exclusivity helpers. Soft-deleted same-actor rows can be reactivated;
+ * any cross-actor row (incl. soft-deleted) blocks the other actor.
+ */
+async function lookupEmailActorRows(email: string): Promise<{
+  staff: EmailActorRow | null;
+  lawFirm: EmailActorRow | null;
+}> {
+  const db = getPool();
+  const [staffRows] = await db.query<RowDataPacket[]>(
+    `SELECT id, deleted_at FROM staff_users WHERE email = ? LIMIT 1`,
+    [email],
+  );
+  const [firmRows] = await db.query<RowDataPacket[]>(
+    `SELECT id, deleted_at FROM law_firm_users WHERE email = ? LIMIT 1`,
+    [email],
+  );
+  return {
+    staff: staffRows[0]
+      ? {
+          id: Number(staffRows[0].id),
+          deleted: staffRows[0].deleted_at != null,
+        }
+      : null,
+    lawFirm: firmRows[0]
+      ? {
+          id: Number(firmRows[0].id),
+          deleted: firmRows[0].deleted_at != null,
+        }
+      : null,
+  };
+}
+
+async function lookupEmailActors(email: string): Promise<{
+  staffExists: boolean;
+  lawFirmExists: boolean;
+}> {
+  const rows = await lookupEmailActorRows(email);
+  return {
+    staffExists: rows.staff != null,
+    lawFirmExists: rows.lawFirm != null,
+  };
+}
+
+/** Law-firm write paths (create case, docs, report review). Viewers are blocked. */
+async function assertLawFirmCanMutate(
+  auth: JwtPayload,
+  res: Response,
+): Promise<boolean> {
+  if (auth.actor !== "law_firm") return true;
+  const membership = await getLawFirmMembershipForUser(auth.id);
+  if (!membership || !canMutateFirmCaseWork(membership.memberRole)) {
+    res.status(403).json({ error: "Read-only firm access" });
+    return false;
+  }
+  return true;
+}
+
+async function enrichLawFirmAuthUser(user: AuthUser): Promise<AuthUser> {
+  const membership = await getLawFirmMembershipForUser(user.id);
+  return {
+    ...user,
+    memberRole: membership?.memberRole ?? null,
+  };
 }
 
 async function createNotification(opts: {
@@ -6076,12 +7099,28 @@ async function createNotification(opts: {
 
 function mapTechnicalReport(row: RowDataPacket): TechnicalReportItem {
   const status = row.status as TechnicalReportStatus;
+  const photoRaw = row.photo_catalog_json;
+  let photoCatalogJson: Record<string, unknown> | null = null;
+  if (photoRaw && typeof photoRaw === "object") {
+    photoCatalogJson = photoRaw as Record<string, unknown>;
+  } else if (typeof photoRaw === "string") {
+    try {
+      photoCatalogJson = JSON.parse(photoRaw) as Record<string, unknown>;
+    } catch {
+      photoCatalogJson = null;
+    }
+  }
   return {
     id: row.id as number,
     publicUuid: row.public_uuid as string,
     status,
     versionNumber: Number(row.version_number) || 1,
     investigationSummary: (row.investigation_summary as string | null) ?? null,
+    defendantQuestionnaireSummary:
+      (row.defendant_questionnaire_summary as string | null) ?? null,
+    plaintiffQuestionnaireSummary:
+      (row.plaintiff_questionnaire_summary as string | null) ?? null,
+    photoCatalogJson,
     conclusions: (row.conclusions as string | null) ?? null,
     submittedAt: toIso(row.submitted_at),
     approvedAt: toIso(row.approved_at),
@@ -6143,6 +7182,9 @@ function mapCaseDocumentItem(row: RowDataPacket): CaseDocumentItem {
     ocrStatus: (row.ocr_status as OcrStatus | null) ?? null,
     ocrText: (row.ocr_text as string | null) ?? null,
     ocrProcessedAt: toIso(row.ocr_processed_at),
+    approvedAt: toIso(row.approved_at),
+    rejectionReason: (row.rejection_reason as string | null) ?? null,
+    correctionRequestedAt: toIso(row.correction_requested_at),
     createdAt: toIso(row.created_at) || new Date().toISOString(),
   };
 }
@@ -6391,11 +7433,11 @@ async function findCaseByPublicUuid(
 function canListAllStaffCasesInline(
   role: string | null | undefined,
 ): boolean {
-  return role === "admin" || role === "case_coordinator";
+  return role === "admin";
 }
 
 function canCreateStaffCaseInline(role: string | null | undefined): boolean {
-  return role === "admin" || role === "case_coordinator";
+  return role === "admin";
 }
 
 function staffRoleToAssignmentRolesInline(
@@ -6404,8 +7446,6 @@ function staffRoleToAssignmentRolesInline(
   switch (role) {
     case "expert":
       return ["expert"];
-    case "case_coordinator":
-      return ["coordinator"];
     case "legal":
       return ["legal_reviewer"];
     case "logistics":
@@ -6602,6 +7642,113 @@ async function completeTypedDeadlines(
        AND completed_at IS NULL`,
     [caseId, ...deadlineTypes],
   );
+}
+
+async function assertLawFirmCanUploadCategory(opts: {
+  caseId: number;
+  category: string;
+}): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const db = getPool();
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT status FROM documents
+     WHERE case_id = ? AND category = ? AND deleted_at IS NULL`,
+    [opts.caseId, opts.category],
+  );
+  const statuses = rows.map((r) => r.status as string | null);
+  if (!canLawFirmUploadCategory({ existingStatuses: statuses })) {
+    return {
+      ok: false,
+      status: 409,
+      error:
+        "Document is locked until admin requests correction for this category",
+    };
+  }
+  return { ok: true };
+}
+
+async function maybeCompleteIntakeCorrectionDeadline(
+  caseId: number,
+): Promise<void> {
+  const categories = await loadCaseDocumentCategories(caseId);
+  if (!getIntakeCompleteness(categories).complete) return;
+  await completeTypedDeadlines(caseId, [INTAKE_CORRECTION_DEADLINE_TYPE]);
+}
+
+async function clearExpedienteApproval(
+  caseId: number,
+  conn?: PoolConnection,
+): Promise<void> {
+  const db = conn ?? getPool();
+  await db.query<ResultSetHeader>(
+    `UPDATE cases
+     SET expediente_approved_at = NULL, expediente_approved_by = NULL
+     WHERE id = ? AND expediente_approved_at IS NOT NULL`,
+    [caseId],
+  );
+}
+
+async function loadCaseDocumentApprovalRows(
+  caseId: number,
+): Promise<DocumentApprovalRow[]> {
+  const db = getPool();
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT category, status FROM documents
+     WHERE case_id = ? AND deleted_at IS NULL`,
+    [caseId],
+  );
+  return rows.map((r) => ({
+    category: String(r.category),
+    status: r.status as string | null,
+  }));
+}
+
+async function fetchMappedCaseDocument(
+  documentId: number,
+): Promise<CaseDocumentItem | null> {
+  const db = getPool();
+  const [updated] = await db.query<RowDataPacket[]>(
+    `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
+            d.approved_at, d.rejection_reason, d.correction_requested_at, d.created_at,
+            v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
+            v.ocr_status, v.ocr_text, v.ocr_processed_at
+     FROM documents d
+     LEFT JOIN document_versions v
+       ON v.document_id = d.id AND v.version_number = d.current_version
+     WHERE d.id = ?
+     LIMIT 1`,
+    [documentId],
+  );
+  if (updated.length === 0) return null;
+  return mapCaseDocumentItem(updated[0]);
+}
+
+async function notifyLawFirmIntakeCorrection(opts: {
+  caseRow: RowDataPacket;
+  category: string;
+  reason: string | null;
+}): Promise<void> {
+  const lawFirmId =
+    opts.caseRow.law_firm_id != null
+      ? Number(opts.caseRow.law_firm_id)
+      : null;
+  if (!lawFirmId) return;
+  const contacts = await listLawFirmContacts(lawFirmId);
+  const reasonBit = opts.reason ? ` Reason: ${opts.reason}` : "";
+  const title = `Correction requested · ${opts.caseRow.case_number}`;
+  const body = `Please re-upload ${opts.category} within 3 business days.${reasonBit}`;
+  for (const contact of contacts) {
+    await createNotification({
+      recipientActor: "law_firm",
+      recipientId: contact.id,
+      caseId: Number(opts.caseRow.id),
+      type: "missing_documents",
+      title,
+      body,
+      emailTo: contact.email,
+      caseNumber: String(opts.caseRow.case_number),
+      caseUrl: `${EMAIL_APP_URL}/portal/cases/${opts.caseRow.public_uuid}`,
+    });
+  }
 }
 
 async function ensureTypedDeadline(opts: {
@@ -7037,12 +8184,26 @@ async function loadCaseDocumentCategories(caseId: number): Promise<string[]> {
   return rows.map((r) => String(r.category));
 }
 
+async function loadCaseApprovedDocumentCategories(
+  caseId: number,
+): Promise<string[]> {
+  const db = getPool();
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT DISTINCT category FROM documents
+     WHERE case_id = ? AND deleted_at IS NULL AND status = 'approved'`,
+    [caseId],
+  );
+  return rows.map((r) => String(r.category));
+}
+
 async function loadProcessGateInput(
   caseRow: RowDataPacket,
 ): Promise<ProcessGateInput> {
   const db = getPool();
   const caseId = caseRow.id as number;
   const documentCategories = await loadCaseDocumentCategories(caseId);
+  const approvedDocumentCategories =
+    await loadCaseApprovedDocumentCategories(caseId);
 
   const [evidenceRows] = await db.query<RowDataPacket[]>(
     `SELECT DISTINCT category FROM evidence_items
@@ -7106,6 +8267,7 @@ async function loadProcessGateInput(
 
   return buildProcessGateInputFromSourceInline({
     documentCategories,
+    approvedDocumentCategories,
     evidenceCategories: evidenceRows.map((r) => String(r.category)),
     measurementTypes: measurementRows.map((r) => String(r.measurement_type)),
     hasPrimaryExpert: assignmentRows.length > 0,
@@ -7114,10 +8276,14 @@ async function loadProcessGateInput(
     streetViewValidatedAt: caseRow.street_view_validated_at,
     propertyLat: caseRow.property_lat,
     propertyLng: caseRow.property_lng,
+    documentsHandoffConfirmedAt: caseRow.documents_handoff_confirmed_at,
+    expedienteApprovedAt: caseRow.expediente_approved_at,
+    ratificationScheduledAt: caseRow.ratification_scheduled_at,
     involvesFatality: caseRow.involves_fatality,
     inspectionComplete: inspectionRows.length > 0,
     reportStatus: bestReport?.status ?? null,
     logisticsReady: tripRows.length > 0,
+    dictamenDueAt: caseRow.dictamen_due_at,
     invoices: invoiceRows.map((r) => ({
       status: String(r.status),
       invoiceType: String(r.invoice_type || ""),
@@ -7149,18 +8315,17 @@ async function attachListadoToCases(
   const db = getPool();
 
   const [docRows] = await db.query<RowDataPacket[]>(
-    `SELECT case_id, category FROM documents
+    `SELECT case_id, category, status FROM documents
      WHERE case_id IN (${placeholders}) AND deleted_at IS NULL
        AND status NOT IN ('rejected', 'archived')`,
     ids,
   );
-  const [expertRows] = await db.query<RowDataPacket[]>(
-    `SELECT a.case_id, u.first_name, u.last_name
+  const [assignmentRows] = await db.query<RowDataPacket[]>(
+    `SELECT a.case_id, a.assignment_role, a.is_primary, u.first_name, u.last_name
      FROM case_assignments a
      JOIN staff_users u ON u.id = a.user_id
      WHERE a.case_id IN (${placeholders})
-       AND a.unassigned_at IS NULL
-       AND a.assignment_role = 'expert' AND a.is_primary = 1`,
+       AND a.unassigned_at IS NULL`,
     ids,
   );
   const [qRows] = await db.query<RowDataPacket[]>(
@@ -7245,7 +8410,7 @@ async function attachListadoToCases(
   );
 
   const docsBy = groupIds(docRows);
-  const expertsBy = groupIds(expertRows);
+  const assignmentsBy = groupIds(assignmentRows);
   const qBy = groupIds(qRows);
   const inspBy = new Set(inspRows.map((r) => Number(r.case_id)));
   const reportsBy = groupIds(reportRows);
@@ -7261,7 +8426,28 @@ async function attachListadoToCases(
   return cases.map((item) => {
     const raw = rowById.get(item.id);
     const docs = (docsBy.get(item.id) || []).map((d) => String(d.category));
-    const expert = expertsBy.get(item.id)?.[0];
+    const approvedDocs = [
+      ...new Set(
+        (docsBy.get(item.id) || [])
+          .filter((d) => String(d.status) === "approved")
+          .map((d) => String(d.category)),
+      ),
+    ];
+    const assignmentRowsForCase = assignmentsBy.get(item.id) || [];
+    const activeAssignments = assignmentRowsForCase.map((a) => ({
+      assignmentRole: String(a.assignment_role || "expert") as AssignmentRole,
+      userName:
+        `${a.first_name || ""} ${a.last_name || ""}`.trim() || "—",
+      isPrimary: Boolean(a.is_primary),
+    }));
+    const expert =
+      assignmentRowsForCase.find(
+        (a) =>
+          String(a.assignment_role) === "expert" && Boolean(a.is_primary),
+      ) ||
+      assignmentRowsForCase.find(
+        (a) => String(a.assignment_role) === "expert",
+      );
     const bestQ = pickCurrentProcessArtifact(
       (qBy.get(item.id) || []).map((q) => ({
         status: String(q.status),
@@ -7283,6 +8469,7 @@ async function attachListadoToCases(
     }));
     const input = buildProcessGateInputFromSourceInline({
       documentCategories: docs,
+      approvedDocumentCategories: approvedDocs,
       evidenceCategories: (evidenceBy.get(item.id) || []).map((r) =>
         String(r.category),
       ),
@@ -7295,6 +8482,9 @@ async function attachListadoToCases(
       streetViewValidatedAt: raw?.street_view_validated_at,
       propertyLat: raw?.property_lat,
       propertyLng: raw?.property_lng,
+      documentsHandoffConfirmedAt: raw?.documents_handoff_confirmed_at,
+      expedienteApprovedAt: raw?.expediente_approved_at,
+      ratificationScheduledAt: raw?.ratification_scheduled_at,
       involvesFatality: raw?.involves_fatality ?? item.involvesFatality,
       inspectionComplete: inspBy.has(item.id),
       reportStatus: bestReport?.status ?? null,
@@ -7312,6 +8502,7 @@ async function attachListadoToCases(
       primaryExpertName: expert
         ? `${expert.first_name || ""} ${expert.last_name || ""}`.trim() || null
         : item.primaryExpertName || null,
+      activeAssignments,
       listado: buildListadoProgress({
         status: item.status,
         inspectionDeadlineAt: item.inspectionDeadlineAt,
@@ -7436,7 +8627,7 @@ async function notifyMissingDocumentsIfNeeded(
         body,
         emailTo: contact.email,
         caseNumber: String(caseRow.case_number),
-        caseUrl: `${EMAIL_APP_URL}/client/cases/${caseRow.public_uuid}`,
+        caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
       });
     }
     if (shouldWriteLawFirmMissingDocsNote(active)) {
@@ -7571,7 +8762,7 @@ async function afterArtifactRejectLoop(opts: {
       body: `Status updated from ${opts.fromStatus} to ${opts.toStatus}.`,
       emailTo: contact.email,
       caseNumber: String(opts.caseRow.case_number),
-      caseUrl: `${EMAIL_APP_URL}/client/cases/${opts.caseRow.public_uuid}`,
+      caseUrl: `${EMAIL_APP_URL}/portal/cases/${opts.caseRow.public_uuid}`,
       email: buildCaseStatusEmail({
         locale: contact.locale,
         firstName: contact.firstName,
@@ -7579,7 +8770,7 @@ async function afterArtifactRejectLoop(opts: {
         caseTitle: String(opts.caseRow.title || opts.caseRow.case_number),
         fromStatus: String(opts.fromStatus),
         toStatus: String(opts.toStatus),
-        caseUrl: `${EMAIL_APP_URL}/client/cases/${opts.caseRow.public_uuid}`,
+        caseUrl: `${EMAIL_APP_URL}/portal/cases/${opts.caseRow.public_uuid}`,
         appUrl: EMAIL_APP_URL,
       }),
     });
@@ -7667,8 +8858,8 @@ async function runAutomationActions(
           ? ["accountant", "admin"]
           : action.notificationType === "report_approved" ||
               action.notificationType === "qa_requested"
-            ? ["legal", "admin", "case_coordinator"]
-            : ["admin", "case_coordinator"],
+            ? ["legal", "admin"]
+            : ["admin"],
       );
       if (recipients.length === 0 && ctx.fallbackRecipientId != null) {
         recipients = [ctx.fallbackRecipientId];
@@ -7759,6 +8950,15 @@ async function sendEmail(opts: {
   html: string;
   text: string;
 }): Promise<string | null> {
+  // Never hit Resend during vitest — integration suites use @example.test
+  // addresses (bounce risk) and may resolve real admin/coordinator emails from TiDB.
+  if (process.env.VITEST === "true") {
+    apiLogger.info("[email:vitest-skip]", {
+      to: opts.to,
+      subject: opts.subject,
+    });
+    return "vitest-skip";
+  }
   if (!resendClient) {
     apiLogger.info("[email:dev-fallback]", {
       to: opts.to,
@@ -7860,7 +9060,7 @@ async function listLawFirmContacts(lawFirmId: number): Promise<
  *
  * All API routes must live in this file for the Vercel serverless architecture.
  */
-export function createServer() {
+function createServer() {
   const app = express();
 
   app.use(cors());
@@ -7942,6 +9142,17 @@ export function createServer() {
       }
 
       const db = getPool();
+      const actorRows = await lookupEmailActorRows(email);
+      const dualStaff = resolveLoginEmailDualActor({
+        staffAlive: Boolean(actorRows.staff && !actorRows.staff.deleted),
+        lawFirmAlive: Boolean(actorRows.lawFirm && !actorRows.lawFirm.deleted),
+      });
+      if (dualStaff.ok === false) {
+        return res.status(409).json({
+          error: dualStaff.error,
+          code: dualStaff.code,
+        });
+      }
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, email, first_name, preferred_language, status, role, deleted_at
          FROM staff_users
@@ -8042,7 +9253,7 @@ export function createServer() {
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, public_uuid, email, first_name, last_name, role, status,
                 phone, avatar_url, preferred_language, preferred_theme,
-                show_form_helpers, last_login_at, deleted_at
+                show_form_helpers, show_process_guidance, last_login_at, deleted_at
          FROM staff_users
          WHERE LOWER(TRIM(email)) = ?
          LIMIT 1`,
@@ -8109,7 +9320,7 @@ export function createServer() {
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, public_uuid, email, first_name, last_name, role, status,
                 phone, avatar_url, preferred_language, preferred_theme,
-                show_form_helpers, last_login_at
+                show_form_helpers, show_process_guidance, last_login_at
          FROM staff_users
          WHERE id = ? AND deleted_at IS NULL
          LIMIT 1`,
@@ -8167,6 +9378,17 @@ export function createServer() {
       }
 
       const db = getPool();
+      const actorRows = await lookupEmailActorRows(email);
+      const dualClient = resolveLoginEmailDualActor({
+        staffAlive: Boolean(actorRows.staff && !actorRows.staff.deleted),
+        lawFirmAlive: Boolean(actorRows.lawFirm && !actorRows.lawFirm.deleted),
+      });
+      if (dualClient.ok === false) {
+        return res.status(409).json({
+          error: dualClient.error,
+          code: dualClient.code,
+        });
+      }
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, email, first_name, preferred_language, status, deleted_at
          FROM law_firm_users
@@ -8250,6 +9472,174 @@ export function createServer() {
     }
   };
 
+  /** Unified login OTP — one rate-limit bucket; staff first, then law_firm. */
+  const unifiedRequestOtp = async (req: Request, res: Response) => {
+    try {
+      const email = normalizeLookupEmail(String(req.body?.email || ""));
+      if (!email || !isValidEmail(email)) {
+        return res.status(400).json({ error: "Valid email required" });
+      }
+
+      const ipRate = await enforceOtpRequestRateLimits({
+        email,
+        ip: req.ip,
+        portal: "unified",
+        chargeIp: true,
+        chargeEmail: false,
+      });
+      if (ipRate.ok === false) {
+        res.setHeader("Retry-After", String(ipRate.retryAfterSec));
+        return res.status(429).json({
+          error: ipRate.error,
+          code: "rate_limited",
+          retryAfterSec: ipRate.retryAfterSec,
+        });
+      }
+
+      const db = getPool();
+      const [staffRows] = await db.query<RowDataPacket[]>(
+        `SELECT id, email, first_name, preferred_language, status, role, deleted_at
+         FROM staff_users
+         WHERE LOWER(TRIM(email)) = ?
+         LIMIT 1`,
+        [email],
+      );
+      const [clientRowsEarly] = await db.query<RowDataPacket[]>(
+        `SELECT id, email, first_name, preferred_language, status, deleted_at
+         FROM law_firm_users
+         WHERE LOWER(TRIM(email)) = ?
+         LIMIT 1`,
+        [email],
+      );
+      const staffFound = staffRows.length > 0;
+      const staffUser = staffFound ? staffRows[0] : null;
+      const clientFoundEarly = clientRowsEarly.length > 0;
+      const clientUserEarly = clientFoundEarly ? clientRowsEarly[0] : null;
+      const dual = resolveLoginEmailDualActor({
+        staffAlive: Boolean(staffUser && staffUser.deleted_at == null),
+        lawFirmAlive: Boolean(
+          clientUserEarly && clientUserEarly.deleted_at == null,
+        ),
+      });
+      if (dual.ok === false) {
+        return res.status(409).json({
+          error: dual.error,
+          code: dual.code,
+        });
+      }
+      const allowed = await getLoginAllowedRoles();
+      const staffEligibility = resolveOtpRequestEligibility({
+        found: staffFound,
+        deleted: staffUser?.deleted_at != null,
+        status: staffUser ? String(staffUser.status) : null,
+        roleAllowed: staffUser
+          ? allowed.has(String(staffUser.role))
+          : undefined,
+      });
+
+      let actor: "staff" | "law_firm" | null = null;
+      let userRow: RowDataPacket | null = null;
+      let deny:
+        | { code: string; error: string }
+        | null = null;
+
+      if (staffEligibility.ok === true) {
+        actor = "staff";
+        userRow = staffUser;
+      } else if (staffEligibility.code === "account_not_found") {
+        const clientRows = clientRowsEarly;
+        const clientFound = clientFoundEarly;
+        const clientUser = clientUserEarly;
+        const clientEligibility = resolveOtpRequestEligibility({
+          found: clientFound,
+          deleted: clientUser?.deleted_at != null,
+          status: clientUser ? String(clientUser.status) : null,
+        });
+        if (clientEligibility.ok === true) {
+          actor = "law_firm";
+          userRow = clientUser;
+        } else {
+          deny = {
+            code: clientEligibility.code,
+            error: clientEligibility.error,
+          };
+        }
+      } else {
+        deny = {
+          code: staffEligibility.code,
+          error: staffEligibility.error,
+        };
+      }
+
+      if (!actor || !userRow) {
+        return res.status(404).json({
+          error: deny?.error || "No account found for this email",
+          code: deny?.code || "account_not_found",
+        });
+      }
+
+      const emailRate = await enforceOtpRequestRateLimits({
+        email,
+        ip: req.ip,
+        portal: "unified",
+        chargeIp: false,
+        chargeEmail: true,
+      });
+      if (emailRate.ok === false) {
+        res.setHeader("Retry-After", String(emailRate.retryAfterSec));
+        return res.status(429).json({
+          error: emailRate.error,
+          code: "rate_limited",
+          retryAfterSec: emailRate.retryAfterSec,
+        });
+      }
+
+      const locale = resolveRequestLocale(
+        req,
+        userRow.preferred_language as string,
+        req.body?.locale,
+      );
+      const code = await createOtp(
+        actor,
+        userRow.id as number,
+        "login",
+        req.ip,
+        req.headers["user-agent"] as string | undefined,
+      );
+
+      try {
+        const emailContent = buildOtpEmail({
+          locale,
+          firstName: (userRow.first_name as string) || "Usuario",
+          code,
+          portal: actor,
+          minutes: OTP_TTL_MIN,
+          appUrl: EMAIL_APP_URL,
+        });
+        await sendEmail({
+          to: userRow.email as string,
+          ...emailContent,
+        });
+      } catch (err) {
+        apiLogger.error("unified OTP email failed", err);
+        return res.status(502).json({
+          error: "Could not send verification email. Please try again.",
+        });
+      }
+
+      const response: RequestOtpResponse = {
+        ok: true,
+        sent: true,
+        message: "Verification code sent.",
+        actor,
+      };
+      return res.json(response);
+    } catch (err) {
+      apiLogger.error("unified request-otp failed", err);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  };
+
   const clientVerifyOtp = async (req: Request, res: Response) => {
     try {
       const email = normalizeLookupEmail(String(req.body?.email || ""));
@@ -8265,7 +9655,7 @@ export function createServer() {
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, public_uuid, email, first_name, last_name, status,
                 phone, avatar_url, preferred_language, preferred_theme,
-                show_form_helpers, last_login_at, deleted_at
+                show_form_helpers, show_process_guidance, last_login_at, deleted_at
          FROM law_firm_users
          WHERE LOWER(TRIM(email)) = ?
          LIMIT 1`,
@@ -8303,7 +9693,7 @@ export function createServer() {
         );
       }
 
-      const user = mapLawFirmUserRow(row);
+      const user = await enrichLawFirmAuthUser(mapLawFirmUserRow(row));
       const token = await createSession(
         "law_firm",
         user,
@@ -8325,7 +9715,7 @@ export function createServer() {
       const [rows] = await db.query<RowDataPacket[]>(
         `SELECT id, public_uuid, email, first_name, last_name, status,
                 phone, avatar_url, preferred_language, preferred_theme,
-                show_form_helpers, last_login_at
+                show_form_helpers, show_process_guidance, last_login_at
          FROM law_firm_users
          WHERE id = ? AND deleted_at IS NULL
          LIMIT 1`,
@@ -8334,7 +9724,9 @@ export function createServer() {
       if (rows.length === 0 || rows[0].status !== "active") {
         return res.status(401).json({ error: "Unauthorized" });
       }
-      const response: AuthMeResponse = { user: mapLawFirmUserRow(rows[0]) };
+      const response: AuthMeResponse = {
+        user: await enrichLawFirmAuthUser(mapLawFirmUserRow(rows[0])),
+      };
       return res.json(response);
     } catch (err) {
       apiLogger.error("client auth/me failed", err);
@@ -8356,16 +9748,27 @@ export function createServer() {
           return res.status(400).json({ error: parsed.error });
         }
         const db = getPool();
+        const sets: string[] = [];
+        const params: Array<number> = [];
+        if (typeof parsed.showFormHelpers === "boolean") {
+          sets.push("show_form_helpers = ?");
+          params.push(parsed.showFormHelpers ? 1 : 0);
+        }
+        if (typeof parsed.showProcessGuidance === "boolean") {
+          sets.push("show_process_guidance = ?");
+          params.push(parsed.showProcessGuidance ? 1 : 0);
+        }
+        params.push(req.auth!.id);
         await db.query<ResultSetHeader>(
           `UPDATE staff_users
-           SET show_form_helpers = ?
+           SET ${sets.join(", ")}
            WHERE id = ? AND deleted_at IS NULL`,
-          [parsed.showFormHelpers ? 1 : 0, req.auth!.id],
+          params,
         );
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT id, public_uuid, email, first_name, last_name, role, status,
                   phone, avatar_url, preferred_language, preferred_theme,
-                  show_form_helpers, last_login_at
+                  show_form_helpers, show_process_guidance, last_login_at
            FROM staff_users
            WHERE id = ? AND deleted_at IS NULL
            LIMIT 1`,
@@ -8400,16 +9803,27 @@ export function createServer() {
           return res.status(400).json({ error: parsed.error });
         }
         const db = getPool();
+        const sets: string[] = [];
+        const params: Array<number> = [];
+        if (typeof parsed.showFormHelpers === "boolean") {
+          sets.push("show_form_helpers = ?");
+          params.push(parsed.showFormHelpers ? 1 : 0);
+        }
+        if (typeof parsed.showProcessGuidance === "boolean") {
+          sets.push("show_process_guidance = ?");
+          params.push(parsed.showProcessGuidance ? 1 : 0);
+        }
+        params.push(req.auth!.id);
         await db.query<ResultSetHeader>(
           `UPDATE law_firm_users
-           SET show_form_helpers = ?
+           SET ${sets.join(", ")}
            WHERE id = ? AND deleted_at IS NULL`,
-          [parsed.showFormHelpers ? 1 : 0, req.auth!.id],
+          params,
         );
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT id, public_uuid, email, first_name, last_name, status,
                   phone, avatar_url, preferred_language, preferred_theme,
-                  show_form_helpers, last_login_at
+                  show_form_helpers, show_process_guidance, last_login_at
            FROM law_firm_users
            WHERE id = ? AND deleted_at IS NULL
            LIMIT 1`,
@@ -8419,7 +9833,7 @@ export function createServer() {
           return res.status(401).json({ error: "Unauthorized" });
         }
         const response: UpdatePreferencesResponse = {
-          user: mapLawFirmUserRow(rows[0]),
+          user: await enrichLawFirmAuthUser(mapLawFirmUserRow(rows[0])),
         };
         return res.json(response);
       } catch (err) {
@@ -8430,8 +9844,8 @@ export function createServer() {
   );
   app.post("/api/auth/client/logout", dbUnavailable, authLogout);
 
-  // Legacy aliases → staff auth
-  app.post("/api/auth/request-otp", dbUnavailable, staffRequestOtp);
+  // Unified login OTP (staff → law_firm fallthrough, one rate-limit bucket)
+  app.post("/api/auth/request-otp", dbUnavailable, unifiedRequestOtp);
   app.post("/api/auth/verify-otp", dbUnavailable, staffVerifyOtp);
   app.get("/api/auth/me", dbUnavailable, requireStaff, staffMe);
   app.post("/api/auth/logout", dbUnavailable, authLogout);
@@ -8495,7 +9909,7 @@ export function createServer() {
   app.get(
     "/api/cases",
     dbUnavailable,
-    requireStaff,
+    requireStaffOrLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
         const { page, limit, offset } = parsePageLimit(
@@ -8523,14 +9937,23 @@ export function createServer() {
 
         const where: string[] = ["deleted_at IS NULL"];
         const params: unknown[] = [];
-        const visibility = buildStaffCaseVisibilityFilterInline({
-          role: req.auth!.role,
-          userId: req.auth!.id,
-          casesAlias: "cases",
-        });
-        if (visibility.sql) {
-          where.push(visibility.sql);
-          params.push(...visibility.params);
+        if (req.auth!.actor === "law_firm") {
+          const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
+          if (!lawFirmId) {
+            return res.status(403).json({ error: "No law firm linked to user" });
+          }
+          where.push("law_firm_id = ?");
+          params.push(lawFirmId);
+        } else {
+          const visibility = buildStaffCaseVisibilityFilterInline({
+            role: req.auth!.role,
+            userId: req.auth!.id,
+            casesAlias: "cases",
+          });
+          if (visibility.sql) {
+            where.push(visibility.sql);
+            params.push(...visibility.params);
+          }
         }
         if (q) {
           where.push(
@@ -8571,7 +9994,7 @@ export function createServer() {
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT id, public_uuid, case_number, title, status, priority,
                   court_name, property_city, property_state, law_firm_id,
-                  assigned_expert_id, inspection_deadline_at, involves_fatality,
+                  assigned_expert_id, inspection_deadline_at, external_court_deadline_at, dictamen_due_at, involves_fatality,
                   street_view_validated_at, property_lat, property_lng,
                   created_at, updated_at
            FROM cases
@@ -8670,7 +10093,7 @@ export function createServer() {
           const [rows] = await db.query<RowDataPacket[]>(
             `SELECT id, public_uuid, case_number, title, status, priority,
                     court_name, property_city, property_state, law_firm_id,
-                    assigned_expert_id, inspection_deadline_at, involves_fatality,
+                    assigned_expert_id, inspection_deadline_at, external_court_deadline_at, dictamen_due_at, involves_fatality,
                     street_view_validated_at, property_lat, property_lng,
                     created_at, updated_at
              FROM cases
@@ -8734,16 +10157,33 @@ export function createServer() {
   app.post(
     "/api/cases",
     dbUnavailable,
-    requireStaff,
+    requireStaffOrLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
-        if (!canCreateStaffCaseInline(req.auth?.role)) {
+        const isLawFirm = req.auth!.actor === "law_firm";
+        if (!isLawFirm && !canCreateStaffCaseInline(req.auth?.role)) {
           return res.status(403).json({ error: "Forbidden" });
+        }
+        if (!(await assertLawFirmCanMutate(req.auth!, res))) return;
+        let lawFirmIdForInsert: number | null = null;
+        if (isLawFirm) {
+          lawFirmIdForInsert = await getLawFirmIdForUser(req.auth!.id);
+          if (!lawFirmIdForInsert) {
+            return res
+              .status(403)
+              .json({ error: "No law firm linked to user" });
+          }
         }
         const body = req.body as CreateCaseRequest;
         const title = String(body?.title || "").trim();
         if (!title) {
           return res.status(400).json({ error: "Title is required" });
+        }
+        const description = String(body.description || "");
+        if (description.length > 500) {
+          return res
+            .status(400)
+            .json({ error: "description exceeds 500 characters" });
         }
 
         const priority = (body.priority || "normal") as CasePriority;
@@ -8764,6 +10204,21 @@ export function createServer() {
         if (coords.ok === false) {
           return res.status(400).json({ error: coords.error });
         }
+        const externalDeadline = parseExternalCourtDeadlineAtInline(
+          body.externalCourtDeadlineAt,
+        );
+        if (externalDeadline.ok === false) {
+          return res.status(400).json({ error: externalDeadline.error });
+        }
+
+        const firmId =
+          lawFirmIdForInsert ??
+          (typeof body.lawFirmId === "number" ? body.lawFirmId : null);
+        const firmDefaultCourt = await fetchLawFirmDefaultCourtName(firmId);
+        const courtName = resolveCaseCourtNameInline({
+          provided: body.courtName,
+          firmDefaultCourtName: firmDefaultCourt,
+        });
 
         const caseNumber = await allocateCaseNumber();
         const publicUuid = generatePublicUuid();
@@ -8775,15 +10230,16 @@ export function createServer() {
              plaintiff_name, defendant_name, property_address, property_city,
              property_state, property_postal_code, property_country,
              property_lat, property_lng, involves_fatality,
+             external_court_deadline_at,
              intake_received_at, created_by
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
           [
             publicUuid,
             caseNumber,
             title,
-            body.description?.trim() || null,
-            body.lawFirmId ?? null,
-            body.courtName?.trim() || null,
+            description.trim() || null,
+            firmId,
+            courtName,
             body.externalReference?.trim() || null,
             priority,
             body.plaintiffName?.trim() || null,
@@ -8796,29 +10252,66 @@ export function createServer() {
             coords.value?.lat ?? null,
             coords.value?.lng ?? null,
             body.involvesFatality ? 1 : 0,
-            req.auth!.id,
+            externalDeadline.value
+              ? toMysqlDateTimeUtc(new Date(externalDeadline.value))
+              : null,
+            isLawFirm ? null : req.auth!.id,
           ],
         );
 
         await db.query<ResultSetHeader>(
           `INSERT INTO case_status_history (case_id, from_status, to_status, changed_by, reason)
-           VALUES (?, NULL, 'intake', ?, 'Case created')`,
-          [result.insertId, req.auth!.id],
-        );
-
-        await db.query<ResultSetHeader>(
-          `INSERT INTO audit_logs
-             (public_uuid, actor_type, actor_id, case_id, entity_type, entity_id, action, new_value_json, ip_address)
-           VALUES (?, 'staff', ?, ?, 'case', ?, 'create', ?, ?)`,
+           VALUES (?, NULL, 'intake', ?, ?)`,
           [
-            generatePublicUuid(),
-            req.auth!.id,
             result.insertId,
-            String(result.insertId),
-            JSON.stringify({ caseNumber, title }),
-            req.ip || null,
+            isLawFirm ? null : req.auth!.id,
+            isLawFirm ? "Submitted by law firm" : "Case created",
           ],
         );
+
+        if (!isLawFirm) {
+          await db.query<ResultSetHeader>(
+            `INSERT INTO audit_logs
+               (public_uuid, actor_type, actor_id, case_id, entity_type, entity_id, action, new_value_json, ip_address)
+             VALUES (?, 'staff', ?, ?, 'case', ?, 'create', ?, ?)`,
+            [
+              generatePublicUuid(),
+              req.auth!.id,
+              result.insertId,
+              String(result.insertId),
+              JSON.stringify({ caseNumber, title }),
+              req.ip || null,
+            ],
+          );
+        } else {
+          const [admins] = await db.query<RowDataPacket[]>(
+            `SELECT id, email, first_name, preferred_language
+             FROM staff_users
+             WHERE role = 'admin' AND deleted_at IS NULL AND status = 'active'
+             LIMIT 20`,
+          );
+          for (const admin of admins) {
+            await createNotification({
+              recipientActor: "staff",
+              recipientId: admin.id as number,
+              caseId: result.insertId,
+              type: "general",
+              title: `New case ${caseNumber}`,
+              body: `Law firm submitted: ${title}`,
+              emailTo: String(admin.email),
+              caseNumber,
+              caseUrl: `${EMAIL_APP_URL}/portal/cases/${publicUuid}`,
+              email: buildNewCaseIntakeEmail({
+                locale: normalizeLocale(admin.preferred_language as string),
+                firstName: String(admin.first_name || "Admin"),
+                caseNumber,
+                caseTitle: title,
+                caseUrl: `${EMAIL_APP_URL}/portal/cases/${publicUuid}`,
+                appUrl: EMAIL_APP_URL,
+              }),
+            });
+          }
+        }
 
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT * FROM cases WHERE id = ? LIMIT 1`,
@@ -8836,7 +10329,7 @@ export function createServer() {
   app.get(
     "/api/cases/:publicUuid",
     dbUnavailable,
-    requireStaff,
+    requireStaffOrLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
         const db = getPool();
@@ -8850,6 +10343,95 @@ export function createServer() {
           return res.status(404).json({ error: "Case not found" });
         }
         const caseRow = rows[0];
+        if (req.auth!.actor === "law_firm") {
+          if (!(await lawFirmOwnsCaseRow(req.auth!, caseRow))) {
+            return res.status(404).json({ error: "Case not found" });
+          }
+          const caseId = caseRow.id as number;
+          const [noteRows] = await db.query<RowDataPacket[]>(
+            `SELECT id, body, visibility, author_id, created_at
+             FROM case_notes
+             WHERE case_id = ? AND deleted_at IS NULL
+               AND visibility IN ('law_firm', 'all')
+             ORDER BY created_at DESC
+             LIMIT 50`,
+            [caseId],
+          );
+          const [docRows] = await db.query<RowDataPacket[]>(
+            `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
+                    d.approved_at, d.rejection_reason, d.correction_requested_at, d.created_at,
+                    v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
+                    v.ocr_status, v.ocr_text, v.ocr_processed_at
+             FROM documents d
+             LEFT JOIN document_versions v
+               ON v.document_id = d.id AND v.version_number = d.current_version
+             WHERE d.case_id = ? AND d.deleted_at IS NULL
+             ORDER BY d.created_at DESC
+             LIMIT 100`,
+            [caseId],
+          );
+          const [reportRows] = await db.query<RowDataPacket[]>(
+            `SELECT id, public_uuid, status, version_number, investigation_summary, conclusions,
+                    submitted_at, approved_at, delivered_at, created_at
+             FROM technical_reports
+             WHERE case_id = ? AND status IN ('approved', 'delivered', 'external_review')
+             ORDER BY created_at DESC
+             LIMIT 20`,
+            [caseId],
+          );
+          const clientDocs = await Promise.all(
+            docRows.map(async (row) => {
+              const document = mapCaseDocumentItem(row);
+              return {
+                ...document,
+                storageKey: document.storageKey
+                  ? await signBlobUrlForClient(document.storageKey)
+                  : null,
+              };
+            }),
+          );
+          const [withListado] = await attachListadoToCases(
+            [mapCaseSummary(caseRow)],
+            [caseRow],
+          );
+          return res.json({
+            case: {
+              ...mapCaseDetail(caseRow),
+              listado: withListado?.listado ?? null,
+            },
+            history: [],
+            notes: noteRows.map((n) => ({
+              id: n.id as number,
+              body: n.body as string,
+              visibility: n.visibility as CaseNoteItem["visibility"],
+              authorId: (n.author_id as number | null) ?? null,
+              createdAt: toIso(n.created_at) || new Date().toISOString(),
+            })),
+            documents: clientDocs,
+            assignments: [],
+            deadlines: [],
+            questionnaires: [],
+            inspections: [],
+            measurements: [],
+            evidence: [],
+            evidenceChecklist: { required: [], present: [], missing: [] },
+            reviewRequests: [],
+            documentCompleteness: buildDocumentCompleteness(
+              clientDocs
+                .filter((d) => isActiveDocumentStatus(d.status))
+                .map((d) => d.category),
+              Boolean(caseRow.involves_fatality),
+            ),
+            auditLogs: [],
+            trips: [],
+            expenses: [],
+            technicalReports: reportRows.map(mapTechnicalReport),
+            invoices: [],
+            allowedNextStatuses: [],
+            hasUnpaidInvoices: false,
+            processGate: { point: null, ok: true, missing: [] },
+          });
+        }
         if (!(await staffCanAccessCaseRow(req.auth!, caseRow))) {
           return res.status(404).json({ error: "Case not found" });
         }
@@ -8874,7 +10456,8 @@ export function createServer() {
         );
         const [docRows] = await db.query<RowDataPacket[]>(
           `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
-                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
+                  d.approved_at, d.rejection_reason, d.correction_requested_at, d.created_at,
+                  v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
                   v.ocr_status, v.ocr_text, v.ocr_processed_at
            FROM documents d
            LEFT JOIN document_versions v
@@ -8953,11 +10536,16 @@ export function createServer() {
           [caseId],
         );
         const [invoiceStatusRows] = await db.query<RowDataPacket[]>(
-          `SELECT status, invoice_type FROM invoices WHERE case_id = ?`,
+          `SELECT id, public_uuid, case_id, invoice_number, invoice_type, status,
+                  total_amount, currency, due_at
+           FROM invoices WHERE case_id = ?
+           ORDER BY created_at DESC`,
           [caseId],
         );
         const [reportRows] = await db.query<RowDataPacket[]>(
-          `SELECT id, public_uuid, status, version_number, investigation_summary, conclusions,
+          `SELECT id, public_uuid, status, version_number, investigation_summary,
+                  defendant_questionnaire_summary, plaintiff_questionnaire_summary,
+                  photo_catalog_json, conclusions,
                   submitted_at, approved_at, delivered_at, created_at
            FROM technical_reports
            WHERE case_id = ?
@@ -9013,18 +10601,18 @@ export function createServer() {
           (q) => {
             const qStatus = q.status as QuestionnaireStatus;
             return {
-              id: q.id as number,
-              publicUuid: q.public_uuid as string,
+            id: q.id as number,
+            publicUuid: q.public_uuid as string,
               status: qStatus,
               contentJson:
                 (q.content_json as Record<string, unknown> | null) ?? null,
-              chronologyJson:
-                (q.chronology_json as Record<string, unknown> | null) ?? null,
-              technicalObservations:
-                (q.technical_observations as string | null) ?? null,
-              submittedAt: toIso(q.submitted_at),
-              createdAt: toIso(q.created_at) || new Date().toISOString(),
-              allowedNextStatuses: getAllowedQuestionnaireStatuses(qStatus),
+            chronologyJson:
+              (q.chronology_json as Record<string, unknown> | null) ?? null,
+            technicalObservations:
+              (q.technical_observations as string | null) ?? null,
+            submittedAt: toIso(q.submitted_at),
+            createdAt: toIso(q.created_at) || new Date().toISOString(),
+              allowedNextStatuses: getAllowedQuestionnaireStatusesForDirectPatch(qStatus),
             };
           },
         );
@@ -9071,6 +10659,17 @@ export function createServer() {
             invoiceType: String(r.invoice_type || ""),
           })),
         );
+        const caseInvoices: InvoiceSummary[] = invoiceStatusRows.map((r) => ({
+          id: r.id as number,
+          publicUuid: r.public_uuid as string,
+          caseId: r.case_id as number,
+          invoiceNumber: r.invoice_number as string,
+          invoiceType: r.invoice_type as string,
+          status: r.status as string,
+          totalAmount: Number(r.total_amount) || 0,
+          currency: (r.currency as string) || "MXN",
+          dueAt: toIso(r.due_at),
+        }));
         const trips: LogisticsTripItem[] = tripRows.map((t) => ({
           id: t.id as number,
           publicUuid: t.public_uuid as string,
@@ -9107,12 +10706,25 @@ export function createServer() {
           trips,
           expenses: expenseRows.map(mapExpense),
           technicalReports: reportRows.map(mapTechnicalReport),
+          invoices: caseInvoices,
         });
 
         const lastWorkflowStatus =
           status === "on_hold" ? await loadHoldResumeStatus(caseId) : null;
+        const gateInput = await loadProcessGateInput(caseRow);
+        const invoiceFinanceInput = invoiceStatusRows.map((r) => ({
+          status: String(r.status),
+          invoiceType: String(r.invoice_type || ""),
+        }));
+        const listado = buildListadoProgress({
+          status,
+          inspectionDeadlineAt: toIso(caseRow.inspection_deadline_at),
+          input: gateInput,
+          invoices: invoiceFinanceInput,
+          holdResumeStatus: lastWorkflowStatus,
+        });
         const response: CaseDetailResponse = {
-          case: mapCaseDetail(caseRow),
+          case: { ...mapCaseDetail(caseRow), listado },
           history,
           ...scoped,
           allowedNextStatuses: getAllowedNextStatuses(status, {
@@ -9122,10 +10734,7 @@ export function createServer() {
             canApplyCaseStatusChange(req.auth?.role, status, to),
           ),
           hasUnpaidInvoices,
-          processGate: buildProcessGateSnapshot(
-            status,
-            await loadProcessGateInput(caseRow),
-          ),
+          processGate: buildProcessGateSnapshot(status, gateInput),
         };
         return res.json(response);
       } catch (err) {
@@ -9246,25 +10855,151 @@ export function createServer() {
   app.patch(
     "/api/cases/:publicUuid",
     dbUnavailable,
-    requireStaff,
+    requireStaffOrLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
-        if (!canChangeCaseStatus(req.auth?.role)) {
-          return res.status(403).json({ error: "Insufficient permissions" });
-        }
         const parsed = parseUpdateCaseFlags(req.body as UpdateCaseFlagsRequest);
         if (parsed.ok === false) {
           return res.status(400).json({ error: parsed.error });
         }
-        const caseRow = await findStaffAccessibleCase(req, 
+        if (req.auth!.actor === "law_firm") {
+          if (!(await assertLawFirmCanMutate(req.auth!, res))) return;
+          if (typeof parsed.value.involvesFatality !== "boolean") {
+            return res
+              .status(400)
+              .json({ error: "involvesFatality must be a boolean" });
+          }
+          const db = getPool();
+          const [rows] = await db.query<RowDataPacket[]>(
+            `SELECT * FROM cases
+             WHERE public_uuid = ? AND deleted_at IS NULL
+             LIMIT 1`,
+            [req.params.publicUuid],
+          );
+          if (rows.length === 0) {
+            return res.status(404).json({ error: "Case not found" });
+          }
+          if (!(await lawFirmOwnsCaseRow(req.auth!, rows[0]))) {
+            return res.status(404).json({ error: "Case not found" });
+          }
+          await db.query<ResultSetHeader>(
+            `UPDATE cases SET involves_fatality = ? WHERE id = ?`,
+            [parsed.value.involvesFatality ? 1 : 0, rows[0].id],
+          );
+          const [updated] = await db.query<RowDataPacket[]>(
+            `SELECT * FROM cases WHERE id = ? LIMIT 1`,
+            [rows[0].id],
+          );
+          await notifyMissingDocumentsIfNeeded(updated[0]);
+          const response: CaseResponse = { case: mapCaseDetail(updated[0]) };
+          return res.json(response);
+        }
+        const wantsFatality = typeof parsed.value.involvesFatality === "boolean";
+        const wantsModality = "protestaModality" in parsed.value;
+        const wantsExternalDeadline = "externalCourtDeadlineAt" in parsed.value;
+        const wantsDictamenDue = "dictamenDueAt" in parsed.value;
+        const wantsTitle = "title" in parsed.value;
+        const wantsDescription = "description" in parsed.value;
+        const wantsLawFirm = "lawFirmId" in parsed.value;
+        const intakePackEdit = wantsTitle || wantsDescription || wantsLawFirm;
+        if (wantsFatality && !canChangeCaseStatus(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        if (
+          wantsModality &&
+          !(
+            canChangeCaseStatus(req.auth?.role) ||
+            req.auth?.role === "expert"
+          )
+        ) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        if (
+          intakePackEdit &&
+          !canEditIntakePackInline(req.auth?.role)
+        ) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        if (
+          wantsExternalDeadline &&
+          !canSetExternalCourtDeadline(req.auth?.role) &&
+          !(intakePackEdit && canEditIntakePackInline(req.auth?.role))
+        ) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        if (
+          wantsDictamenDue &&
+          !(
+            canChangeCaseStatus(req.auth?.role) ||
+            req.auth?.role === "expert" ||
+            req.auth?.role === "logistics"
+          )
+        ) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const caseRow = await findStaffAccessibleCase(
+          req,
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
 
         const db = getPool();
+        if (wantsLawFirm && parsed.value.lawFirmId != null) {
+          const [firms] = await db.query<RowDataPacket[]>(
+            `SELECT id FROM law_firms WHERE id = ? LIMIT 1`,
+            [parsed.value.lawFirmId],
+          );
+          if (!firms.length) {
+            return res.status(400).json({ error: "Law firm not found" });
+          }
+        }
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        if (wantsFatality) {
+          sets.push("involves_fatality = ?");
+          params.push(parsed.value.involvesFatality ? 1 : 0);
+        }
+        if (wantsModality) {
+          sets.push("protesta_modality = ?");
+          params.push(parsed.value.protestaModality ?? null);
+        }
+        if (wantsExternalDeadline) {
+          sets.push("external_court_deadline_at = ?");
+          params.push(
+            parsed.value.externalCourtDeadlineAt
+              ? toMysqlDateTimeUtc(
+                  new Date(parsed.value.externalCourtDeadlineAt),
+                )
+              : null,
+          );
+        }
+        if (wantsDictamenDue) {
+          sets.push("dictamen_due_at = ?");
+          params.push(
+            parsed.value.dictamenDueAt
+              ? toMysqlDateTimeUtc(new Date(parsed.value.dictamenDueAt))
+              : null,
+          );
+        }
+        if (wantsTitle) {
+          sets.push("title = ?");
+          params.push(parsed.value.title);
+        }
+        if (wantsDescription) {
+          sets.push("description = ?");
+          params.push(parsed.value.description ?? null);
+        }
+        if (wantsLawFirm) {
+          sets.push("law_firm_id = ?");
+          params.push(parsed.value.lawFirmId ?? null);
+        }
+        if (sets.length === 0) {
+          return res.status(400).json({ error: "Nothing to update" });
+        }
+        params.push(caseRow.id);
         await db.query<ResultSetHeader>(
-          `UPDATE cases SET involves_fatality = ? WHERE id = ?`,
-          [parsed.value.involvesFatality ? 1 : 0, caseRow.id],
+          `UPDATE cases SET ${sets.join(", ")} WHERE id = ?`,
+          params,
         );
         await db.query<ResultSetHeader>(
           `INSERT INTO audit_logs
@@ -9278,8 +11013,25 @@ export function createServer() {
             String(caseRow.id),
             JSON.stringify({
               involvesFatality: Boolean(caseRow.involves_fatality),
+              protestaModality: caseRow.protesta_modality ?? null,
+              externalCourtDeadlineAt: toIso(
+                caseRow.external_court_deadline_at,
+              ),
             }),
-            JSON.stringify({ involvesFatality: parsed.value.involvesFatality }),
+            JSON.stringify({
+              ...(wantsFatality
+                ? { involvesFatality: parsed.value.involvesFatality }
+                : {}),
+              ...(wantsModality
+                ? { protestaModality: parsed.value.protestaModality ?? null }
+                : {}),
+              ...(wantsExternalDeadline
+                ? {
+                    externalCourtDeadlineAt:
+                      parsed.value.externalCourtDeadlineAt ?? null,
+                  }
+                : {}),
+            }),
             req.ip || null,
           ],
         );
@@ -9448,16 +11200,19 @@ export function createServer() {
           fromStatus === "legal_review_questionnaire" &&
           toStatus === "questionnaire"
         ) {
+          const qReopen = QUESTIONNAIRE_REOPEN_FROM_STATUSES.map(() => "?").join(
+            ", ",
+          );
           await db.query<ResultSetHeader>(
             `UPDATE questionnaires
              SET status = 'changes_requested'
              WHERE case_id = ?
-               AND status IN ('submitted', 'legal_review', 'approved')`,
-            [caseId],
+               AND status IN (${qReopen})`,
+            [caseId, ...QUESTIONNAIRE_REOPEN_FROM_STATUSES],
           );
         }
         if (
-          fromStatus === "legal_validation" &&
+          fromStatus === "validation_delivery" &&
           toStatus === "technical_report"
         ) {
           await db.query<ResultSetHeader>(
@@ -9488,7 +11243,7 @@ export function createServer() {
             actorId,
           });
         }
-        if (toStatus === "legal_validation") {
+        if (toStatus === "validation_delivery") {
           const clampRaw = rows[0].inspection_deadline_at;
           await ensureTypedDeadline({
             caseId,
@@ -9539,14 +11294,15 @@ export function createServer() {
               recipientId: contact.id,
               caseId: rows[0].id as number,
               type:
-                toStatus === "court_delivery" || toStatus === "court_acceptance"
+                toStatus === "validation_delivery" ||
+                toStatus === "court_acceptance"
                   ? "court_filing"
                   : "general",
               title: `${rows[0].case_number}: ${toStatus}`,
               body: `Status updated from ${fromStatus} to ${toStatus}.`,
               emailTo: contact.email,
               caseNumber: String(rows[0].case_number),
-              caseUrl: `${EMAIL_APP_URL}/client/cases/${rows[0].public_uuid}`,
+              caseUrl: `${EMAIL_APP_URL}/portal/cases/${rows[0].public_uuid}`,
               email: buildCaseStatusEmail({
                 locale: contact.locale,
                 firstName: contact.firstName,
@@ -9554,7 +11310,7 @@ export function createServer() {
                 caseTitle: String(rows[0].title || rows[0].case_number),
                 fromStatus: String(fromStatus),
                 toStatus: String(toStatus),
-                caseUrl: `${EMAIL_APP_URL}/client/cases/${rows[0].public_uuid}`,
+                caseUrl: `${EMAIL_APP_URL}/portal/cases/${rows[0].public_uuid}`,
                 appUrl: EMAIL_APP_URL,
               }),
             });
@@ -9646,22 +11402,26 @@ export function createServer() {
   app.post(
     "/api/cases/:publicUuid/documents",
     dbUnavailable,
-    requireStaff,
+    requireStaffOrLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
-        if (!canMutateCaseSection(req.auth?.role, "documents")) {
-          return res.status(403).json({ error: "Insufficient permissions" });
-        }
         if (!process.env.BLOB_READ_WRITE_TOKEN) {
           return res.status(503).json({
             error: "BLOB_READ_WRITE_TOKEN not configured",
           });
         }
+        const isLawFirm = req.auth!.actor === "law_firm";
+        if (!isLawFirm && !canMutateCaseSection(req.auth?.role, "documents")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        if (!(await assertLawFirmCanMutate(req.auth!, res))) return;
         const body = req.body as CreateCaseDocumentRequest;
         const title = String(body?.title || "").trim();
         const fileName = String(body?.fileName || "").trim();
         const base64 = String(body?.data || "");
-        const categoryParsed = parseRequiredDocumentCategory(body.category);
+        const categoryParsed = isLawFirm
+          ? parseClientUploadCategory(body.category)
+          : parseRequiredDocumentCategory(body.category);
         if (categoryParsed.ok === false) {
           return res.status(400).json({ error: categoryParsed.error });
         }
@@ -9680,6 +11440,20 @@ export function createServer() {
         if (rows.length === 0) {
           return res.status(404).json({ error: "Case not found" });
         }
+        if (isLawFirm) {
+          if (!(await lawFirmOwnsCaseRow(req.auth!, rows[0]))) {
+            return res.status(404).json({ error: "Case not found" });
+          }
+          const lockCheck = await assertLawFirmCanUploadCategory({
+            caseId: Number(rows[0].id),
+            category,
+          });
+          if (lockCheck.ok === false) {
+            return res.status(lockCheck.status).json({ error: lockCheck.error });
+          }
+        } else if (!(await staffCanAccessCaseRow(req.auth!, rows[0]))) {
+          return res.status(404).json({ error: "Case not found" });
+        }
 
         const buffer = Buffer.from(base64, "base64");
         if (buffer.length === 0 || buffer.length > DMS_MAX_FILE_BYTES) {
@@ -9688,6 +11462,73 @@ export function createServer() {
         if (shouldUseDirectBlobUpload(buffer.length)) {
           return res.status(413).json({
             error: "File too large for JSON upload; use direct blob upload",
+          });
+        }
+
+        if (isLawFirm) {
+          const caseRow = rows[0];
+          const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const pathname = `client-cases/${caseRow.id}/${Date.now()}-${safeName}`;
+          const blob = await putPrivateBlob(
+            pathname,
+            buffer,
+            body.contentType || undefined,
+          );
+          const docUuid = generatePublicUuid();
+          const [docResult] = await db.query<ResultSetHeader>(
+            `INSERT INTO documents
+               (public_uuid, case_id, category, title, current_version, status,
+                uploaded_by, uploaded_by_law_firm_user_id)
+             VALUES (?, ?, ?, ?, 1, 'uploaded', NULL, ?)`,
+            [docUuid, caseRow.id, category, title, req.auth!.id],
+          );
+          await db.query<ResultSetHeader>(
+            `INSERT INTO document_versions
+               (document_id, version_number, storage_key, file_name, mime_type, file_size_bytes, uploaded_by)
+             VALUES (?, 1, ?, ?, ?, ?, NULL)`,
+            [
+              docResult.insertId,
+              blob.url,
+              fileName,
+              body.contentType || "application/octet-stream",
+              buffer.length,
+            ],
+          );
+          const staffRecipients = new Set<number>();
+          const coordinator = await resolveCoordinatorOrAdmin(caseRow);
+          if (coordinator != null) staffRecipients.add(coordinator);
+          if (caseRow.assigned_expert_id != null) {
+            staffRecipients.add(Number(caseRow.assigned_expert_id));
+          }
+          for (const recipientId of staffRecipients) {
+            await createNotification({
+              recipientActor: "staff",
+              recipientId,
+              caseId: Number(caseRow.id),
+              type: "general",
+              title: `Client document · ${caseRow.case_number}`,
+              body: `Law firm uploaded "${title}" (${category}).`,
+              caseNumber: String(caseRow.case_number),
+              caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
+            });
+          }
+          await maybeStartTenDayClock(caseRow, coordinator);
+          await notifyMissingDocumentsIfNeeded(caseRow);
+          await maybeCompleteIntakeCorrectionDeadline(Number(caseRow.id));
+          return res.status(201).json({
+            document: {
+              id: docResult.insertId,
+              publicUuid: docUuid,
+              category,
+              title,
+              status: "uploaded",
+              currentVersion: 1,
+              fileName,
+              mimeType: body.contentType || null,
+              storageKey: await signBlobUrlForClient(blob.url),
+              fileSizeBytes: buffer.length,
+              createdAt: new Date().toISOString(),
+            } satisfies CaseDocumentItem,
           });
         }
 
@@ -9716,29 +11557,54 @@ export function createServer() {
   app.post(
     "/api/cases/:publicUuid/documents/from-blob",
     dbUnavailable,
-    requireStaff,
+    requireStaffOrLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
-        if (!canMutateCaseSection(req.auth?.role, "documents")) {
-          return res.status(403).json({ error: "Insufficient permissions" });
-        }
         if (!process.env.BLOB_READ_WRITE_TOKEN) {
           return res.status(503).json({
             error: "BLOB_READ_WRITE_TOKEN not configured",
           });
         }
+        const isLawFirm = req.auth!.actor === "law_firm";
+        if (!isLawFirm && !canMutateCaseSection(req.auth?.role, "documents")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        if (!(await assertLawFirmCanMutate(req.auth!, res))) return;
         const casePublicUuid = String(req.params.publicUuid);
-        const caseRow = await findStaffAccessibleCase(req, casePublicUuid);
-        if (!caseRow) {
+        const db = getPool();
+        const [caseRows] = await db.query<RowDataPacket[]>(
+          `SELECT * FROM cases WHERE public_uuid = ? AND deleted_at IS NULL LIMIT 1`,
+          [casePublicUuid],
+        );
+        if (caseRows.length === 0) {
+          return res.status(404).json({ error: "Case not found" });
+        }
+        const caseRow = caseRows[0];
+        if (isLawFirm) {
+          if (!(await lawFirmOwnsCaseRow(req.auth!, caseRow))) {
+            return res.status(404).json({ error: "Case not found" });
+          }
+        } else if (!(await staffCanAccessCaseRow(req.auth!, caseRow))) {
           return res.status(404).json({ error: "Case not found" });
         }
         const body = req.body as CreateCaseDocumentFromBlobRequest;
-        const categoryParsed = parseRequiredDocumentCategory(body.category);
+        const categoryParsed = isLawFirm
+          ? parseClientUploadCategory(body.category)
+          : parseRequiredDocumentCategory(body.category);
         if (categoryParsed.ok === false) {
           return res.status(400).json({ error: categoryParsed.error });
         }
+        if (isLawFirm) {
+          const lockCheck = await assertLawFirmCanUploadCategory({
+            caseId: Number(caseRow.id),
+            category: categoryParsed.value,
+          });
+          if (lockCheck.ok === false) {
+            return res.status(lockCheck.status).json({ error: lockCheck.error });
+          }
+        }
         const validated = validateFromBlobDocument(body, {
-          actor: "staff",
+          actor: isLawFirm ? "law_firm" : "staff",
           casePublicUuid,
           maxFileBytes: DMS_MAX_FILE_BYTES,
           isAllowedMime: isAllowedDmsMime,
@@ -9764,10 +11630,35 @@ export function createServer() {
           storageKey: validated.value.storageKey,
           fileSizeBytes: inspected.size,
           category: categoryParsed.value,
-          uploadedByStaffId: req.auth!.id,
+          uploadedByStaffId: isLawFirm ? null : req.auth!.id,
+          uploadedByLawFirmUserId: isLawFirm ? req.auth!.id : null,
         });
-        await notifyMissingDocumentsIfNeeded(caseRow);
-        await maybeStartTenDayClock(caseRow, req.auth!.id);
+        if (isLawFirm) {
+          const staffRecipients = new Set<number>();
+          const coordinator = await resolveCoordinatorOrAdmin(caseRow);
+          if (coordinator != null) staffRecipients.add(coordinator);
+          if (caseRow.assigned_expert_id != null) {
+            staffRecipients.add(Number(caseRow.assigned_expert_id));
+          }
+          for (const recipientId of staffRecipients) {
+            await createNotification({
+              recipientActor: "staff",
+              recipientId,
+              caseId: Number(caseRow.id),
+              type: "general",
+              title: `Client document · ${caseRow.case_number}`,
+              body: `Law firm uploaded "${document.title}" (${categoryParsed.value}).`,
+              caseNumber: String(caseRow.case_number),
+              caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
+            });
+          }
+          await maybeStartTenDayClock(caseRow, coordinator);
+          await notifyMissingDocumentsIfNeeded(caseRow);
+          await maybeCompleteIntakeCorrectionDeadline(Number(caseRow.id));
+        } else {
+          await notifyMissingDocumentsIfNeeded(caseRow);
+          await maybeStartTenDayClock(caseRow, req.auth!.id);
+        }
         return res.status(201).json({ document });
       } catch (err) {
         apiLogger.error("cases documents from-blob failed", err);
@@ -9779,16 +11670,14 @@ export function createServer() {
   app.patch(
     "/api/cases/:publicUuid/documents/:documentUuid",
     dbUnavailable,
-    requireStaff,
+    requireStaffOrLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
-        if (!canMutateCaseSection(req.auth?.role, "documents")) {
+        const isLawFirm = req.auth!.actor === "law_firm";
+        if (!isLawFirm && !canMutateCaseSection(req.auth?.role, "documents")) {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
-        const parsed = parseUpdateDocumentCategory(req.body);
-        if (parsed.ok === false) {
-          return res.status(400).json({ error: parsed.error });
-        }
+        if (!(await assertLawFirmCanMutate(req.auth!, res))) return;
         const db = getPool();
         const [cases] = await db.query<RowDataPacket[]>(
           `SELECT * FROM cases WHERE public_uuid = ? AND deleted_at IS NULL LIMIT 1`,
@@ -9797,8 +11686,15 @@ export function createServer() {
         if (cases.length === 0) {
           return res.status(404).json({ error: "Case not found" });
         }
+        if (isLawFirm) {
+          if (!(await lawFirmOwnsCaseRow(req.auth!, cases[0]))) {
+            return res.status(404).json({ error: "Case not found" });
+          }
+        } else if (!(await staffCanAccessCaseRow(req.auth!, cases[0]))) {
+          return res.status(404).json({ error: "Case not found" });
+        }
         const [docs] = await db.query<RowDataPacket[]>(
-          `SELECT id FROM documents
+          `SELECT id, category, status FROM documents
            WHERE public_uuid = ? AND case_id = ? AND deleted_at IS NULL
            LIMIT 1`,
           [req.params.documentUuid, cases[0].id],
@@ -9806,13 +11702,28 @@ export function createServer() {
         if (docs.length === 0) {
           return res.status(404).json({ error: "Document not found" });
         }
+        if (isLawFirm) {
+          if (!canLawFirmMutateDocument({ status: docs[0].status as string })) {
+            return res.status(409).json({
+              error: "Document is locked until admin requests correction",
+            });
+          }
+        }
+        const parsed = parseUpdateDocumentCategory(req.body, {
+          clientPortal: isLawFirm,
+          currentCategory: docs[0].category,
+        });
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
         await db.query<ResultSetHeader>(
           `UPDATE documents SET category = ? WHERE id = ?`,
           [parsed.value.category, docs[0].id],
         );
         const [updated] = await db.query<RowDataPacket[]>(
           `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
-                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
+                  d.approved_at, d.rejection_reason, d.correction_requested_at, d.created_at,
+                  v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
                   v.ocr_status, v.ocr_text, v.ocr_processed_at
            FROM documents d
            LEFT JOIN document_versions v
@@ -9822,8 +11733,20 @@ export function createServer() {
           [docs[0].id],
         );
         await notifyMissingDocumentsIfNeeded(cases[0]);
-        await maybeStartTenDayClock(cases[0], req.auth!.id);
-        return res.json({ document: mapCaseDocumentItem(updated[0]) });
+        if (!isLawFirm) {
+          await maybeStartTenDayClock(cases[0], req.auth!.id);
+        }
+        const document = mapCaseDocumentItem(updated[0]);
+        return res.json({
+          document: isLawFirm
+            ? {
+                ...document,
+                storageKey: document.storageKey
+                  ? await signBlobUrlForClient(document.storageKey)
+                  : null,
+              }
+            : document,
+        });
       } catch (err) {
         apiLogger.error("cases document category patch failed", err);
         return res.status(500).json({ error: "Internal server error" });
@@ -9910,7 +11833,7 @@ export function createServer() {
           const mimeType = file.contentType || "application/octet-stream";
           const ocr = await resolveUploadOcrFields(mimeType, file.buffer);
           const safeName = file.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const pathname = `cases/${rows[0].id}/${Date.now()}-${safeName}`;
+        const pathname = `cases/${rows[0].id}/${Date.now()}-${safeName}`;
           const blob = await putPrivateBlob(
             pathname,
             file.buffer,
@@ -9934,39 +11857,39 @@ export function createServer() {
         try {
           await conn.beginTransaction();
           for (const file of staged) {
-            const docUuid = generatePublicUuid();
+        const docUuid = generatePublicUuid();
             const [docResult] = await conn.query<ResultSetHeader>(
-              `INSERT INTO documents
-                 (public_uuid, case_id, category, title, current_version, status, uploaded_by)
-               VALUES (?, ?, ?, ?, 1, 'uploaded', ?)`,
+          `INSERT INTO documents
+             (public_uuid, case_id, category, title, current_version, status, uploaded_by)
+           VALUES (?, ?, ?, ?, 1, 'uploaded', ?)`,
               [docUuid, rows[0].id, file.category, file.title, req.auth!.id],
-            );
+        );
             await conn.query<ResultSetHeader>(
-              `INSERT INTO document_versions
+          `INSERT INTO document_versions
                  (document_id, version_number, storage_key, file_name, mime_type, file_size_bytes,
                   uploaded_by, ocr_text, ocr_status, ocr_processed_at)
                VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [
-                docResult.insertId,
+          [
+            docResult.insertId,
                 file.storageKey,
                 file.fileName,
                 file.mimeType,
                 file.buffer.length,
-                req.auth!.id,
+            req.auth!.id,
                 file.ocrText,
                 file.ocrStatus,
                 file.ocrProcessedAt
                   ? toMysqlDateTimeUtc(file.ocrProcessedAt)
                   : null,
-              ],
-            );
+          ],
+        );
             documents.push({
-              id: docResult.insertId,
-              publicUuid: docUuid,
+          id: docResult.insertId,
+          publicUuid: docUuid,
               category: file.category,
               title: file.title,
-              status: "uploaded",
-              currentVersion: 1,
+          status: "uploaded",
+          currentVersion: 1,
               fileName: file.fileName,
               mimeType: file.mimeType,
               storageKey: await signBlobUrlForClient(file.storageKey),
@@ -9976,7 +11899,7 @@ export function createServer() {
               ocrProcessedAt: file.ocrProcessedAt
                 ? file.ocrProcessedAt.toISOString()
                 : null,
-              createdAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
             });
           }
           await conn.commit();
@@ -10016,7 +11939,8 @@ export function createServer() {
         const db = getPool();
         const [rows] = await db.query<RowDataPacket[]>(
           `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
-                  d.created_at, v.id AS version_id, v.file_name, v.mime_type, v.storage_key,
+                  d.approved_at, d.rejection_reason, d.correction_requested_at, d.created_at,
+                  v.id AS version_id, v.file_name, v.mime_type, v.storage_key,
                   v.file_size_bytes, v.ocr_status, v.ocr_text, v.ocr_processed_at
            FROM documents d
            JOIN cases c ON c.id = d.case_id
@@ -10234,7 +12158,7 @@ export function createServer() {
                     )
                     OR (
                       c.status IN (
-                        'court_acceptance', 'court_delivery', 'legal_validation'
+                        'court_acceptance', 'validation_delivery'
                       )
                       AND (
                         SELECT COUNT(DISTINCT d.category)
@@ -10775,6 +12699,7 @@ export function createServer() {
         );
         const q = String(req.query.q || "").trim();
         const status = String(req.query.status || "").trim();
+        const caseIdRaw = req.query.caseId;
         const sortCol = pickSortColumn(
           req.query.sortBy,
           {
@@ -10800,6 +12725,14 @@ export function createServer() {
         if (status) {
           where.push("status = ?");
           params.push(status);
+        }
+        if (caseIdRaw != null && String(caseIdRaw).trim() !== "") {
+          const caseId = Number(caseIdRaw);
+          if (!Number.isInteger(caseId) || caseId <= 0) {
+            return res.status(400).json({ error: "Invalid caseId" });
+          }
+          where.push("case_id = ?");
+          params.push(caseId);
         }
         const whereSql = where.join(" AND ");
         const db = getPool();
@@ -11022,6 +12955,85 @@ export function createServer() {
         const q = String(req.query.q || "").trim();
         const role = String(req.query.role || "").trim();
         const status = String(req.query.status || "").trim();
+        const roster =
+          String(req.query.roster || "staff").trim() === "firm"
+            ? "firm"
+            : "staff";
+        const sortDir = parseSortDir(req.query.sortDir);
+        const db = getPool();
+
+        if (roster === "firm") {
+          const sortCol = pickSortColumn(
+            req.query.sortBy,
+            {
+              email: "u.email",
+              first_name: "u.first_name",
+              last_name: "u.last_name",
+              status: "u.status",
+              created_at: "u.created_at",
+              last_login_at: "u.last_login_at",
+            },
+            "u.created_at",
+          );
+          const where: string[] = [
+            "u.deleted_at IS NULL",
+            "m.deleted_at IS NULL",
+            "f.deleted_at IS NULL",
+          ];
+          const params: unknown[] = [];
+          if (q) {
+            where.push(
+              `(u.email LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ? OR f.name LIKE ?)`,
+            );
+            const like = `%${q}%`;
+            params.push(like, like, like, like);
+          }
+          if (status) {
+            where.push("u.status = ?");
+            params.push(status);
+          }
+          const whereSql = where.join(" AND ");
+          const [countRows] = await db.query<RowDataPacket[]>(
+            `SELECT COUNT(*) AS total
+               FROM law_firm_users u
+               JOIN law_firm_members m ON m.law_firm_user_id = u.id
+               JOIN law_firms f ON f.id = m.law_firm_id
+              WHERE ${whereSql}`,
+            params,
+          );
+          const total = Number(countRows[0]?.total || 0);
+          const [rows] = await db.query<RowDataPacket[]>(
+            `SELECT u.id, u.public_uuid, u.email, u.first_name, u.last_name, u.status,
+                    u.last_login_at, m.member_role, m.law_firm_id, f.name AS firm_name
+               FROM law_firm_users u
+               JOIN law_firm_members m ON m.law_firm_user_id = u.id
+               JOIN law_firms f ON f.id = m.law_firm_id
+              WHERE ${whereSql}
+              ORDER BY ${sortCol} ${sortDir}
+              LIMIT ? OFFSET ?`,
+            [...params, limit, offset],
+          );
+          const members: TeamMemberItem[] = rows.map((r) => ({
+            id: r.id as number,
+            publicUuid: r.public_uuid as string,
+            email: r.email as string,
+            firstName: r.first_name as string,
+            lastName: r.last_name as string,
+            role: "law_firm_user",
+            status: r.status as UserStatus,
+            lastLoginAt: toIso(r.last_login_at),
+            memberRole: (isLawFirmMemberRole(String(r.member_role))
+              ? String(r.member_role)
+              : "member") as TeamMemberItem["memberRole"],
+            lawFirmId: Number(r.law_firm_id),
+            lawFirmName: r.firm_name ? String(r.firm_name) : null,
+          }));
+          return res.json({
+            members,
+            pagination: buildPagination(page, limit, total),
+          } satisfies TeamListResponse);
+        }
+
         const sortCol = pickSortColumn(
           req.query.sortBy,
           {
@@ -11035,7 +13047,6 @@ export function createServer() {
           },
           "created_at",
         );
-        const sortDir = parseSortDir(req.query.sortDir);
         const where: string[] = ["deleted_at IS NULL"];
         const params: unknown[] = [];
         if (q) {
@@ -11052,7 +13063,6 @@ export function createServer() {
           params.push(status);
         }
         const whereSql = where.join(" AND ");
-        const db = getPool();
         const [countRows] = await db.query<RowDataPacket[]>(
           `SELECT COUNT(*) AS total FROM staff_users WHERE ${whereSql}`,
           params,
@@ -11101,6 +13111,8 @@ export function createServer() {
           lastName: String(body?.lastName || ""),
           role: String(body?.role || ""),
           lawFirmId: body?.lawFirmId ?? null,
+          createLawFirm: body?.createLawFirm ?? null,
+          memberRole: body?.memberRole ?? null,
         });
         if (invite.ok === false) {
           return res.status(400).json({ error: invite.error });
@@ -11111,46 +13123,160 @@ export function createServer() {
             .status(400)
             .json({ error: "email, firstName, lastName and role required" });
         }
-        const { firstName, lastName, role, lawFirmId } = invite;
+        const {
+          firstName,
+          lastName,
+          role,
+          lawFirmId,
+          createLawFirm,
+          memberRole,
+          isPrimaryContact,
+        } = invite;
         const inviteLocale = resolveInviteLocale(
           (body as InviteTeamMemberRequest).preferredLanguage,
         );
         const db = getPool();
         const publicUuid = generatePublicUuid();
+        const actorRows = await lookupEmailActorRows(email);
 
         if (role === "law_firm_user") {
-          const [existing] = await db.query<RowDataPacket[]>(
-            `SELECT id FROM law_firm_users WHERE email = ? LIMIT 1`,
-            [email],
-          );
-          if (existing.length > 0) {
-            return res.status(409).json({ error: "Email already registered" });
+          const occupancy = resolveEmailInviteOccupancy({
+            intendingActor: "law_firm",
+            staff: actorRows.staff,
+            lawFirm: actorRows.lawFirm,
+          });
+          if (occupancy.ok === false) {
+            return res.status(409).json({ error: occupancy.error });
           }
-          const [result] = await db.query<ResultSetHeader>(
-            `INSERT INTO law_firm_users
-               (public_uuid, email, first_name, last_name, phone, status, preferred_language)
-             VALUES (?, ?, ?, ?, ?, 'invited', ?)`,
-            [
-              publicUuid,
-              email,
-              firstName,
-              lastName,
-              body.phone?.trim() || null,
-              inviteLocale,
-            ],
-          );
-          await db.query<ResultSetHeader>(
-            `INSERT INTO law_firm_members (law_firm_id, law_firm_user_id, member_role)
-             VALUES (?, ?, 'member')`,
-            [lawFirmId, result.insertId],
-          );
 
+          let resolvedFirmId = lawFirmId;
           let firmName: string | null = null;
-          const [firms] = await db.query<RowDataPacket[]>(
-            `SELECT name FROM law_firms WHERE id = ? LIMIT 1`,
-            [lawFirmId],
-          );
-          firmName = firms[0]?.name ? String(firms[0].name) : null;
+          if (createLawFirm) {
+            const firmUuid = generatePublicUuid();
+            const [firmIns] = await db.query<ResultSetHeader>(
+              `INSERT INTO law_firms
+                 (public_uuid, name, email, city, state, default_court_name, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+              [
+                firmUuid,
+                createLawFirm.name,
+                createLawFirm.email || email,
+                createLawFirm.city || null,
+                createLawFirm.state || null,
+                createLawFirm.defaultCourtName || null,
+              ],
+            );
+            resolvedFirmId = firmIns.insertId;
+            firmName = createLawFirm.name;
+          } else if (resolvedFirmId) {
+            const [firms] = await db.query<RowDataPacket[]>(
+              `SELECT id, name FROM law_firms
+               WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+              [resolvedFirmId],
+            );
+            if (!firms[0]) {
+              return res.status(400).json({ error: "Law firm not found" });
+            }
+            firmName = firms[0].name ? String(firms[0].name) : null;
+          }
+          if (!resolvedFirmId) {
+            return res.status(400).json({ error: "Law firm not found" });
+          }
+
+          let userId: number;
+          let userPublicUuid = publicUuid;
+          if (occupancy.action === "reactivate") {
+            userId = occupancy.id;
+            const [existing] = await db.query<RowDataPacket[]>(
+              `SELECT public_uuid FROM law_firm_users WHERE id = ? LIMIT 1`,
+              [userId],
+            );
+            userPublicUuid = String(existing[0]?.public_uuid || publicUuid);
+            await db.query<ResultSetHeader>(
+              `UPDATE law_firm_users
+               SET deleted_at = NULL,
+                   first_name = ?,
+                   last_name = ?,
+                   phone = ?,
+                   status = 'invited',
+                   preferred_language = ?,
+                   updated_at = NOW()
+               WHERE id = ?`,
+              [
+                firstName,
+                lastName,
+                body.phone?.trim() || null,
+                inviteLocale,
+                userId,
+              ],
+            );
+            await db.query<ResultSetHeader>(
+              `UPDATE law_firm_members SET deleted_at = NOW()
+               WHERE law_firm_user_id = ?
+                 AND law_firm_id <> ?
+                 AND deleted_at IS NULL`,
+              [userId, resolvedFirmId],
+            );
+            const [memRows] = await db.query<RowDataPacket[]>(
+              `SELECT id FROM law_firm_members
+               WHERE law_firm_user_id = ? AND law_firm_id = ?
+               LIMIT 1`,
+              [userId, resolvedFirmId],
+            );
+            if (memRows[0]) {
+              await db.query<ResultSetHeader>(
+                `UPDATE law_firm_members
+                 SET deleted_at = NULL,
+                     member_role = ?,
+                     is_primary_contact = ?,
+                     updated_at = NOW()
+                 WHERE id = ?`,
+                [
+                  memberRole || "member",
+                  isPrimaryContact ? 1 : 0,
+                  memRows[0].id,
+                ],
+              );
+            } else {
+              await db.query<ResultSetHeader>(
+                `INSERT INTO law_firm_members
+                   (law_firm_id, law_firm_user_id, member_role, is_primary_contact)
+                 VALUES (?, ?, ?, ?)`,
+                [
+                  resolvedFirmId,
+                  userId,
+                  memberRole || "member",
+                  isPrimaryContact ? 1 : 0,
+                ],
+              );
+            }
+          } else {
+            const [result] = await db.query<ResultSetHeader>(
+              `INSERT INTO law_firm_users
+                 (public_uuid, email, first_name, last_name, phone, status, preferred_language)
+               VALUES (?, ?, ?, ?, ?, 'invited', ?)`,
+              [
+                publicUuid,
+                email,
+                firstName,
+                lastName,
+                body.phone?.trim() || null,
+                inviteLocale,
+              ],
+            );
+            userId = result.insertId;
+            await db.query<ResultSetHeader>(
+              `INSERT INTO law_firm_members
+                 (law_firm_id, law_firm_user_id, member_role, is_primary_contact)
+               VALUES (?, ?, ?, ?)`,
+              [
+                resolvedFirmId,
+                userId,
+                memberRole || "member",
+                isPrimaryContact ? 1 : 0,
+              ],
+            );
+          }
 
           await safeSendEmail(
             email,
@@ -11165,39 +13291,76 @@ export function createServer() {
 
           return res.status(201).json({
             member: {
-              id: result.insertId,
-              publicUuid,
+              id: userId,
+              publicUuid: userPublicUuid,
               email,
               firstName,
               lastName,
               role: "law_firm_user",
               status: "invited" as UserStatus,
               lastLoginAt: null,
+              memberRole: memberRole || "member",
+              lawFirmId: resolvedFirmId,
+              lawFirmName: firmName,
             },
           });
         }
 
-        const [existing] = await db.query<RowDataPacket[]>(
-          `SELECT id FROM staff_users WHERE email = ? LIMIT 1`,
-          [email],
-        );
-        if (existing.length > 0) {
-          return res.status(409).json({ error: "Email already registered" });
+        const occupancy = resolveEmailInviteOccupancy({
+          intendingActor: "staff",
+          staff: actorRows.staff,
+          lawFirm: actorRows.lawFirm,
+        });
+        if (occupancy.ok === false) {
+          return res.status(409).json({ error: occupancy.error });
         }
-        const [result] = await db.query<ResultSetHeader>(
-          `INSERT INTO staff_users
-             (public_uuid, email, first_name, last_name, phone, role, status, preferred_language)
-           VALUES (?, ?, ?, ?, ?, ?, 'invited', ?)`,
-          [
-            publicUuid,
-            email,
-            firstName,
-            lastName,
-            body.phone?.trim() || null,
-            role,
-            inviteLocale,
-          ],
-        );
+
+        let staffId: number;
+        let staffPublicUuid = publicUuid;
+        if (occupancy.action === "reactivate") {
+          staffId = occupancy.id;
+          const [existing] = await db.query<RowDataPacket[]>(
+            `SELECT public_uuid FROM staff_users WHERE id = ? LIMIT 1`,
+            [staffId],
+          );
+          staffPublicUuid = String(existing[0]?.public_uuid || publicUuid);
+          await db.query<ResultSetHeader>(
+            `UPDATE staff_users
+             SET deleted_at = NULL,
+                 first_name = ?,
+                 last_name = ?,
+                 phone = ?,
+                 role = ?,
+                 status = 'invited',
+                 preferred_language = ?,
+                 updated_at = NOW()
+             WHERE id = ?`,
+            [
+              firstName,
+              lastName,
+              body.phone?.trim() || null,
+              role,
+              inviteLocale,
+              staffId,
+            ],
+          );
+        } else {
+          const [result] = await db.query<ResultSetHeader>(
+            `INSERT INTO staff_users
+               (public_uuid, email, first_name, last_name, phone, role, status, preferred_language)
+             VALUES (?, ?, ?, ?, ?, ?, 'invited', ?)`,
+            [
+              publicUuid,
+              email,
+              firstName,
+              lastName,
+              body.phone?.trim() || null,
+              role,
+              inviteLocale,
+            ],
+          );
+          staffId = result.insertId;
+        }
 
         await safeSendEmail(
           email,
@@ -11211,8 +13374,8 @@ export function createServer() {
         );
 
         const member: TeamMemberItem = {
-          id: result.insertId,
-          publicUuid,
+          id: staffId,
+          publicUuid: staffPublicUuid,
           email,
           firstName,
           lastName,
@@ -11724,10 +13887,10 @@ export function createServer() {
           caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
           email: assignee
             ? buildAssignmentEmail({
-                locale: assignee.locale,
-                firstName: assignee.firstName,
-                caseNumber: String(caseRow.case_number),
-                caseTitle: String(caseRow.title || caseRow.case_number),
+              locale: assignee.locale,
+              firstName: assignee.firstName,
+              caseNumber: String(caseRow.case_number),
+              caseTitle: String(caseRow.title || caseRow.case_number),
                 role: String(role),
                 caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
                 appUrl: EMAIL_APP_URL,
@@ -11884,6 +14047,287 @@ export function createServer() {
     },
   );
 
+  app.post(
+    "/api/cases/:publicUuid/handoff/confirm",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (
+          req.auth?.role !== "admin"
+        ) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const caseRow = await findStaffAccessibleCase(req, 
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        const db = getPool();
+        await db.query<ResultSetHeader>(
+          `UPDATE cases
+           SET documents_handoff_confirmed_at = COALESCE(documents_handoff_confirmed_at, NOW()),
+               documents_handoff_confirmed_by = COALESCE(documents_handoff_confirmed_by, ?)
+           WHERE id = ?`,
+          [req.auth!.id, caseRow.id],
+        );
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT public_uuid, documents_handoff_confirmed_at, updated_at
+           FROM cases WHERE id = ? LIMIT 1`,
+          [caseRow.id],
+        );
+        return res.json({
+          case: {
+            publicUuid: updated[0].public_uuid as string,
+            documentsHandoffConfirmedAt: toIso(
+              updated[0].documents_handoff_confirmed_at,
+            ),
+            updatedAt: toIso(updated[0].updated_at) || new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        apiLogger.error("handoff confirm failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/cases/:publicUuid/documents/:documentUuid/approve",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canApproveIntakeDocument(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const caseRow = await findStaffAccessibleCase(
+          req,
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        const db = getPool();
+        const [docs] = await db.query<RowDataPacket[]>(
+          `SELECT id, status, category FROM documents
+           WHERE public_uuid = ? AND case_id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [req.params.documentUuid, caseRow.id],
+        );
+        if (docs.length === 0) {
+          return res.status(404).json({ error: "Document not found" });
+        }
+        if (!isIntakeDocumentCategory(String(docs[0].category))) {
+          return res.status(400).json({
+            error: "Only intake documents can be approved here",
+          });
+        }
+        if (!documentIsApprovable(docs[0].status as string)) {
+          return res.status(409).json({
+            error: `Document cannot be approved from status ${docs[0].status}`,
+          });
+        }
+        await db.query<ResultSetHeader>(
+          `UPDATE documents
+           SET status = 'approved',
+               approved_by = ?,
+               approved_at = NOW(),
+               rejection_reason = NULL,
+               correction_requested_at = NULL,
+               correction_requested_by = NULL
+           WHERE id = ?`,
+          [req.auth!.id, docs[0].id],
+        );
+        const document = await fetchMappedCaseDocument(Number(docs[0].id));
+        return res.json({ document });
+      } catch (err) {
+        apiLogger.error("document approve failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/cases/:publicUuid/documents/:documentUuid/reject",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canRejectIntakeDocument(req.auth?.role)) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const parsed = parseDocumentRejectBody(req.body);
+        if (parsed.ok === false) {
+          return res.status(400).json({ error: parsed.error });
+        }
+        const caseRow = await findStaffAccessibleCase(
+          req,
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        const db = getPool();
+        const [docs] = await db.query<RowDataPacket[]>(
+          `SELECT id, status, category FROM documents
+           WHERE public_uuid = ? AND case_id = ? AND deleted_at IS NULL
+           LIMIT 1`,
+          [req.params.documentUuid, caseRow.id],
+        );
+        if (docs.length === 0) {
+          return res.status(404).json({ error: "Document not found" });
+        }
+        if (!documentIsRejectable(docs[0].status as string)) {
+          return res.status(409).json({
+            error: `Document cannot be rejected from status ${docs[0].status}`,
+          });
+        }
+        const category = String(docs[0].category);
+        if (!isIntakeDocumentCategory(category)) {
+          return res.status(400).json({
+            error: "Only intake documents can request correction here",
+          });
+        }
+        const conn = await db.getConnection();
+        try {
+          await conn.beginTransaction();
+          await conn.query<ResultSetHeader>(
+            `UPDATE documents
+             SET status = 'rejected',
+                 approved_by = NULL,
+                 approved_at = NULL,
+                 rejection_reason = ?,
+                 correction_requested_at = NOW(),
+                 correction_requested_by = ?
+             WHERE id = ?`,
+            [parsed.reason, req.auth!.id, docs[0].id],
+          );
+          await clearExpedienteApproval(Number(caseRow.id), conn);
+          const spec = intakeCorrectionDeadlineSpec();
+          await ensureTypedDeadline({
+            caseId: Number(caseRow.id),
+            deadlineType: spec.deadlineType,
+            title: spec.title,
+            businessDays: spec.businessDays,
+            actorId: req.auth!.id,
+            conn,
+          });
+          await conn.commit();
+        } catch (txnErr) {
+          await conn.rollback();
+          throw txnErr;
+        } finally {
+          conn.release();
+        }
+        await notifyLawFirmIntakeCorrection({
+          caseRow,
+          category,
+          reason: parsed.reason,
+        });
+        const document = await fetchMappedCaseDocument(Number(docs[0].id));
+        return res.json({ document });
+      } catch (err) {
+        apiLogger.error("document reject failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/cases/:publicUuid/expediente/approve",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const caseRow = await findStaffAccessibleCase(
+          req,
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        const docs = await loadCaseDocumentApprovalRows(Number(caseRow.id));
+        const gate = canApproveExpedienteNow({
+          role: req.auth?.role,
+          docs,
+          alreadyApproved: Boolean(caseRow.expediente_approved_at),
+        });
+        if (gate.ok === false) {
+          const status =
+            gate.code === "forbidden"
+              ? 403
+              : gate.code === "already_approved"
+                ? 409
+                : 400;
+          return res.status(status).json({ error: gate.error, code: gate.code });
+        }
+        const db = getPool();
+        await db.query<ResultSetHeader>(
+          `UPDATE cases
+           SET expediente_approved_at = COALESCE(expediente_approved_at, NOW()),
+               expediente_approved_by = COALESCE(expediente_approved_by, ?)
+           WHERE id = ?`,
+          [req.auth!.id, caseRow.id],
+        );
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT public_uuid, expediente_approved_at, updated_at
+           FROM cases WHERE id = ? LIMIT 1`,
+          [caseRow.id],
+        );
+        return res.json({
+          case: {
+            publicUuid: updated[0].public_uuid as string,
+            expedienteApprovedAt: toIso(updated[0].expediente_approved_at),
+            updatedAt: toIso(updated[0].updated_at) || new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        apiLogger.error("expediente approve failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/cases/:publicUuid/ratification-scheduled",
+    dbUnavailable,
+    requireStaff,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        if (!canMutateCaseSection(req.auth?.role, "documents")) {
+          return res.status(403).json({ error: "Insufficient permissions" });
+        }
+        const body = req.body as { ratificationScheduledAt?: string | null };
+        const caseRow = await findStaffAccessibleCase(req, 
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        const raw = body?.ratificationScheduledAt;
+        const scheduled =
+          raw == null || String(raw).trim() === ""
+            ? null
+            : new Date(String(raw));
+        if (scheduled && Number.isNaN(scheduled.getTime())) {
+          return res.status(400).json({ error: "Invalid ratificationScheduledAt" });
+        }
+        const db = getPool();
+        await db.query<ResultSetHeader>(
+          `UPDATE cases SET ratification_scheduled_at = ? WHERE id = ?`,
+          [scheduled, caseRow.id],
+        );
+        const [updated] = await db.query<RowDataPacket[]>(
+          `SELECT public_uuid, ratification_scheduled_at, updated_at
+           FROM cases WHERE id = ? LIMIT 1`,
+          [caseRow.id],
+        );
+        return res.json({
+          case: {
+            publicUuid: updated[0].public_uuid as string,
+            ratificationScheduledAt: toIso(updated[0].ratification_scheduled_at),
+            updatedAt: toIso(updated[0].updated_at) || new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        apiLogger.error("ratification schedule failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
   // ---- Questionnaires ----
 
   app.post(
@@ -11901,6 +14345,25 @@ export function createServer() {
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const submit = Boolean(body.submit);
+        if (submit) {
+          const dbForDocs = getPool();
+          const [qDocRows] = await dbForDocs.query<RowDataPacket[]>(
+            `SELECT d.id FROM documents d
+             WHERE d.case_id = ?
+               AND d.category = 'questionnaire'
+               AND d.deleted_at IS NULL
+               AND d.status NOT IN ('rejected', 'archived')
+             LIMIT 1`,
+            [caseRow.id],
+          );
+          const contentCheck = validateQuestionnaireSubmitContentInline(
+            body.contentJson ?? null,
+            { hasQuestionnairePdf: qDocRows.length > 0 },
+          );
+          if (contentCheck.ok === false) {
+            return res.status(400).json({ error: contentCheck.error });
+          }
+        }
         const db = getPool();
         const [latestRows] = await db.query<RowDataPacket[]>(
           `SELECT * FROM questionnaires
@@ -11958,32 +14421,32 @@ export function createServer() {
           };
         } else {
           const publicUuid = generatePublicUuid();
-          const [result] = await db.query<ResultSetHeader>(
-            `INSERT INTO questionnaires
-               (public_uuid, case_id, status, content_json, chronology_json,
-                technical_observations, prepared_by, submitted_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              publicUuid,
-              caseRow.id,
+        const [result] = await db.query<ResultSetHeader>(
+          `INSERT INTO questionnaires
+             (public_uuid, case_id, status, content_json, chronology_json,
+              technical_observations, prepared_by, submitted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            publicUuid,
+            caseRow.id,
               nextStatus,
               contentJson,
               chronologyJson,
               observations,
-              req.auth!.id,
-              submit ? new Date() : null,
-            ],
-          );
+            req.auth!.id,
+            submit ? new Date() : null,
+          ],
+        );
           item = {
-            id: result.insertId,
-            publicUuid,
+          id: result.insertId,
+          publicUuid,
             status: nextStatus as QuestionnaireItem["status"],
-            contentJson: body.contentJson || null,
-            chronologyJson: body.chronologyJson || null,
+          contentJson: body.contentJson || null,
+          chronologyJson: body.chronologyJson || null,
             technicalObservations: observations,
-            submittedAt: submit ? new Date().toISOString() : null,
-            createdAt: new Date().toISOString(),
-          };
+          submittedAt: submit ? new Date().toISOString() : null,
+          createdAt: new Date().toISOString(),
+        };
         }
 
         const contentRec = (body.contentJson || null) as Record<
@@ -12020,6 +14483,25 @@ export function createServer() {
             [caseRow.id],
           );
         }
+        if (submit && nextStatus === "grammar_qa") {
+          await openReviewRequest({
+            caseId: caseRow.id as number,
+            entityType: "questionnaire",
+            entityId: item.id,
+            stage: "grammar_qa",
+            requestedBy: req.auth!.id,
+          });
+          await createNotification({
+            recipientActor: "staff",
+            recipientId: req.auth!.id,
+            caseId: caseRow.id as number,
+            type: "qa_requested",
+            title: `Questionnaire QA · ${caseRow.case_number}`,
+            body: "Questionnaire submitted for grammar and data QA (P3).",
+            caseNumber: String(caseRow.case_number),
+            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
+          });
+        }
         return res.status(canReuse ? 200 : 201).json({ questionnaire: item });
       } catch (err) {
         apiLogger.error("questionnaire create failed", err);
@@ -12054,7 +14536,7 @@ export function createServer() {
           return res.status(404).json({ error: "Questionnaire not found" });
         }
         const fromStatus = rows[0].status as QuestionnaireStatus;
-        const check = canTransitionQuestionnaire(fromStatus, toStatus);
+        const check = canDirectPatchQuestionnaireStatus(fromStatus, toStatus);
         if (check.ok === false) {
           return res.status(400).json({ error: check.reason });
         }
@@ -12073,6 +14555,33 @@ export function createServer() {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
 
+        if (toStatus === "grammar_qa") {
+          const [qDocRows] = await db.query<RowDataPacket[]>(
+            `SELECT d.id FROM documents d
+             WHERE d.case_id = ?
+               AND d.category = 'questionnaire'
+               AND d.deleted_at IS NULL
+               AND d.status NOT IN ('rejected', 'archived')
+             LIMIT 1`,
+            [caseRow.id],
+          );
+          let contentJson: unknown = rows[0].content_json;
+          if (typeof contentJson === "string") {
+            try {
+              contentJson = JSON.parse(contentJson);
+            } catch {
+              contentJson = null;
+            }
+          }
+          const contentCheck = validateQuestionnaireSubmitContentInline(
+            contentJson,
+            { hasQuestionnairePdf: qDocRows.length > 0 },
+          );
+          if (contentCheck.ok === false) {
+            return res.status(400).json({ error: contentCheck.error });
+          }
+        }
+
         const fromCaseStatus = caseRow.status as CaseStatus;
         let looped: CaseStatus | null = null;
         const conn = await db.getConnection();
@@ -12087,9 +14596,12 @@ export function createServer() {
              WHERE id = ?`,
             [
               toStatus,
-              toStatus === "submitted" ? new Date() : null,
+              toStatus === "grammar_qa"
+                ? new Date()
+                : null,
               [
                 "legal_review",
+                "grammar_qa",
                 "approved",
                 "changes_requested",
                 "rejected",
@@ -12136,6 +14648,17 @@ export function createServer() {
           conn.release();
         }
 
+        if (shouldOpenGrammarQaReview(toStatus)) {
+          await openReviewRequest({
+            caseId: caseRow.id as number,
+            entityType: "questionnaire",
+            entityId: rows[0].id as number,
+            stage: "grammar_qa",
+            requestedBy: req.auth!.id,
+            notes: body.notes?.trim() || null,
+          });
+        }
+
         if (shouldOpenInternalLegalReview(toStatus)) {
           await openReviewRequest({
             caseId: caseRow.id as number,
@@ -12145,10 +14668,7 @@ export function createServer() {
             requestedBy: req.auth!.id,
             notes: body.notes?.trim() || null,
           });
-        }
-
-        if (toStatus === "approved") {
-          await runAutomationActions(automationOnQuestionnaireApproved(), {
+          await runAutomationActions(automationOnQuestionnaireQaApproved(), {
             caseId: caseRow.id as number,
             lawFirmId:
               caseRow.law_firm_id != null ? Number(caseRow.law_firm_id) : null,
@@ -12156,6 +14676,10 @@ export function createServer() {
             caseNumber: String(caseRow.case_number),
             fallbackRecipientId: req.auth!.id,
           });
+        }
+
+        if (toStatus === "approved") {
+          /* Legal approval (P4) — advance already released at QA (P3). */
         }
 
         if (looped) {
@@ -12186,7 +14710,7 @@ export function createServer() {
             (updated[0].technical_observations as string | null) ?? null,
           submittedAt: toIso(updated[0].submitted_at),
           createdAt: toIso(updated[0].created_at) || new Date().toISOString(),
-          allowedNextStatuses: getAllowedQuestionnaireStatuses(qStatus),
+          allowedNextStatuses: getAllowedQuestionnaireStatusesForDirectPatch(qStatus),
         };
         return res.json({ questionnaire: item });
       } catch (err) {
@@ -12287,7 +14811,16 @@ export function createServer() {
           }
 
           if (entityType === "questionnaire") {
-            const nextQ = questionnaireStatusFromReview(resolved.nextStatus);
+            const nextQ = questionnaireStatusFromReviewStage(
+              stage,
+              resolved.nextStatus,
+            );
+            if (!nextQ) {
+              await conn.rollback();
+              return res.status(400).json({
+                error: "Invalid questionnaire review transition",
+              });
+            }
             await conn.query<ResultSetHeader>(
               `UPDATE questionnaires
                SET status = ?, reviewed_by = ?, reviewed_at = NOW()
@@ -12341,18 +14874,27 @@ export function createServer() {
           conn.release();
         }
 
-        if (
-          entityType === "questionnaire" &&
-          questionnaireStatusFromReview(resolved.nextStatus) === "approved"
-        ) {
-          await runAutomationActions(automationOnQuestionnaireApproved(), {
-            caseId: caseRow.id as number,
-            lawFirmId:
-              caseRow.law_firm_id != null ? Number(caseRow.law_firm_id) : null,
-            actorId: req.auth!.id,
-            caseNumber: String(caseRow.case_number),
-            fallbackRecipientId: req.auth!.id,
-          });
+        if (entityType === "questionnaire") {
+          if (stage === "grammar_qa" && resolved.nextStatus === "approved") {
+            await openReviewRequest({
+              caseId: caseRow.id as number,
+              entityType: "questionnaire",
+              entityId,
+              stage: "internal_legal",
+              requestedBy: req.auth!.id,
+              notes: body.notes?.trim() || null,
+            });
+            await runAutomationActions(automationOnQuestionnaireQaApproved(), {
+              caseId: caseRow.id as number,
+              lawFirmId:
+                caseRow.law_firm_id != null
+                  ? Number(caseRow.law_firm_id)
+                  : null,
+              actorId: req.auth!.id,
+              caseNumber: String(caseRow.case_number),
+              fallbackRecipientId: req.auth!.id,
+            });
+          }
         }
 
         if (looped) {
@@ -12543,6 +15085,21 @@ export function createServer() {
           return res.status(400).json({ error: transition.error });
         }
         const nextStatus = toStatus as InspectionStatus;
+        if (nextStatus === "completed") {
+          const parallelOpts = await softParallelOptsForCaseRow(caseRow);
+          if (
+            !softParallelAllowed(
+              String(caseRow.status),
+              "mark_inspection_complete",
+              parallelOpts,
+            )
+          ) {
+            return res.status(400).json({
+              error: "soft_parallel_blocked",
+              message: softParallelBlockMessage("mark_inspection_complete"),
+            });
+          }
+        }
         await db.query<ResultSetHeader>(
           `UPDATE inspections
            SET status = ?,
@@ -12661,17 +15218,32 @@ export function createServer() {
         if (!canMutateCaseSection(req.auth?.role, "evidence")) {
           return res.status(403).json({ error: "Insufficient permissions" });
         }
+        const caseRow = await findStaffAccessibleCase(
+          req,
+          String(req.params.publicUuid),
+        );
+        if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        {
+          const parallelOpts = await softParallelOptsForCaseRow(caseRow);
+          if (
+            !softParallelAllowed(
+              String(caseRow.status),
+              "upload_field_evidence",
+              parallelOpts,
+            )
+          ) {
+            return res.status(400).json({
+              error: "soft_parallel_blocked",
+              message: softParallelBlockMessage("upload_field_evidence"),
+            });
+          }
+        }
         const body = req.body as CreateEvidenceRequest;
         const validated = validateCreateEvidence(body);
         if (validated.ok === false) {
           return res.status(400).json({ error: validated.error });
         }
         const value = validated.value;
-
-        const caseRow = await findStaffAccessibleCase(req, 
-          String(req.params.publicUuid),
-        );
-        if (!caseRow) return res.status(404).json({ error: "Case not found" });
 
         const db = getPool();
         if (value.inspectionId != null) {
@@ -12837,6 +15409,21 @@ export function createServer() {
           String(req.params.publicUuid),
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
+        {
+          const parallelOpts = await softParallelOptsForCaseRow(caseRow);
+          if (
+            !softParallelAllowed(
+              String(caseRow.status),
+              "draft_logistics_trip",
+              parallelOpts,
+            )
+          ) {
+            return res.status(400).json({
+              error: "soft_parallel_blocked",
+              message: softParallelBlockMessage("draft_logistics_trip"),
+            });
+          }
+        }
         const publicUuid = generatePublicUuid();
         const status = body.status || "planned";
         const db = getPool();
@@ -13003,19 +15590,42 @@ export function createServer() {
         );
         if (!caseRow) return res.status(404).json({ error: "Case not found" });
         const submit = Boolean(body.submit);
+        if (submit) {
+          const [reportDocRows] = await getPool().query<RowDataPacket[]>(
+            `SELECT d.id FROM documents d
+             WHERE d.case_id = ?
+               AND d.category = 'technical_report'
+               AND d.deleted_at IS NULL
+               AND d.status NOT IN ('rejected', 'archived')
+             LIMIT 1`,
+            [caseRow.id],
+          );
+          if (reportDocRows.length === 0) {
+            return res.status(400).json({
+              error: "Technical report PDF required",
+            });
+          }
+        }
         const publicUuid = generatePublicUuid();
         const status: TechnicalReportStatus = submit ? "grammar_qa" : "draft";
+        const photoCatalogJson = body.photoCatalogJson
+          ? JSON.stringify(body.photoCatalogJson)
+          : null;
         const db = getPool();
         const [result] = await db.query<ResultSetHeader>(
           `INSERT INTO technical_reports
              (public_uuid, case_id, status, version_number, investigation_summary,
-              conclusions, authored_by, submitted_at)
-           VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
+              defendant_questionnaire_summary, plaintiff_questionnaire_summary,
+              photo_catalog_json, conclusions, authored_by, submitted_at)
+           VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
           [
             publicUuid,
             caseRow.id,
             status,
             body.investigationSummary?.trim() || null,
+            body.defendantQuestionnaireSummary?.trim() || null,
+            body.plaintiffQuestionnaireSummary?.trim() || null,
+            photoCatalogJson,
             body.conclusions?.trim() || null,
             req.auth!.id,
             submit ? new Date() : null,
@@ -13047,6 +15657,11 @@ export function createServer() {
             status,
             version_number: 1,
             investigation_summary: body.investigationSummary?.trim() || null,
+            defendant_questionnaire_summary:
+              body.defendantQuestionnaireSummary?.trim() || null,
+            plaintiff_questionnaire_summary:
+              body.plaintiffQuestionnaireSummary?.trim() || null,
+            photo_catalog_json: body.photoCatalogJson ?? null,
             conclusions: body.conclusions?.trim() || null,
             submitted_at: submit ? new Date() : null,
             approved_at: null,
@@ -13104,28 +15719,45 @@ export function createServer() {
           return res.status(400).json({ error: check.reason });
         }
 
+        if (toStatus === "grammar_qa") {
+          const [reportDocRows] = await db.query<RowDataPacket[]>(
+            `SELECT d.id FROM documents d
+             WHERE d.case_id = ?
+               AND d.category = 'technical_report'
+               AND d.deleted_at IS NULL
+               AND d.status NOT IN ('rejected', 'archived')
+             LIMIT 1`,
+            [caseRow.id],
+          );
+          if (reportDocRows.length === 0) {
+            return res.status(400).json({
+              error: "Technical report PDF required",
+            });
+          }
+        }
+
         const fromCaseStatus = caseRow.status as CaseStatus;
         let looped: CaseStatus | null = null;
         const conn = await db.getConnection();
         try {
           await conn.beginTransaction();
           await conn.query<ResultSetHeader>(
-            `UPDATE technical_reports
-             SET status = ?,
-                 approved_at = ?,
-                 delivered_at = ?,
-                 submitted_at = COALESCE(submitted_at, ?)
-             WHERE id = ?`,
-            [
-              toStatus,
-              toStatus === "approved" || toStatus === "approved_internal"
-                ? new Date()
-                : rows[0].approved_at,
-              toStatus === "delivered" ? new Date() : rows[0].delivered_at,
-              toStatus === "grammar_qa" ? new Date() : null,
-              rows[0].id,
-            ],
-          );
+          `UPDATE technical_reports
+           SET status = ?,
+               approved_at = ?,
+               delivered_at = ?,
+               submitted_at = COALESCE(submitted_at, ?)
+           WHERE id = ?`,
+          [
+            toStatus,
+            toStatus === "approved" || toStatus === "approved_internal"
+              ? new Date()
+              : rows[0].approved_at,
+            toStatus === "delivered" ? new Date() : rows[0].delivered_at,
+            toStatus === "grammar_qa" ? new Date() : null,
+            rows[0].id,
+          ],
+        );
 
           const leavingStage = reviewStageForReportStatus(fromStatus);
           if (leavingStage) {
@@ -13232,13 +15864,13 @@ export function createServer() {
               body: "A technical report is available in your portal.",
               emailTo: contact.email,
               caseNumber: String(caseRow.case_number),
-              caseUrl: `${EMAIL_APP_URL}/client/cases/${caseRow.public_uuid}`,
+              caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
               email: buildReportDeliveredEmail({
                 locale: contact.locale,
                 firstName: contact.firstName,
                 caseNumber: String(caseRow.case_number),
                 caseTitle: String(caseRow.title || caseRow.case_number),
-                caseUrl: `${EMAIL_APP_URL}/client/cases/${caseRow.public_uuid}`,
+                caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
                 appUrl: EMAIL_APP_URL,
               }),
             });
@@ -13257,412 +15889,13 @@ export function createServer() {
     },
   );
 
-  app.get(
-    "/api/notifications",
-    dbUnavailable,
-    requireAuth,
-    async (req: AuthedRequest, res: Response) => {
-      try {
-        const db = getPool();
-        const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT id, public_uuid, case_id, notification_type, title, body, read_at, created_at
-           FROM notifications
-           WHERE recipient_actor = ? AND recipient_id = ?
-           ORDER BY created_at DESC
-           LIMIT 100`,
-          [req.auth!.actor, req.auth!.id],
-        );
-        const notifications: NotificationItem[] = rows.map((n) => ({
-          id: n.id as number,
-          publicUuid: n.public_uuid as string,
-          caseId: (n.case_id as number | null) ?? null,
-          notificationType: n.notification_type as NotificationType,
-          title: n.title as string,
-          body: n.body as string,
-          readAt: toIso(n.read_at),
-          createdAt: toIso(n.created_at) || new Date().toISOString(),
-        }));
-        return res.json({
-          notifications,
-          unreadCount: notifications.filter((n) => !n.readAt).length,
-        });
-      } catch (err) {
-        apiLogger.error("notifications list failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
   app.post(
-    "/api/notifications/:publicUuid/read",
-    dbUnavailable,
-    requireAuth,
-    async (req: AuthedRequest, res: Response) => {
-      try {
-        const db = getPool();
-        await db.query<ResultSetHeader>(
-          `UPDATE notifications SET read_at = COALESCE(read_at, NOW())
-           WHERE public_uuid = ? AND recipient_actor = ? AND recipient_id = ?`,
-          [req.params.publicUuid, req.auth!.actor, req.auth!.id],
-        );
-        return res.json({ ok: true });
-      } catch (err) {
-        apiLogger.error("notification read failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
-  app.post(
-    "/api/notifications/read-all",
-    dbUnavailable,
-    requireAuth,
-    async (req: AuthedRequest, res: Response) => {
-      try {
-        const db = getPool();
-        await db.query<ResultSetHeader>(
-          `UPDATE notifications SET read_at = NOW()
-           WHERE recipient_actor = ? AND recipient_id = ? AND read_at IS NULL`,
-          [req.auth!.actor, req.auth!.id],
-        );
-        return res.json({ ok: true });
-      } catch (err) {
-        apiLogger.error("notifications read-all failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
-  app.get(
-    "/api/law-firms",
-    dbUnavailable,
-    requireAdmin,
-    async (_req: AuthedRequest, res: Response) => {
-      try {
-        const db = getPool();
-        const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT id, public_uuid, name, email, status, city, state
-           FROM law_firms
-           WHERE deleted_at IS NULL
-           ORDER BY name ASC
-           LIMIT 200`,
-        );
-        const lawFirms: LawFirmSummary[] = rows.map((r) => ({
-          id: r.id as number,
-          publicUuid: r.public_uuid as string,
-          name: r.name as string,
-          email: (r.email as string | null) ?? null,
-          status: r.status as "active" | "inactive",
-          city: (r.city as string | null) ?? null,
-          state: (r.state as string | null) ?? null,
-        }));
-        return res.json({ lawFirms });
-      } catch (err) {
-        apiLogger.error("law firms list failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
-  app.post(
-    "/api/law-firms",
-    dbUnavailable,
-    requireAdmin,
-    async (req: AuthedRequest, res: Response) => {
-      try {
-        const body = req.body as CreateLawFirmRequest;
-        const name = String(body?.name || "").trim();
-        if (!name) return res.status(400).json({ error: "name is required" });
-        const publicUuid = generatePublicUuid();
-        const db = getPool();
-        const [result] = await db.query<ResultSetHeader>(
-          `INSERT INTO law_firms
-             (public_uuid, name, legal_name, email, phone, city, state, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
-          [
-            publicUuid,
-            name,
-            body.legalName?.trim() || null,
-            body.email?.trim() || null,
-            body.phone?.trim() || null,
-            body.city?.trim() || null,
-            body.state?.trim() || null,
-          ],
-        );
-        const lawFirm: LawFirmSummary = {
-          id: result.insertId,
-          publicUuid,
-          name,
-          email: body.email?.trim() || null,
-          status: "active",
-          city: body.city?.trim() || null,
-          state: body.state?.trim() || null,
-        };
-        return res.status(201).json({ lawFirm });
-      } catch (err) {
-        apiLogger.error("law firm create failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
-  // Client (law firm) portal
-  app.get(
-    "/api/client/cases",
+    "/api/cases/:publicUuid/technical-reports/:reportUuid/review",
     dbUnavailable,
     requireLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
-        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
-        if (!lawFirmId) {
-          return res.status(403).json({ error: "No law firm linked to user" });
-        }
-        const db = getPool();
-        const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT id, public_uuid, case_number, title, status, priority,
-                  court_name, property_city, property_state, law_firm_id,
-                  assigned_expert_id, inspection_deadline_at, involves_fatality,
-                  created_at, updated_at
-           FROM cases
-           WHERE law_firm_id = ? AND deleted_at IS NULL
-           ORDER BY created_at DESC
-           LIMIT 200`,
-          [lawFirmId],
-        );
-        return res.json({ cases: rows.map(mapCaseSummary) });
-      } catch (err) {
-        apiLogger.error("client cases list failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
-  app.post(
-    "/api/client/cases",
-    dbUnavailable,
-    requireLawFirm,
-    async (req: AuthedRequest, res: Response) => {
-      try {
-        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
-        if (!lawFirmId) {
-          return res.status(403).json({ error: "No law firm linked to user" });
-        }
-        const body = req.body as CreateCaseRequest;
-        const title = String(body?.title || "").trim();
-        if (!title) {
-          return res.status(400).json({ error: "Title is required" });
-        }
-        const caseNumber = await allocateCaseNumber();
-        const publicUuid = generatePublicUuid();
-        const db = getPool();
-        const [result] = await db.query<ResultSetHeader>(
-          `INSERT INTO cases (
-             public_uuid, case_number, title, description, law_firm_id,
-             court_name, external_reference, priority, status,
-             plaintiff_name, defendant_name, property_address, property_city,
-             property_state, property_postal_code, property_country,
-             involves_fatality,
-             intake_received_at, created_by
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
-          [
-            publicUuid,
-            caseNumber,
-            title,
-            body.description?.trim() || null,
-            lawFirmId,
-            body.courtName?.trim() || null,
-            body.externalReference?.trim() || null,
-            body.priority || "normal",
-            body.plaintiffName?.trim() || null,
-            body.defendantName?.trim() || null,
-            body.propertyAddress?.trim() || null,
-            body.propertyCity?.trim() || null,
-            body.propertyState?.trim() || null,
-            body.propertyPostalCode?.trim() || null,
-            body.propertyCountry?.trim() || "MX",
-            body.involvesFatality ? 1 : 0,
-            null,
-          ],
-        );
-        await db.query<ResultSetHeader>(
-          `INSERT INTO case_status_history (case_id, from_status, to_status, changed_by, reason)
-           VALUES (?, NULL, 'intake', NULL, 'Submitted by law firm')`,
-          [result.insertId],
-        );
-        const [admins] = await db.query<RowDataPacket[]>(
-          `SELECT id, email, first_name, preferred_language
-           FROM staff_users
-           WHERE role = 'admin' AND deleted_at IS NULL AND status = 'active'
-           LIMIT 20`,
-        );
-        for (const admin of admins) {
-          await createNotification({
-            recipientActor: "staff",
-            recipientId: admin.id as number,
-            caseId: result.insertId,
-            type: "general",
-            title: `New case ${caseNumber}`,
-            body: `Law firm submitted: ${title}`,
-            emailTo: String(admin.email),
-            caseNumber,
-            caseUrl: `${EMAIL_APP_URL}/portal/cases/${publicUuid}`,
-            email: buildNewCaseIntakeEmail({
-              locale: normalizeLocale(admin.preferred_language as string),
-              firstName: String(admin.first_name || "Admin"),
-              caseNumber,
-              caseTitle: title,
-              caseUrl: `${EMAIL_APP_URL}/portal/cases/${publicUuid}`,
-              appUrl: EMAIL_APP_URL,
-            }),
-          });
-        }
-        const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT * FROM cases WHERE id = ? LIMIT 1`,
-          [result.insertId],
-        );
-        return res.status(201).json({ case: mapCaseDetail(rows[0]) });
-      } catch (err) {
-        apiLogger.error("client case create failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
-  app.get(
-    "/api/client/cases/:publicUuid",
-    dbUnavailable,
-    requireLawFirm,
-    async (req: AuthedRequest, res: Response) => {
-      try {
-        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
-        if (!lawFirmId) {
-          return res.status(403).json({ error: "No law firm linked to user" });
-        }
-        const db = getPool();
-        const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT * FROM cases
-           WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
-           LIMIT 1`,
-          [req.params.publicUuid, lawFirmId],
-        );
-        if (rows.length === 0) {
-          return res.status(404).json({ error: "Case not found" });
-        }
-        const caseId = rows[0].id as number;
-        const [noteRows] = await db.query<RowDataPacket[]>(
-          `SELECT id, body, visibility, author_id, created_at
-           FROM case_notes
-           WHERE case_id = ? AND deleted_at IS NULL
-             AND visibility IN ('law_firm', 'all')
-           ORDER BY created_at DESC
-           LIMIT 50`,
-          [caseId],
-        );
-        const [docRows] = await db.query<RowDataPacket[]>(
-          `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
-                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
-                  v.ocr_status, v.ocr_text, v.ocr_processed_at
-           FROM documents d
-           LEFT JOIN document_versions v
-             ON v.document_id = d.id AND v.version_number = d.current_version
-           WHERE d.case_id = ? AND d.deleted_at IS NULL
-           ORDER BY d.created_at DESC
-           LIMIT 100`,
-          [caseId],
-        );
-        const [reportRows] = await db.query<RowDataPacket[]>(
-          `SELECT id, public_uuid, status, version_number, investigation_summary, conclusions,
-                  submitted_at, approved_at, delivered_at, created_at
-           FROM technical_reports
-           WHERE case_id = ? AND status IN ('approved', 'delivered', 'external_review')
-           ORDER BY created_at DESC
-           LIMIT 20`,
-          [caseId],
-        );
-        const clientDocs = await Promise.all(
-          docRows.map(async (row) => {
-            const document = mapCaseDocumentItem(row);
-            return {
-              ...document,
-              storageKey: document.storageKey
-                ? await signBlobUrlForClient(document.storageKey)
-                : null,
-            };
-          }),
-        );
-        return res.json({
-          case: mapCaseDetail(rows[0]),
-          notes: noteRows.map((n) => ({
-            id: n.id as number,
-            body: n.body as string,
-            visibility: n.visibility as CaseNoteItem["visibility"],
-            authorId: (n.author_id as number | null) ?? null,
-            createdAt: toIso(n.created_at) || new Date().toISOString(),
-          })),
-          documents: clientDocs,
-          technicalReports: reportRows.map(mapTechnicalReport),
-          documentCompleteness: buildDocumentCompleteness(
-            clientDocs
-              .filter((d) => isActiveDocumentStatus(d.status))
-              .map((d) => d.category),
-            Boolean(rows[0].involves_fatality),
-          ),
-        });
-      } catch (err) {
-        apiLogger.error("client case get failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
-  app.patch(
-    "/api/client/cases/:publicUuid",
-    dbUnavailable,
-    requireLawFirm,
-    async (req: AuthedRequest, res: Response) => {
-      try {
-        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
-        if (!lawFirmId) {
-          return res.status(403).json({ error: "No law firm linked to user" });
-        }
-        const parsed = parseUpdateCaseFlags(req.body as UpdateCaseFlagsRequest);
-        if (parsed.ok === false) {
-          return res.status(400).json({ error: parsed.error });
-        }
-        const db = getPool();
-        const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT * FROM cases
-           WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
-           LIMIT 1`,
-          [req.params.publicUuid, lawFirmId],
-        );
-        if (rows.length === 0) {
-          return res.status(404).json({ error: "Case not found" });
-        }
-        await db.query<ResultSetHeader>(
-          `UPDATE cases SET involves_fatality = ? WHERE id = ?`,
-          [parsed.value.involvesFatality ? 1 : 0, rows[0].id],
-        );
-        const [updated] = await db.query<RowDataPacket[]>(
-          `SELECT * FROM cases WHERE id = ? LIMIT 1`,
-          [rows[0].id],
-        );
-        await notifyMissingDocumentsIfNeeded(updated[0]);
-        const response: CaseResponse = { case: mapCaseDetail(updated[0]) };
-        return res.json(response);
-      } catch (err) {
-        apiLogger.error("client case flags patch failed", err);
-        return res.status(500).json({ error: "Internal server error" });
-      }
-    },
-  );
-
-  app.post(
-    "/api/client/cases/:publicUuid/technical-reports/:reportUuid/review",
-    dbUnavailable,
-    requireLawFirm,
-    async (req: AuthedRequest, res: Response) => {
-      try {
+        if (!(await assertLawFirmCanMutate(req.auth!, res))) return;
         const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
         if (!lawFirmId) {
           return res.status(403).json({ error: "No law firm linked to user" });
@@ -13778,11 +16011,7 @@ export function createServer() {
           }
         }
 
-        const staffRecipients = await findStaffIdsByRoles([
-          "admin",
-          "case_coordinator",
-          "legal",
-        ]);
+        const staffRecipients = await findStaffIdsByRoles(["admin", "legal"]);
         const notifyIds =
           staffRecipients.length > 0
             ? staffRecipients
@@ -13808,295 +16037,459 @@ export function createServer() {
         );
         return res.json({ report: mapTechnicalReport(updated[0]) });
       } catch (err) {
-        apiLogger.error("client report review failed", err);
+        apiLogger.error("law firm report review failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
   );
 
-  app.post(
-    "/api/client/cases/:publicUuid/documents",
+  app.get(
+    "/api/notifications",
     dbUnavailable,
-    requireLawFirm,
+    requireAuth,
     async (req: AuthedRequest, res: Response) => {
       try {
-        if (!process.env.BLOB_READ_WRITE_TOKEN) {
-          return res.status(503).json({
-            error: "BLOB_READ_WRITE_TOKEN not configured",
-          });
-        }
-        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
-        if (!lawFirmId) {
-          return res.status(403).json({ error: "No law firm linked to user" });
-        }
-        const body = req.body as CreateCaseDocumentRequest;
-        const title = String(body?.title || "").trim();
-        const fileName = String(body?.fileName || "").trim();
-        const base64 = String(body?.data || "");
-        const categoryParsed = parseClientUploadCategory(body.category);
-        if (categoryParsed.ok === false) {
-          return res.status(400).json({ error: categoryParsed.error });
-        }
-        const category = categoryParsed.value;
-        if (!title || !fileName || !base64) {
-          return res
-            .status(400)
-            .json({ error: "title, fileName and data are required" });
-        }
         const db = getPool();
         const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT id, case_number, public_uuid, status, law_firm_id, involves_fatality,
-                  assigned_coordinator_id, assigned_expert_id
-           FROM cases
-           WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
-           LIMIT 1`,
-          [req.params.publicUuid, lawFirmId],
+          `SELECT id, public_uuid, case_id, notification_type, title, body, read_at, created_at
+           FROM notifications
+           WHERE recipient_actor = ? AND recipient_id = ?
+           ORDER BY created_at DESC
+           LIMIT 100`,
+          [req.auth!.actor, req.auth!.id],
         );
-        if (rows.length === 0) {
-          return res.status(404).json({ error: "Case not found" });
-        }
-        const caseRow = rows[0];
-        const buffer = Buffer.from(base64, "base64");
-        if (buffer.length === 0 || buffer.length > DMS_MAX_FILE_BYTES) {
-          return res.status(400).json({ error: "Invalid file size" });
-        }
-        if (shouldUseDirectBlobUpload(buffer.length)) {
-          return res.status(413).json({
-            error: "File too large for JSON upload; use direct blob upload",
-          });
-        }
-        const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const pathname = `client-cases/${caseRow.id}/${Date.now()}-${safeName}`;
-        const blob = await putPrivateBlob(
-          pathname,
-          buffer,
-          body.contentType || undefined,
-        );
-        const docUuid = generatePublicUuid();
-        const [docResult] = await db.query<ResultSetHeader>(
-          `INSERT INTO documents
-             (public_uuid, case_id, category, title, current_version, status,
-              uploaded_by, uploaded_by_law_firm_user_id)
-           VALUES (?, ?, ?, ?, 1, 'uploaded', NULL, ?)`,
-          [docUuid, caseRow.id, category, title, req.auth!.id],
-        );
-        await db.query<ResultSetHeader>(
-          `INSERT INTO document_versions
-             (document_id, version_number, storage_key, file_name, mime_type, file_size_bytes, uploaded_by)
-           VALUES (?, 1, ?, ?, ?, ?, NULL)`,
-          [
-            docResult.insertId,
-            blob.url,
-            fileName,
-            body.contentType || "application/octet-stream",
-            buffer.length,
-          ],
-        );
-
-        const staffRecipients = new Set<number>();
-        const coordinator = await resolveCoordinatorOrAdmin(caseRow);
-        if (coordinator != null) staffRecipients.add(coordinator);
-        if (caseRow.assigned_expert_id != null) {
-          staffRecipients.add(Number(caseRow.assigned_expert_id));
-        }
-        for (const recipientId of staffRecipients) {
-          await createNotification({
-            recipientActor: "staff",
-            recipientId,
-            caseId: Number(caseRow.id),
-            type: "general",
-            title: `Client document · ${caseRow.case_number}`,
-            body: `Law firm uploaded "${title}" (${category}).`,
-            caseNumber: String(caseRow.case_number),
-            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
-          });
-        }
-
-        await maybeStartTenDayClock(caseRow, coordinator);
-        await notifyMissingDocumentsIfNeeded(caseRow);
-
-        return res.status(201).json({
-          document: {
-            id: docResult.insertId,
-            publicUuid: docUuid,
-            category,
-            title,
-            status: "uploaded",
-            currentVersion: 1,
-            fileName,
-            mimeType: body.contentType || null,
-            storageKey: await signBlobUrlForClient(blob.url),
-            fileSizeBytes: buffer.length,
-            createdAt: new Date().toISOString(),
-          } satisfies CaseDocumentItem,
+        const notifications: NotificationItem[] = rows.map((n) => ({
+          id: n.id as number,
+          publicUuid: n.public_uuid as string,
+          caseId: (n.case_id as number | null) ?? null,
+          notificationType: n.notification_type as NotificationType,
+          title: n.title as string,
+          body: n.body as string,
+          readAt: toIso(n.read_at),
+          createdAt: toIso(n.created_at) || new Date().toISOString(),
+        }));
+        return res.json({
+          notifications,
+          unreadCount: notifications.filter((n) => !n.readAt).length,
         });
       } catch (err) {
-        apiLogger.error("client document upload failed", err);
+        apiLogger.error("notifications list failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
   );
 
   app.post(
-    "/api/client/cases/:publicUuid/documents/from-blob",
+    "/api/notifications/:publicUuid/read",
     dbUnavailable,
-    requireLawFirm,
+    requireAuth,
     async (req: AuthedRequest, res: Response) => {
       try {
-        if (!process.env.BLOB_READ_WRITE_TOKEN) {
-          return res.status(503).json({
-            error: "BLOB_READ_WRITE_TOKEN not configured",
-          });
-        }
-        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
-        if (!lawFirmId) {
-          return res.status(403).json({ error: "No law firm linked to user" });
-        }
-        const body = req.body as CreateCaseDocumentFromBlobRequest;
-        const categoryParsed = parseClientUploadCategory(body.category);
-        if (categoryParsed.ok === false) {
-          return res.status(400).json({ error: categoryParsed.error });
-        }
         const db = getPool();
-        const casePublicUuid = String(req.params.publicUuid);
-        const [rows] = await db.query<RowDataPacket[]>(
-          `SELECT id, case_number, public_uuid, status, law_firm_id, involves_fatality,
-                  assigned_coordinator_id, assigned_expert_id
-           FROM cases
-           WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
-           LIMIT 1`,
-          [casePublicUuid, lawFirmId],
+        await db.query<ResultSetHeader>(
+          `UPDATE notifications SET read_at = COALESCE(read_at, NOW())
+           WHERE public_uuid = ? AND recipient_actor = ? AND recipient_id = ?`,
+          [req.params.publicUuid, req.auth!.actor, req.auth!.id],
         );
-        if (rows.length === 0) {
-          return res.status(404).json({ error: "Case not found" });
-        }
-        const caseRow = rows[0];
-        const validated = validateFromBlobDocument(body, {
-          actor: "law_firm",
-          casePublicUuid,
-          maxFileBytes: DMS_MAX_FILE_BYTES,
-          isAllowedMime: isAllowedDmsMime,
-          blobPathnameFromUrl,
-          isPrivateBlobUrl,
+        return res.json({ ok: true });
+      } catch (err) {
+        apiLogger.error("notification read failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/notifications/read-all",
+    dbUnavailable,
+    requireAuth,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const db = getPool();
+        await db.query<ResultSetHeader>(
+          `UPDATE notifications SET read_at = NOW()
+           WHERE recipient_actor = ? AND recipient_id = ? AND read_at IS NULL`,
+          [req.auth!.actor, req.auth!.id],
+        );
+        return res.json({ ok: true });
+      } catch (err) {
+        apiLogger.error("notifications read-all failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/law-firms",
+    dbUnavailable,
+    requireAdmin,
+    async (_req: AuthedRequest, res: Response) => {
+      try {
+        const db = getPool();
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT id, public_uuid, name, email, status, city, state, default_court_name
+           FROM law_firms
+           WHERE deleted_at IS NULL
+           ORDER BY name ASC
+           LIMIT 200`,
+        );
+        const lawFirms: LawFirmSummary[] = rows.map((r) => ({
+          id: r.id as number,
+          publicUuid: r.public_uuid as string,
+          name: r.name as string,
+          email: (r.email as string | null) ?? null,
+          status: r.status as "active" | "inactive",
+          city: (r.city as string | null) ?? null,
+          state: (r.state as string | null) ?? null,
+          defaultCourtName: (r.default_court_name as string | null) ?? null,
+        }));
+        return res.json({ lawFirms });
+      } catch (err) {
+        apiLogger.error("law firms list failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/law-firms",
+    dbUnavailable,
+    requireAdmin,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const body = req.body as CreateLawFirmRequest;
+        const validated = validateCreateLawFirmWithOwner({
+          name: String(body?.name || ""),
+          ownerEmail: String(body?.ownerEmail || ""),
+          ownerFirstName: String(body?.ownerFirstName || ""),
+          ownerLastName: String(body?.ownerLastName || ""),
         });
         if (validated.ok === false) {
           return res.status(400).json({ error: validated.error });
         }
-        const inspected = await inspectPrivateBlob(
-          validated.value.storageKey,
-          validated.value.fileSizeBytes,
-        );
-        if (inspected.ok === false) {
-          await safeDeleteBlobs([validated.value.storageKey]);
-          return res.status(inspected.status).json({ error: inspected.error });
+        const ownerEmail = normalizeLookupEmail(validated.ownerEmail);
+        if (!isValidEmail(ownerEmail)) {
+          return res.status(400).json({ error: "Invalid owner email" });
         }
-        const document = await insertCaseDocumentFromExistingBlob({
-          caseId: caseRow.id as number,
-          title: validated.value.title,
-          fileName: validated.value.fileName,
-          contentType: validated.value.contentType,
-          storageKey: validated.value.storageKey,
-          fileSizeBytes: inspected.size,
-          category: categoryParsed.value,
-          uploadedByStaffId: null,
-          uploadedByLawFirmUserId: req.auth!.id,
+        const actorRows = await lookupEmailActorRows(ownerEmail);
+        const occupancy = resolveEmailInviteOccupancy({
+          intendingActor: "law_firm",
+          staff: actorRows.staff,
+          lawFirm: actorRows.lawFirm,
         });
+        if (occupancy.ok === false) {
+          return res.status(409).json({ error: occupancy.error });
+        }
 
-        const staffRecipients = new Set<number>();
-        const coordinator = await resolveCoordinatorOrAdmin(caseRow);
-        if (coordinator != null) staffRecipients.add(coordinator);
-        if (caseRow.assigned_expert_id != null) {
-          staffRecipients.add(Number(caseRow.assigned_expert_id));
+        const publicUuid = generatePublicUuid();
+        const ownerUuid = generatePublicUuid();
+        const db = getPool();
+        const defaultCourtName = body.defaultCourtName?.trim() || null;
+        const firmEmail = body.email?.trim() || ownerEmail;
+        const inviteLocale = resolveInviteLocale(body.preferredLanguage);
+        const [result] = await db.query<ResultSetHeader>(
+          `INSERT INTO law_firms
+             (public_uuid, name, legal_name, email, phone, city, state, default_court_name, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+          [
+            publicUuid,
+            validated.name,
+            body.legalName?.trim() || null,
+            firmEmail,
+            body.phone?.trim() || null,
+            body.city?.trim() || null,
+            body.state?.trim() || null,
+            defaultCourtName,
+          ],
+        );
+        let ownerId: number;
+        if (occupancy.action === "reactivate") {
+          ownerId = occupancy.id;
+          await db.query<ResultSetHeader>(
+            `UPDATE law_firm_users
+             SET deleted_at = NULL,
+                 first_name = ?,
+                 last_name = ?,
+                 phone = ?,
+                 status = 'invited',
+                 preferred_language = ?,
+                 updated_at = NOW()
+             WHERE id = ?`,
+            [
+              validated.ownerFirstName,
+              validated.ownerLastName,
+              body.ownerPhone?.trim() || null,
+              inviteLocale,
+              ownerId,
+            ],
+          );
+          await db.query<ResultSetHeader>(
+            `UPDATE law_firm_members SET deleted_at = NOW()
+             WHERE law_firm_user_id = ? AND deleted_at IS NULL`,
+            [ownerId],
+          );
+        } else {
+          const [ownerIns] = await db.query<ResultSetHeader>(
+            `INSERT INTO law_firm_users
+               (public_uuid, email, first_name, last_name, phone, status, preferred_language)
+             VALUES (?, ?, ?, ?, ?, 'invited', ?)`,
+            [
+              ownerUuid,
+              ownerEmail,
+              validated.ownerFirstName,
+              validated.ownerLastName,
+              body.ownerPhone?.trim() || null,
+              inviteLocale,
+            ],
+          );
+          ownerId = ownerIns.insertId;
         }
-        for (const recipientId of staffRecipients) {
-          await createNotification({
-            recipientActor: "staff",
-            recipientId,
-            caseId: Number(caseRow.id),
-            type: "general",
-            title: `Client document · ${caseRow.case_number}`,
-            body: `Law firm uploaded "${document.title}" (${categoryParsed.value}).`,
-            caseNumber: String(caseRow.case_number),
-            caseUrl: `${EMAIL_APP_URL}/portal/cases/${caseRow.public_uuid}`,
-          });
-        }
-        await maybeStartTenDayClock(caseRow, coordinator);
-        await notifyMissingDocumentsIfNeeded(caseRow);
-        return res.status(201).json({ document });
+        await db.query<ResultSetHeader>(
+          `INSERT INTO law_firm_members
+             (law_firm_id, law_firm_user_id, member_role, is_primary_contact)
+           VALUES (?, ?, 'owner', 1)`,
+          [result.insertId, ownerId],
+        );
+
+        await safeSendEmail(
+          ownerEmail,
+          buildInviteClientEmail({
+            locale: inviteLocale,
+            firstName: validated.ownerFirstName,
+            firmName: validated.name,
+            appUrl: EMAIL_APP_URL,
+          }),
+          "invite-client",
+        );
+
+        const lawFirm: LawFirmSummary = {
+          id: result.insertId,
+          publicUuid,
+          name: validated.name,
+          email: firmEmail,
+          status: "active",
+          city: body.city?.trim() || null,
+          state: body.state?.trim() || null,
+          defaultCourtName,
+        };
+        return res.status(201).json({ lawFirm });
       } catch (err) {
-        apiLogger.error("client document from-blob failed", err);
+        apiLogger.error("law firm create failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
   );
 
-  app.patch(
-    "/api/client/cases/:publicUuid/documents/:documentUuid",
+  app.get(
+    "/api/firm/members",
     dbUnavailable,
     requireLawFirm,
     async (req: AuthedRequest, res: Response) => {
       try {
-        const lawFirmId = await getLawFirmIdForUser(req.auth!.id);
-        if (!lawFirmId) {
-          return res.status(403).json({ error: "No law firm linked to user" });
+        const membership = await getLawFirmMembershipForUser(req.auth!.id);
+        if (!membership) {
+          return res
+            .status(403)
+            .json({ error: "No despacho membership found" });
         }
         const db = getPool();
-        const [cases] = await db.query<RowDataPacket[]>(
-          `SELECT * FROM cases
-           WHERE public_uuid = ? AND law_firm_id = ? AND deleted_at IS NULL
-           LIMIT 1`,
-          [req.params.publicUuid, lawFirmId],
+        const [firmRows] = await db.query<RowDataPacket[]>(
+          `SELECT name FROM law_firms WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+          [membership.lawFirmId],
         );
-        if (cases.length === 0) {
-          return res.status(404).json({ error: "Case not found" });
-        }
-        const [docs] = await db.query<RowDataPacket[]>(
-          `SELECT id, category FROM documents
-           WHERE public_uuid = ? AND case_id = ? AND deleted_at IS NULL
-           LIMIT 1`,
-          [req.params.documentUuid, cases[0].id],
+        const [rows] = await db.query<RowDataPacket[]>(
+          `SELECT u.id, u.public_uuid, u.email, u.first_name, u.last_name, u.status,
+                  u.last_login_at, m.member_role, m.is_primary_contact
+             FROM law_firm_members m
+             JOIN law_firm_users u ON u.id = m.law_firm_user_id
+            WHERE m.law_firm_id = ?
+              AND m.deleted_at IS NULL
+              AND u.deleted_at IS NULL
+            ORDER BY m.is_primary_contact DESC, u.first_name ASC, u.last_name ASC`,
+          [membership.lawFirmId],
         );
-        if (docs.length === 0) {
-          return res.status(404).json({ error: "Document not found" });
-        }
-        const parsed = parseUpdateDocumentCategory(req.body, {
-          clientPortal: true,
-          currentCategory: docs[0].category,
-        });
-        if (parsed.ok === false) {
-          return res.status(400).json({ error: parsed.error });
-        }
-        await db.query<ResultSetHeader>(
-          `UPDATE documents SET category = ? WHERE id = ?`,
-          [parsed.value.category, docs[0].id],
-        );
-        const [updated] = await db.query<RowDataPacket[]>(
-          `SELECT d.id, d.public_uuid, d.category, d.title, d.status, d.current_version,
-                  d.created_at, v.file_name, v.mime_type, v.storage_key, v.file_size_bytes,
-                  v.ocr_status, v.ocr_text, v.ocr_processed_at
-           FROM documents d
-           LEFT JOIN document_versions v
-             ON v.document_id = d.id AND v.version_number = d.current_version
-           WHERE d.id = ?
-           LIMIT 1`,
-          [docs[0].id],
-        );
-        await notifyMissingDocumentsIfNeeded(cases[0]);
-        const document = mapCaseDocumentItem(updated[0]);
-        return res.json({
-          document: {
-            ...document,
-            storageKey: document.storageKey
-              ? await signBlobUrlForClient(document.storageKey)
-              : null,
-          },
-        });
+        const members: FirmMemberItem[] = rows.map((r) => ({
+          id: r.id as number,
+          publicUuid: r.public_uuid as string,
+          email: r.email as string,
+          firstName: r.first_name as string,
+          lastName: r.last_name as string,
+          memberRole: (isLawFirmMemberRole(String(r.member_role))
+            ? String(r.member_role)
+            : "member") as FirmMemberItem["memberRole"],
+          isPrimaryContact: Boolean(r.is_primary_contact),
+          status: r.status as UserStatus,
+          lastLoginAt: toIso(r.last_login_at),
+        }));
+        const response: FirmMembersResponse = {
+          members,
+          canManage: canManageFirmMembers(membership.memberRole),
+          lawFirmId: membership.lawFirmId,
+          lawFirmName: firmRows[0]?.name ? String(firmRows[0].name) : null,
+        };
+        return res.json(response);
       } catch (err) {
-        apiLogger.error("client document category patch failed", err);
+        apiLogger.error("firm members list failed", err);
         return res.status(500).json({ error: "Internal server error" });
       }
     },
   );
+
+  app.post(
+    "/api/firm/members",
+    dbUnavailable,
+    requireLawFirm,
+    async (req: AuthedRequest, res: Response) => {
+      try {
+        const membership = await getLawFirmMembershipForUser(req.auth!.id);
+        if (!membership || !canManageFirmMembers(membership.memberRole)) {
+          return res
+            .status(403)
+            .json({ error: "Despacho admin access required" });
+        }
+        const body = req.body as InviteFirmMemberRequest;
+        const email = normalizeLookupEmail(String(body?.email || ""));
+        const firstName = String(body?.firstName || "").trim();
+        const lastName = String(body?.lastName || "").trim();
+        if (!email || !firstName || !lastName || !isValidEmail(email)) {
+          return res
+            .status(400)
+            .json({ error: "email, firstName and lastName required" });
+        }
+        const rawRole = String(body?.memberRole || "member").trim();
+        if (!isLawFirmMemberRole(rawRole) || rawRole === "owner") {
+          return res.status(400).json({
+            error: "memberRole must be admin, member, or viewer",
+          });
+        }
+        const actorRows = await lookupEmailActorRows(email);
+        const occupancy = resolveEmailInviteOccupancy({
+          intendingActor: "law_firm",
+          staff: actorRows.staff,
+          lawFirm: actorRows.lawFirm,
+        });
+        if (occupancy.ok === false) {
+          return res.status(409).json({ error: occupancy.error });
+        }
+
+        const db = getPool();
+        const [firmRows] = await db.query<RowDataPacket[]>(
+          `SELECT name FROM law_firms WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+          [membership.lawFirmId],
+        );
+        const publicUuid = generatePublicUuid();
+        const inviteLocale = resolveInviteLocale(body.preferredLanguage);
+        let userId: number;
+        let userPublicUuid = publicUuid;
+        if (occupancy.action === "reactivate") {
+          userId = occupancy.id;
+          const [existing] = await db.query<RowDataPacket[]>(
+            `SELECT public_uuid FROM law_firm_users WHERE id = ? LIMIT 1`,
+            [userId],
+          );
+          userPublicUuid = String(existing[0]?.public_uuid || publicUuid);
+          await db.query<ResultSetHeader>(
+            `UPDATE law_firm_users
+             SET deleted_at = NULL,
+                 first_name = ?,
+                 last_name = ?,
+                 phone = ?,
+                 status = 'invited',
+                 preferred_language = ?,
+                 updated_at = NOW()
+             WHERE id = ?`,
+            [
+              firstName,
+              lastName,
+              body.phone?.trim() || null,
+              inviteLocale,
+              userId,
+            ],
+          );
+          await db.query<ResultSetHeader>(
+            `UPDATE law_firm_members SET deleted_at = NOW()
+             WHERE law_firm_user_id = ?
+               AND law_firm_id <> ?
+               AND deleted_at IS NULL`,
+            [userId, membership.lawFirmId],
+          );
+          const [memRows] = await db.query<RowDataPacket[]>(
+            `SELECT id FROM law_firm_members
+             WHERE law_firm_user_id = ? AND law_firm_id = ?
+             LIMIT 1`,
+            [userId, membership.lawFirmId],
+          );
+          if (memRows[0]) {
+            await db.query<ResultSetHeader>(
+              `UPDATE law_firm_members
+               SET deleted_at = NULL, member_role = ?, is_primary_contact = 0, updated_at = NOW()
+               WHERE id = ?`,
+              [rawRole, memRows[0].id],
+            );
+          } else {
+            await db.query<ResultSetHeader>(
+              `INSERT INTO law_firm_members
+                 (law_firm_id, law_firm_user_id, member_role, is_primary_contact)
+               VALUES (?, ?, ?, 0)`,
+              [membership.lawFirmId, userId, rawRole],
+            );
+          }
+        } else {
+          const [result] = await db.query<ResultSetHeader>(
+            `INSERT INTO law_firm_users
+               (public_uuid, email, first_name, last_name, phone, status, preferred_language)
+             VALUES (?, ?, ?, ?, ?, 'invited', ?)`,
+            [
+              publicUuid,
+              email,
+              firstName,
+              lastName,
+              body.phone?.trim() || null,
+              inviteLocale,
+            ],
+          );
+          userId = result.insertId;
+          await db.query<ResultSetHeader>(
+            `INSERT INTO law_firm_members
+               (law_firm_id, law_firm_user_id, member_role, is_primary_contact)
+             VALUES (?, ?, ?, 0)`,
+            [membership.lawFirmId, userId, rawRole],
+          );
+        }
+
+        const firmName = firmRows[0]?.name ? String(firmRows[0].name) : null;
+        await safeSendEmail(
+          email,
+          buildInviteClientEmail({
+            locale: inviteLocale,
+            firstName,
+            firmName,
+            appUrl: EMAIL_APP_URL,
+          }),
+          "invite-client",
+        );
+
+        const member: FirmMemberItem = {
+          id: userId,
+          publicUuid: userPublicUuid,
+          email,
+          firstName,
+          lastName,
+          memberRole: rawRole,
+          isPrimaryContact: false,
+          status: "invited",
+          lastLoginAt: null,
+        };
+        return res.status(201).json({ member });
+      } catch (err) {
+        apiLogger.error("firm member invite failed", err);
+        return res.status(500).json({ error: "Internal server error" });
+      }
+    },
+  );
+
+  // Law-firm case APIs share /api/cases* (requireStaffOrLawFirm).
+  // Auth identity remains under /api/auth/client/*.
 
   // ---- Uploads (Vercel Blob) ----
 
@@ -14236,4 +16629,5 @@ export function createServer() {
 
 const app = createServer();
 
+export { createServer, createSession };
 export default app;

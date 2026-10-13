@@ -8,10 +8,12 @@ export function tokenKeyForActor(actor: AuthActor): string {
   return actor === "law_firm" ? CLIENT_TOKEN_KEY : STAFF_TOKEN_KEY;
 }
 
-export function loginPathForActor(actor: AuthActor): string {
-  return actor === "law_firm" ? "/client/login" : "/portal/login";
+/** Both actors share `/login` (legacy /portal/login + /client/login redirect here). */
+export function loginPathForActor(_actor?: AuthActor): string {
+  return "/login";
 }
 
-export function homePathForActor(actor: AuthActor): string {
-  return actor === "law_firm" ? "/client" : "/portal";
+/** Both actors land in the portal app; nav/APIs gate by actor. */
+export function homePathForActor(_actor?: AuthActor): string {
+  return "/portal";
 }

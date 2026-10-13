@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canApplyCaseStatusChange,
   canChangeCaseStatus,
+  canEditIntakePack,
   canCompleteReviewStage,
   canDecideQuestionnaireReview,
   canEditCaseLocation,
@@ -15,15 +16,16 @@ import {
 } from "./portalCapabilities";
 
 describe("portalCapabilities", () => {
-  it("gives admin and coordinator full case sections", () => {
+  it("gives admin full case sections", () => {
     expect(canViewCaseSection("admin", "logistics")).toBe(true);
-    expect(canViewCaseSection("case_coordinator", "audit")).toBe(true);
+    expect(canViewCaseSection("admin", "audit")).toBe(true);
     expect(visibleCaseSections("admin").length).toBeGreaterThan(10);
   });
 
-  it("scopes expert away from logistics and assignments", () => {
+  it("lets expert view logistics readiness but not mutate trips", () => {
     expect(canViewCaseSection("expert", "evidence")).toBe(true);
-    expect(canViewCaseSection("expert", "logistics")).toBe(false);
+    expect(canViewCaseSection("expert", "logistics")).toBe(true);
+    expect(canMutateCaseSection("expert", "logistics")).toBe(false);
     expect(canViewCaseSection("expert", "assignments")).toBe(false);
   });
 
@@ -56,8 +58,11 @@ describe("portalCapabilities", () => {
   });
 
   it("gates workflow/assignment/upload actions", () => {
-    expect(canChangeCaseStatus("case_coordinator")).toBe(true);
+    expect(canChangeCaseStatus("admin")).toBe(true);
     expect(canChangeCaseStatus("expert")).toBe(false);
+    expect(canEditIntakePack("admin")).toBe(true);
+    expect(canEditIntakePack("expert")).toBe(true);
+    expect(canEditIntakePack("logistics")).toBe(false);
     expect(
       canApplyCaseStatusChange("accountant", "accounting", "completed"),
     ).toBe(true);
@@ -68,7 +73,7 @@ describe("portalCapabilities", () => {
       canApplyCaseStatusChange("accountant", "inspection", "completed"),
     ).toBe(false);
     expect(
-      canApplyCaseStatusChange("case_coordinator", "intake", "assignment"),
+      canApplyCaseStatusChange("admin", "intake", "questionnaire"),
     ).toBe(true);
     expect(canManageCaseAssignments("admin")).toBe(true);
     expect(canManageCaseAssignments("logistics")).toBe(false);
@@ -103,5 +108,46 @@ describe("portalCapabilities", () => {
     expect(filtered.evidence).toHaveLength(1);
     expect(filtered.trips).toHaveLength(1);
     expect(filtered.notes).toHaveLength(1);
+  });
+
+  it("strips invoices for roles without finance access", () => {
+    const filtered = filterCaseDetailSectionsForRole("expert", {
+      notes: [],
+      documents: [],
+      assignments: [],
+      deadlines: [],
+      questionnaires: [],
+      inspections: [],
+      measurements: [],
+      evidence: [],
+      evidenceChecklist: null,
+      reviewRequests: [],
+      documentCompleteness: null,
+      auditLogs: [],
+      trips: [],
+      expenses: [],
+      technicalReports: [],
+      invoices: [{ id: 1 }],
+    });
+    expect(filtered.invoices).toEqual([]);
+    const allowed = filterCaseDetailSectionsForRole("accountant", {
+      notes: [],
+      documents: [],
+      assignments: [],
+      deadlines: [],
+      questionnaires: [],
+      inspections: [],
+      measurements: [],
+      evidence: [],
+      evidenceChecklist: null,
+      reviewRequests: [],
+      documentCompleteness: null,
+      auditLogs: [],
+      trips: [],
+      expenses: [],
+      technicalReports: [],
+      invoices: [{ id: 1 }],
+    });
+    expect(allowed.invoices).toHaveLength(1);
   });
 });

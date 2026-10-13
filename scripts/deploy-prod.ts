@@ -3,7 +3,7 @@
  *
  * Mirrors optimum-credit/scripts/deploy-prod.ts patterns:
  * - Short-lived TiDB connections (never hold open across vercel --prod)
- * - Pre-deploy typecheck + tests
+ * - Pre-deploy api-inline + typecheck + tests + fixture cleanup
  * - Prompt or CLI version, then vercel --prod, then write app_version
  *
  * Usage:
@@ -18,6 +18,7 @@ import "dotenv/config";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import mysql from "mysql2/promise";
+import { checkApiIndexInline } from "./check-api-inline";
 import { checkDeployVersion } from "../shared/deployVersion";
 
 function requireEnv(name: string): string {
@@ -85,13 +86,26 @@ async function runCommand(
   });
 }
 
-/** Typecheck + vitest — must pass before production deploy. */
+/** Typecheck + Vercel inline monolith gate + vitest — must pass before prod. */
 async function runPreDeployChecks() {
-  console.log("\n🧪 Pre-deploy checks: typecheck + tests...\n");
+  console.log("\n🧪 Pre-deploy checks: api inline + typecheck + tests...\n");
+
+  const inline = checkApiIndexInline();
+  console.log(inline.report);
+  if (!inline.ok) {
+    throw new Error(
+      "api/index.ts has relative runtime imports — inline the logic before deploying to Vercel.",
+    );
+  }
+
   await runCommand("npm", ["run", "typecheck"]);
   console.log("\n✅ Typecheck passed.\n");
   await runCommand("npm", ["test"]);
-  console.log("\n✅ Tests passed. Continuing to deploy...\n");
+  console.log("\n✅ Tests passed.\n");
+  // Leave shared TiDB without vitest staff/cases so portal lists stay clean.
+  console.log("🧹 Purging leftover integration-test fixtures...\n");
+  await runCommand("npm", ["run", "test:cleanup-fixtures"]);
+  console.log("\n✅ Fixture cleanup done. Continuing to deploy...\n");
 }
 
 async function promptForVersion(
@@ -187,6 +201,35 @@ async function assertRequiredSchema(): Promise<void> {
               WHERE TABLE_SCHEMA = DATABASE()
                 AND TABLE_NAME = 'staff_users'
                 AND COLUMN_NAME = 'show_form_helpers'
+              LIMIT 1`,
+      },
+      {
+        label:
+          "staff_users.show_process_guidance (20261002_173000_process_guidance_pref_defaults.sql)",
+        sql: `SELECT 1 AS ok FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'staff_users'
+                AND COLUMN_NAME = 'show_process_guidance'
+              LIMIT 1`,
+      },
+      {
+        label:
+          "cases.documents_handoff_confirmed_at (20260901_123000_process_audit_gaps.sql)",
+        sql: `SELECT 1 AS ok FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'cases'
+                AND COLUMN_NAME = 'documents_handoff_confirmed_at'
+              LIMIT 1`,
+      },
+      {
+        label:
+          "questionnaires.grammar_qa enum (20260901_150000_remove_questionnaire_submitted_status.sql)",
+        sql: `SELECT 1 AS ok FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'questionnaires'
+                AND COLUMN_NAME = 'status'
+                AND COLUMN_TYPE LIKE '%grammar_qa%'
+                AND COLUMN_TYPE NOT LIKE '%submitted%'
               LIMIT 1`,
       },
     ];

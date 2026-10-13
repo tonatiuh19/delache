@@ -15,10 +15,12 @@ Source of truth: `AGENTS.md`. **NO EXCEPTIONS.**
 - Fix root causes of type/bugs immediately — no patches
 - API handlers stay in `api/index.ts` (Vercel serverless). Update `swagger.yaml` with API changes
 - `api/index.ts` must not import runtime values from `shared/` or `lib/` (Vercel ESM 500). `import type` only; keep inlined copies in sync with `shared/` / `lib/`
+- Deploy gate: `npm run check:api-inline` + typecheck + tests (see `scripts/deploy-prod.ts`)
+- API integration tests live in `api/**/*.test.ts` (supertest + TiDB); use `@example.test` fixtures and `api/testDbCleanup.ts`
 - Update `DESIGN_SYSTEM.md` when design-relevant UI changes land
 - i18n: new user-visible strings → both `client/locales/en/translation.json` and `es/translation.json` via `t()` — never hardcode
 - Prefer reusable components/utilities over one-offs; avoid breaking changes
-- Mobile-responsive, engaging UI for frontend work
+- Mobile-responsive, engaging UI for frontend work — **no page-level horizontal scroll** on mobile (see `.cursor/rules/mobile-responsive.mdc`)
 - Review chat history before changing code — do not reintroduce fixed issues
 - If requirements are unclear, **ask the user first**
 - Package manager: **npm only** (never pnpm/yarn)

@@ -12,7 +12,7 @@
 - **NEVER Patch issues, always fix the root cause of type errors or bugs immediately**
 - **if any update is made to api/index.ts, update swagger.yaml accordingly**
 - **if any revelant change update DESIGN_SYSTEM.md**
-- **Always think about mobile responsiveness and cool, engaging UI/UX when making frontend changes**
+- **Always think about mobile responsiveness and cool, engaging UI/UX when making frontend changes** — no page-level horizontal scroll on mobile; see `.cursor/rules/mobile-responsive.mdc` and `DESIGN_SYSTEM.md` layout notes
 - **if there is an opportunity to add reusable components or utilities, do it immediately to avoid technical debt**
 - **Avoid any breaking changes**
 - **i18n: When making any UI change that introduces new user-visible strings, ALWAYS add the corresponding key to BOTH `client/locales/en/translation.json` AND `client/locales/es/translation.json`, and use `t('key')` via `useTranslation()` — NEVER hardcode user-facing strings in components**
@@ -111,7 +111,7 @@ Always use these aliases instead of relative imports.
 - Configure theme and design tokens in `client/global.css` and `tailwind.config.ts`
 - **Always follow the color palette defined in `client/global.css`** - use existing theme colors
 - **NEVER use arbitrary Tailwind color classes** (e.g. `text-emerald-500`, `bg-amber-400`, `border-red-500`, `text-violet-600`, `bg-slate-100`) — always use semantic design-system tokens: `primary`, `accent`, `destructive`, `muted`, `secondary`, `foreground`, `background`, `border`, `card`, `input`, `ring`
-- **Color token reference from `global.css`**: `primary` = brand gold (≈ `#E6AB40`) with dark `primary-foreground` for contrast, `accent` = near-black ink CTA, `destructive` = red (errors/danger), `muted` / `secondary` = warm neutrals. Gold scale `delache-50`…`delache-950` for surfaces (no navy blues). Dark shells: `bg-delache-950`. Logos: only `public/brand/logo-full.png` + `logo.png` via `BrandLogo`.
+- **Color token reference from `global.css`**: `primary` = PDF marigold CTA (≈ `#F8C018`) with white `primary-foreground`, `accent` = near-black ink CTA, `success` = green completed checks, `info` / `info-muted` = blue summary/hint panels, `destructive` = red (errors/danger), `muted` / `secondary` = cool/warm neutrals. Logo assets stay `#E6AB40`; gold scale `delache-50`…`delache-950` for surfaces. Dark shells: `bg-delache-950`. Logos: only `public/brand/logo-full.png` + `logo.png` via `BrandLogo`.
 - **Keep designs simple, cool, and engaging** - prioritize clean UX
 
 ## API Development
@@ -125,6 +125,19 @@ Always use these aliases instead of relative imports.
 - Server-side logic that cannot be exposed to the client
 
 4. Use in React components with Redux store and axios
+
+### Deploy & API testing (optimum-credit parity)
+
+- **Pre-deploy gate** (`npm run deploy:prod`): `check:api-inline` → typecheck → full vitest suite → `test:cleanup-fixtures` → Vercel prod → bump `system_settings.app_version`
+- **Inline monolith check**: `npm run check:api-inline` — fails if `api/index.ts` has relative runtime imports from `shared/` or `lib/`
+- **Integration tests** live in `api/**/*.test.ts` using supertest + `createServer()` from `api/index.ts`
+  - Fixtures: `@example.test` emails, `RUN_ID` in titles, cleanup via `api/testDbCleanup.ts`
+  - Helpers: `api/testHelpers.ts` (staff/client tokens, seed users)
+  - Run API-only: `npm run test:api`
+  - Purge stale fixtures: `npm run test:cleanup-fixtures`
+- **Email**: `sendEmail` skips Resend when `VITEST=true` (set in `vitest.config.ts`); in-app notifications still persist. OTP request rate limits are also skipped under `VITEST` so shared TiDB IP buckets do not flake as 429 (OTP rows are still written; no real email is sent).
+- **Vitest note**: `vitest.config.ts` externalizes `api/index.ts` and loads it via `tsx/esm` to avoid Vite transform errors on the monolith
+- New/changed endpoints: add happy-path + auth/RBAC tests; extend `api/routeAuth.test.ts` when adding protected routes
 
 ```typescript
 import { createAsyncThunk } from "@reduxjs/toolkit";

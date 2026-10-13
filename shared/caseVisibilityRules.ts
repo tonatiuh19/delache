@@ -5,23 +5,23 @@
 
 import type { UserRole } from "./api";
 
-/** Org-wide Listado — admin + coordinator (day-to-day ops). */
+/** Org-wide Listado — admin (ops / Miro Coordinador). */
 export function canListAllStaffCases(
   role: string | null | undefined,
 ): boolean {
-  return role === "admin" || role === "case_coordinator";
+  return role === "admin";
 }
 
 /** Staff-side case creation (despacho intake is separate). */
 export function canCreateStaffCase(
   role: string | null | undefined,
 ): boolean {
-  return role === "admin" || role === "case_coordinator";
+  return role === "admin";
 }
 
 /**
  * Maps staff login role → case_assignments.assignment_role values that grant access.
- * Admin/coordinator use canListAllStaffCases instead.
+ * Admin uses canListAllStaffCases instead.
  */
 export function staffRoleToAssignmentRoles(
   role: string | null | undefined,
@@ -29,8 +29,6 @@ export function staffRoleToAssignmentRoles(
   switch (role as UserRole | string) {
     case "expert":
       return ["expert"];
-    case "case_coordinator":
-      return ["coordinator"];
     case "legal":
       return ["legal_reviewer"];
     case "logistics":

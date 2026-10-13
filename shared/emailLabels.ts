@@ -8,7 +8,6 @@ import type { AppLocale } from "./i18n";
 const STAFF_ROLE_LABELS: Record<AppLocale, Record<string, string>> = {
   es: {
     admin: "Admin",
-    case_coordinator: "Coordinador",
     expert: "Perito",
     legal: "Legal",
     logistics: "Logística",
@@ -17,7 +16,6 @@ const STAFF_ROLE_LABELS: Record<AppLocale, Record<string, string>> = {
   },
   en: {
     admin: "Admin",
-    case_coordinator: "Coordinator",
     expert: "Expert",
     legal: "Legal",
     logistics: "Logistics",

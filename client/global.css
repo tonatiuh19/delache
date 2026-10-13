@@ -6,35 +6,50 @@
 
 @layer base {
   :root {
-    /* Brand primary #E6AB40; ink foreground for contrast on gold */
-    --background: 40 30% 98%;
+    /*
+     * Client-approved CRM PDF palette:
+     * primary marigold ≈ #F8C018 (CTAs / active), white on primary,
+     * cool paper bg, info blue panels, success green checks.
+     * Brand lockup still uses #E6AB40 in logos / delache scale.
+     */
+    --background: 210 20% 97%;
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
-    --primary: 39 77% 58%;
-    --primary-foreground: 222 47% 11%;
+    --primary: 45 94% 53%;
+    --primary-foreground: 0 0% 100%;
     --secondary: 40 55% 94%;
     --secondary-foreground: 39 55% 32%;
-    --muted: 40 20% 95%;
-    --muted-foreground: 30 8% 40%;
+    --muted: 210 16% 94%;
+    --muted-foreground: 215 12% 42%;
     --accent: 0 0% 7%;
     --accent-foreground: 0 0% 100%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 40 18% 88%;
-    --input: 40 18% 88%;
-    --ring: 39 77% 58%;
+    --success: 152 61% 40%;
+    --success-foreground: 0 0% 100%;
+    --info: 214 84% 52%;
+    --info-foreground: 0 0% 100%;
+    --info-muted: 214 100% 97%;
+    --border: 214 20% 90%;
+    --input: 214 20% 90%;
+    --ring: 45 94% 53%;
+    /* Approved intake document card hues (PDF badges). */
+    --doc-demand: 210 72% 42%;
+    --doc-medical: 152 48% 34%;
+    --doc-cfe: 28 82% 46%;
+    --doc-photos: 270 42% 46%;
     --radius: 0.9rem;
     --sidebar-background: 210 33% 99%;
     --sidebar-foreground: 222 47% 11%;
-    --sidebar-primary: 39 77% 58%;
-    --sidebar-primary-foreground: 222 47% 11%;
+    --sidebar-primary: 45 94% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 40 55% 94%;
     --sidebar-accent-foreground: 39 55% 32%;
-    --sidebar-border: 40 18% 88%;
-    --sidebar-ring: 39 77% 58%;
+    --sidebar-border: 214 20% 90%;
+    --sidebar-ring: 45 94% 53%;
   }
 
   * {
@@ -42,10 +57,19 @@
   }
   html {
     scroll-behavior: smooth;
+    overflow-x: clip;
+    max-width: 100%;
   }
   body {
     @apply bg-background text-foreground;
     font-family: "DM Sans", sans-serif;
+    overflow-x: clip;
+    max-width: 100%;
+  }
+  #root {
+    overflow-x: clip;
+    min-width: 0;
+    max-width: 100%;
   }
   button,
   input,
@@ -187,6 +211,19 @@
 @layer utilities {
   .table-scroll {
     overflow-x: auto;
+    max-width: 100%;
+    overscroll-behavior-x: contain;
     -webkit-overflow-scrolling: touch;
+  }
+  /** Contained horizontal scroll — never widens the page (pipeline, steppers). */
+  .mobile-scroll-x {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .contain-layout {
+    min-width: 0;
+    max-width: 100%;
   }
 }

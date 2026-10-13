@@ -15,6 +15,7 @@ type Props = {
   onFiles: (files: File[]) => void | Promise<void>;
   children?: ReactNode;
   compact?: boolean;
+  showSizeLegend?: boolean;
 };
 
 export default function DocumentDropzone({
@@ -23,6 +24,7 @@ export default function DocumentDropzone({
   onFiles,
   children,
   compact,
+  showSizeLegend = true,
 }: Props) {
   const { t } = useTranslation();
   const [dragging, setDragging] = useState(false);
@@ -77,7 +79,7 @@ export default function DocumentDropzone({
 
   return (
     <div className="space-y-2">
-      <DocumentSizeStabilizationLegend />
+      {showSizeLegend ? <DocumentSizeStabilizationLegend /> : null}
       <div
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}

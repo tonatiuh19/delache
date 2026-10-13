@@ -6,7 +6,6 @@ import { Info, Search } from "lucide-react";
 import MetaHelmet from "@/components/MetaHelmet";
 import PortalPageHeader from "@/components/portal/PortalPageHeader";
 import PortalListPanel from "@/components/portal/PortalListPanel";
-import { FieldHelper, SectionHelper } from "@/components/portal/FormHelpers";
 import { DataGrid, type DataGridColumn } from "@/components/ui/data-grid";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -182,7 +181,7 @@ export default function FinancePage() {
   }, [t, dispatch, gridParams, query]);
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="min-w-0 w-full max-w-full space-y-6">
       <MetaHelmet title={t("portal.finance")} noindex />
       <PortalPageHeader
         eyebrow={t("finance.eyebrow")}
@@ -212,9 +211,6 @@ export default function FinancePage() {
         className="grid gap-3 rounded-2xl border border-border bg-card p-5 shadow-sm sm:grid-cols-2"
       >
         <div className="sm:col-span-2">
-          <SectionHelper>{t("help.finance.section")}</SectionHelper>
-        </div>
-        <div className="sm:col-span-2">
           <select
             name="caseId"
             value={form.values.caseId}
@@ -228,7 +224,6 @@ export default function FinancePage() {
               </option>
             ))}
           </select>
-          <FieldHelper>{t("help.finance.case")}</FieldHelper>
         </div>
         <div>
           <select
@@ -243,7 +238,6 @@ export default function FinancePage() {
               </option>
             ))}
           </select>
-          <FieldHelper>{t("help.finance.type")}</FieldHelper>
         </div>
         <div>
           <input
@@ -253,7 +247,6 @@ export default function FinancePage() {
             placeholder={t("finance.amountPlaceholder")}
             className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
           />
-          <FieldHelper>{t("help.finance.amount")}</FieldHelper>
         </div>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground sm:col-span-2">
           <span className="flex items-center gap-2">
@@ -265,7 +258,6 @@ export default function FinancePage() {
             />
             {t("finance.issueNow")}
           </span>
-          <FieldHelper className="mt-0">{t("help.finance.issue")}</FieldHelper>
         </label>
         <button
           type="submit"
@@ -295,7 +287,6 @@ export default function FinancePage() {
                 className="h-11 w-full rounded-xl border border-input bg-background pl-10 pr-3 text-sm outline-none focus:border-accent focus:ring-4 focus:ring-ring/20"
               />
             </div>
-            <FieldHelper className="mt-2">{t("help.finance.search")}</FieldHelper>
           </div>
         }
       >

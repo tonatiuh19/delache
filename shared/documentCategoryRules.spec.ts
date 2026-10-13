@@ -34,7 +34,8 @@ describe("documentCategoryRules", () => {
     expect(canClientSetDocumentCategory("lawsuit")).toBe(true);
     expect(canClientSetDocumentCategory("plaintiff_questionnaire")).toBe(true);
     expect(canClientSetDocumentCategory("protesta")).toBe(false);
-    expect(canClientSetDocumentCategory("other")).toBe(false);
+    expect(canClientSetDocumentCategory("other")).toBe(true);
+    expect(parseClientUploadCategory("other").ok).toBe(true);
     expect(parseClientUploadCategory("medical_record").ok).toBe(true);
     expect(parseClientUploadCategory("technical_report").ok).toBe(false);
     expect(parseClientUploadCategory(undefined).ok).toBe(false);

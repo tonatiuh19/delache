@@ -48,6 +48,7 @@ import type {
   ReviewRequestItem,
   TechnicalReportItem,
   TechnicalReportStatus,
+  InvoiceSummary,
   UpdateCaseFlagsRequest,
   UpdateCaseLocationRequest,
   UpdateDocumentCategoryRequest,
@@ -81,6 +82,7 @@ interface CasesState {
   trips: LogisticsTripItem[];
   expenses: LogisticsExpenseItem[];
   technicalReports: TechnicalReportItem[];
+  invoices: InvoiceSummary[];
   allowedNextStatuses: CaseStatus[];
   hasUnpaidInvoices: boolean;
   processGate: CaseProcessGateSnapshot | null;
@@ -126,6 +128,7 @@ const initialState: CasesState = {
   trips: [],
   expenses: [],
   technicalReports: [],
+  invoices: [],
   allowedNextStatuses: [],
   hasUnpaidInvoices: false,
   processGate: null,
@@ -143,10 +146,12 @@ const initialState: CasesState = {
 };
 
 function rejectMsg(err: unknown, fallback: string) {
-  return (
-    (err as { response?: { data?: { error?: string } } })?.response?.data
-      ?.error || fallback
-  );
+  const data = (err as { response?: { data?: { error?: string; message?: string } } })
+    ?.response?.data;
+  if (data?.error === "soft_parallel_blocked" && data.message) {
+    return data.message;
+  }
+  return data?.error || fallback;
 }
 
 function resetCaseDetail(state: CasesState) {
@@ -167,6 +172,7 @@ function resetCaseDetail(state: CasesState) {
   state.trips = [];
   state.expenses = [];
   state.technicalReports = [];
+  state.invoices = [];
   state.allowedNextStatuses = [];
   state.processGate = null;
   state.statusGateMissing = [];
@@ -415,6 +421,7 @@ export const uploadCaseDocumentsSmart = createAsyncThunk(
       publicUuid: string;
       files: File[];
       category: DocumentCategory;
+      actor?: "staff" | "law_firm";
     },
     { rejectWithValue },
   ) => {
@@ -423,7 +430,7 @@ export const uploadCaseDocumentsSmart = createAsyncThunk(
         publicUuid: payload.publicUuid,
         files: payload.files,
         category: payload.category,
-        actor: "staff",
+        actor: payload.actor ?? "staff",
       });
       if (result.documents.length === 0) {
         return rejectWithValue(
@@ -433,6 +440,30 @@ export const uploadCaseDocumentsSmart = createAsyncThunk(
       return result;
     } catch (err: unknown) {
       return rejectWithValue(rejectMsg(err, "upload_failed"));
+    }
+  },
+);
+
+export const reviewLawFirmReport = createAsyncThunk(
+  "cases/reviewLawFirmReport",
+  async (
+    payload: {
+      publicUuid: string;
+      reportUuid: string;
+      outcome: "approved" | "changes_requested" | "rejected";
+      notes?: string;
+    },
+    { rejectWithValue },
+  ) => {
+    try {
+      const { publicUuid, reportUuid, ...body } = payload;
+      const { data } = await api.post<{ report: TechnicalReportItem }>(
+        `/api/cases/${publicUuid}/technical-reports/${reportUuid}/review`,
+        body,
+      );
+      return data.report;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "report_review_failed"));
     }
   },
 );
@@ -680,6 +711,92 @@ export const createTechnicalReport = createAsyncThunk(
   },
 );
 
+export const confirmDocumentsHandoff = createAsyncThunk(
+  "cases/confirmDocumentsHandoff",
+  async (publicUuid: string, { rejectWithValue }) => {
+    try {
+      const { data } = await api.post<{
+        case: Pick<CaseDetail, "documentsHandoffConfirmedAt" | "publicUuid">;
+      }>(`/api/cases/${publicUuid}/handoff/confirm`);
+      return data.case;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "handoff_failed"));
+    }
+  },
+);
+
+export const approveCaseDocument = createAsyncThunk(
+  "cases/approveCaseDocument",
+  async (
+    payload: { publicUuid: string; documentUuid: string },
+    { rejectWithValue },
+  ) => {
+    try {
+      const { data } = await api.post<{ document: CaseDocumentItem }>(
+        `/api/cases/${payload.publicUuid}/documents/${payload.documentUuid}/approve`,
+      );
+      return data.document;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "document_approve_failed"));
+    }
+  },
+);
+
+export const rejectCaseDocument = createAsyncThunk(
+  "cases/rejectCaseDocument",
+  async (
+    payload: {
+      publicUuid: string;
+      documentUuid: string;
+      reason?: string | null;
+    },
+    { rejectWithValue },
+  ) => {
+    try {
+      const { data } = await api.post<{ document: CaseDocumentItem }>(
+        `/api/cases/${payload.publicUuid}/documents/${payload.documentUuid}/reject`,
+        { reason: payload.reason ?? null },
+      );
+      return data.document;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "document_reject_failed"));
+    }
+  },
+);
+
+export const approveExpediente = createAsyncThunk(
+  "cases/approveExpediente",
+  async (publicUuid: string, { rejectWithValue }) => {
+    try {
+      const { data } = await api.post<{
+        case: Pick<CaseDetail, "expedienteApprovedAt" | "publicUuid" | "updatedAt">;
+      }>(`/api/cases/${publicUuid}/expediente/approve`);
+      return data.case;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "expediente_approve_failed"));
+    }
+  },
+);
+
+export const setRatificationScheduled = createAsyncThunk(
+  "cases/setRatificationScheduled",
+  async (
+    payload: { publicUuid: string; ratificationScheduledAt: string | null },
+    { rejectWithValue },
+  ) => {
+    try {
+      const { data } = await api.patch<{
+        case: Pick<CaseDetail, "ratificationScheduledAt" | "publicUuid">;
+      }>(`/api/cases/${payload.publicUuid}/ratification-scheduled`, {
+        ratificationScheduledAt: payload.ratificationScheduledAt,
+      });
+      return data.case;
+    } catch (err: unknown) {
+      return rejectWithValue(rejectMsg(err, "ratification_schedule_failed"));
+    }
+  },
+);
+
 export const updateTechnicalReportStatus = createAsyncThunk(
   "cases/updateTechnicalReportStatus",
   async (
@@ -858,11 +975,15 @@ const casesSlice = createSlice({
       })
       .addCase(fetchCaseDetail.pending, (state, action) => {
         const uuid = String(action.meta.arg || "");
-        state.detailLoading = true;
-        state.error = null;
-        state.processGate = null;
-        if (!state.selected || state.selected.publicUuid !== uuid) {
+        const switching =
+          !state.selected || state.selected.publicUuid !== uuid;
+        if (switching) {
+          state.detailLoading = true;
           resetCaseDetail(state);
+        }
+        state.error = null;
+        if (switching) {
+          state.processGate = null;
         }
       })
       .addCase(fetchCaseDetail.fulfilled, (state, action) => {
@@ -885,6 +1006,7 @@ const casesSlice = createSlice({
         state.trips = action.payload.trips ?? [];
         state.expenses = action.payload.expenses ?? [];
         state.technicalReports = action.payload.technicalReports ?? [];
+        state.invoices = action.payload.invoices ?? [];
         state.allowedNextStatuses = action.payload.allowedNextStatuses ?? [];
         state.hasUnpaidInvoices = Boolean(action.payload.hasUnpaidInvoices);
         state.processGate = action.payload.processGate ?? null;
@@ -1080,6 +1202,47 @@ const casesSlice = createSlice({
       })
       .addCase(createTechnicalReport.rejected, (state, action) => {
         state.error = (action.payload as string) || "report_failed";
+      })
+      .addCase(confirmDocumentsHandoff.fulfilled, (state, action) => {
+        if (state.selected?.publicUuid === action.payload.publicUuid) {
+          state.selected = {
+            ...state.selected,
+            documentsHandoffConfirmedAt:
+              action.payload.documentsHandoffConfirmedAt,
+          };
+        }
+      })
+      .addCase(approveCaseDocument.fulfilled, (state, action) => {
+        state.documents = state.documents.map((d) =>
+          d.publicUuid === action.payload.publicUuid ? action.payload : d,
+        );
+      })
+      .addCase(rejectCaseDocument.fulfilled, (state, action) => {
+        state.documents = state.documents.map((d) =>
+          d.publicUuid === action.payload.publicUuid ? action.payload : d,
+        );
+        if (state.selected) {
+          state.selected = {
+            ...state.selected,
+            expedienteApprovedAt: null,
+          };
+        }
+      })
+      .addCase(approveExpediente.fulfilled, (state, action) => {
+        if (state.selected?.publicUuid === action.payload.publicUuid) {
+          state.selected = {
+            ...state.selected,
+            expedienteApprovedAt: action.payload.expedienteApprovedAt,
+          };
+        }
+      })
+      .addCase(setRatificationScheduled.fulfilled, (state, action) => {
+        if (state.selected?.publicUuid === action.payload.publicUuid) {
+          state.selected = {
+            ...state.selected,
+            ratificationScheduledAt: action.payload.ratificationScheduledAt,
+          };
+        }
       })
       .addCase(updateTechnicalReportStatus.fulfilled, (state, action) => {
         state.technicalReports = state.technicalReports.map((r) =>

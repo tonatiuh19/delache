@@ -4,8 +4,9 @@
  */
 
 import type { UserRole } from "./api";
-import { canListAllStaffCases, canCreateStaffCase } from "./caseVisibilityRules";
+import { canListAllStaffCases } from "./caseVisibilityRules";
 import { canManageFinance } from "./rbac";
+import { canAccessReviewsQueue } from "./reviewQueueRules";
 
 export type DashboardMetricKey =
   | "totalCases"
@@ -24,11 +25,16 @@ export type DashboardCtaId =
   | "documents"
   | "finance"
   | "team"
-  | "notifications";
+  | "notifications"
+  | "reviews"
+  | "pipeline"
+  | "fieldOps";
 
 export type DashboardCtaDef = {
   id: DashboardCtaId;
   href: string;
+  /** First-class shortcut for this persona (visual emphasis). */
+  primary?: boolean;
 };
 
 const OPS_METRICS: readonly DashboardMetricKey[] = [
@@ -81,7 +87,6 @@ export function dashboardMetricsForRole(
 ): readonly DashboardMetricKey[] {
   switch (role as UserRole | string) {
     case "admin":
-    case "case_coordinator":
       return OPS_METRICS;
     case "expert":
       return EXPERT_METRICS;
@@ -101,26 +106,76 @@ export function canSeeOrgKpiStrip(role: string | null | undefined): boolean {
   return canListAllStaffCases(role);
 }
 
-/** Quick-link CTAs for the dashboard persona. */
+/**
+ * Quick-link CTAs for the dashboard persona.
+ * Each role gets a short, mission-first set (not the full nav).
+ */
 export function dashboardCtasForRole(
   role: string | null | undefined,
 ): DashboardCtaDef[] {
-  const ctas: DashboardCtaDef[] = [
-    { id: "cases", href: "/portal/cases" },
-    { id: "calendar", href: "/portal/calendar" },
-    { id: "documents", href: "/portal/documents" },
-    { id: "notifications", href: "/portal/notifications" },
-  ];
-  if (canCreateStaffCase(role)) {
-    ctas.unshift({ id: "createCase", href: "/portal/cases?create=1" });
+  switch (role as UserRole | string) {
+    case "admin":
+      return [
+        { id: "createCase", href: "/portal/cases?create=1", primary: true },
+        { id: "pipeline", href: "/portal/cases?view=pipeline" },
+        { id: "reviews", href: "/portal/reviews" },
+        { id: "finance", href: "/portal/finance" },
+        { id: "team", href: "/portal/team" },
+        { id: "notifications", href: "/portal/notifications" },
+      ];
+    case "expert":
+      return [
+        { id: "cases", href: "/portal/cases", primary: true },
+        { id: "calendar", href: "/portal/calendar" },
+        { id: "documents", href: "/portal/documents" },
+        { id: "notifications", href: "/portal/notifications" },
+      ];
+    case "legal":
+      return [
+        ...(canAccessReviewsQueue(role)
+          ? [
+              {
+                id: "reviews" as const,
+                href: "/portal/reviews",
+                primary: true,
+              },
+            ]
+          : [{ id: "cases" as const, href: "/portal/cases", primary: true }]),
+        { id: "cases", href: "/portal/cases" },
+        { id: "documents", href: "/portal/documents" },
+        { id: "notifications", href: "/portal/notifications" },
+      ];
+    case "logistics":
+      return [
+        {
+          id: "fieldOps",
+          href: "/portal/cases?status=field_ops",
+          primary: true,
+        },
+        { id: "calendar", href: "/portal/calendar" },
+        { id: "cases", href: "/portal/cases" },
+        { id: "notifications", href: "/portal/notifications" },
+      ];
+    case "accountant":
+      return [
+        ...(canManageFinance(role)
+          ? [
+              {
+                id: "finance" as const,
+                href: "/portal/finance",
+                primary: true,
+              },
+            ]
+          : [{ id: "cases" as const, href: "/portal/cases", primary: true }]),
+        { id: "cases", href: "/portal/cases?status=accounting" },
+        { id: "notifications", href: "/portal/notifications" },
+      ];
+    default:
+      return [
+        { id: "cases", href: "/portal/cases", primary: true },
+        { id: "notifications", href: "/portal/notifications" },
+      ];
   }
-  if (canManageFinance(role)) {
-    ctas.push({ id: "finance", href: "/portal/finance" });
-  }
-  if (role === "admin") {
-    ctas.push({ id: "team", href: "/portal/team" });
-  }
-  return ctas;
 }
 
 /** When set, dashboard metric tiles navigate as CTAs. */
@@ -152,7 +207,6 @@ export function dashboardPersonaKey(
 ): "ops" | "expert" | "legal" | "logistics" | "accountant" | "default" {
   switch (role as UserRole | string) {
     case "admin":
-    case "case_coordinator":
       return "ops";
     case "expert":
       return "expert";

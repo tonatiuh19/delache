@@ -6,18 +6,21 @@ import { cn } from "@/lib/utils";
  * so they read as one panel under the page header.
  */
 export default function PortalListPanel({
+  id,
   toolbar,
   children,
   className,
 }: {
+  id?: string;
   toolbar?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
   return (
     <div
+      id={id}
       className={cn(
-        "mt-6 overflow-hidden rounded-2xl border border-border bg-card shadow-sm",
+        "mt-6 min-w-0 max-w-full overflow-hidden rounded-2xl border border-border bg-card shadow-sm",
         className,
       )}
     >

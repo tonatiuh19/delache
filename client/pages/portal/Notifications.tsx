@@ -23,7 +23,7 @@ export default function NotificationsPage() {
 
   if (loadingNotifications && notifications.length === 0) {
     return (
-      <div className="mx-auto max-w-5xl">
+      <div className="min-w-0 w-full max-w-full">
         <MetaHelmet title={t("portal.notifications")} noindex />
         <ContentPageSkeleton variant="inbox" withActions />
       </div>
@@ -31,7 +31,7 @@ export default function NotificationsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="min-w-0 w-full max-w-full space-y-6">
       <MetaHelmet title={t("portal.notifications")} noindex />
       <PortalPageHeader
         eyebrow={t("notifications.eyebrow")}

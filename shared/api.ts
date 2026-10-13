@@ -15,13 +15,14 @@ export interface AppVersionResponse {
 
 export type UserRole =
   | "admin"
-  | "case_coordinator"
   | "expert"
   | "legal"
   | "logistics"
   | "accountant";
 
 export type AuthActor = "staff" | "law_firm";
+
+export type LawFirmMemberRole = "owner" | "admin" | "member" | "viewer";
 
 export type UserStatus = "active" | "inactive" | "suspended" | "invited";
 
@@ -32,15 +33,22 @@ export type CaseStatus =
   | "legal_review_questionnaire"
   | "additional_docs"
   | "court_acceptance"
-  | "logistics"
-  | "inspection"
+  | "field_ops"
   | "technical_report"
-  | "legal_validation"
-  | "court_delivery"
+  | "validation_delivery"
   | "accounting"
   | "completed"
   | "on_hold"
   | "cancelled";
+
+/** @deprecated Legacy 12-point statuses — migrated to field_ops / validation_delivery */
+export type LegacyCaseStatus =
+  | "logistics"
+  | "inspection"
+  | "legal_validation"
+  | "court_delivery";
+
+export type ProtestaModality = "presencial" | "virtual";
 
 export type CasePriority = "low" | "normal" | "high" | "urgent";
 
@@ -52,19 +60,30 @@ export interface AuthUser {
   lastName: string;
   /** Staff portal only; null for law-firm actors */
   role: UserRole | null;
+  /**
+   * Despacho membership role (owner|admin|member|viewer).
+   * Null for staff actors or firm users without a membership row.
+   */
+  memberRole?: LawFirmMemberRole | null;
   actor: AuthActor;
   status: UserStatus;
   phone: string | null;
   avatarUrl: string | null;
   preferredLanguage: AppLocale;
   preferredTheme: "light" | "dark" | "system";
-  /** Inline form field helpers; defaults ON when unset */
+  /**
+   * Legacy inline form-field tip helpers. Defaults OFF.
+   * Tip helpers were removed from the UI; flag kept for API compatibility.
+   */
   showFormHelpers: boolean;
+  /** Optional process coaching panel; defaults OFF — opt in from Profile. */
+  showProcessGuidance: boolean;
   lastLoginAt: string | null;
 }
 
 export interface UpdatePreferencesRequest {
-  showFormHelpers: boolean;
+  showFormHelpers?: boolean;
+  showProcessGuidance?: boolean;
 }
 
 export interface UpdatePreferencesResponse {
@@ -81,6 +100,11 @@ export interface RequestOtpResponse {
   message: string;
   /** True when a code was actually emailed. */
   sent: true;
+  /**
+   * Which auth table the code was issued for.
+   * Present on unified `/api/auth/request-otp`; actor-specific routes may omit it.
+   */
+  actor?: AuthActor;
 }
 
 export interface VerifyOtpRequest {
@@ -115,9 +139,19 @@ export interface CaseSummary {
   lawFirmId: number | null;
   assignedExpertId: number | null;
   inspectionDeadlineAt: string | null;
+  /** Optional external court plazo; null = process SLAs only. */
+  externalCourtDeadlineAt?: string | null;
+  /** Date the technical report must be finished. Required to leave field ops. */
+  dictamenDueAt?: string | null;
   involvesFatality: boolean;
   lawFirmName?: string | null;
   primaryExpertName?: string | null;
+  /** Active staff assignments for card ownership badges (list/pipeline). */
+  activeAssignments?: Array<{
+    assignmentRole: AssignmentRole;
+    userName: string;
+    isPrimary: boolean;
+  }>;
   listado?: ListadoProgress | null;
   createdAt: string;
   updatedAt: string;
@@ -138,6 +172,11 @@ export interface CaseDetail extends CaseSummary {
   intakeReceivedAt: string | null;
   completedAt: string | null;
   streetViewValidatedAt: string | null;
+  documentsHandoffConfirmedAt: string | null;
+  /** P1: admin approved intake package (Aprobar expediente). */
+  expedienteApprovedAt: string | null;
+  ratificationScheduledAt: string | null;
+  protestaModality: ProtestaModality | null;
 }
 
 export interface CasesListResponse {
@@ -203,6 +242,8 @@ export interface TeamListQuery extends GridListParams {
   q?: string;
   role?: string;
   status?: string;
+  /** Admin Equipo: staff list (default) or despacho contacts. */
+  roster?: "staff" | "firm";
 }
 
 export interface TeamListResponse {
@@ -213,6 +254,7 @@ export interface TeamListResponse {
 export interface InvoicesListQuery extends GridListParams {
   q?: string;
   status?: string;
+  caseId?: number;
 }
 
 export interface InvoicesListResponse {
@@ -258,6 +300,7 @@ export type DocumentCategory =
   | "invoice"
   | "receipt"
   | "logistics"
+  | "street_view"
   | "other";
 
 export interface CaseDocumentItem {
@@ -274,6 +317,9 @@ export interface CaseDocumentItem {
   ocrStatus?: OcrStatus | null;
   ocrText?: string | null;
   ocrProcessedAt?: string | null;
+  approvedAt?: string | null;
+  rejectionReason?: string | null;
+  correctionRequestedAt?: string | null;
   createdAt: string;
 }
 
@@ -328,7 +374,8 @@ export type DeadlineType =
   | "court_delivery"
   | "payment"
   | "custom"
-  | "expert_delivery";
+  | "expert_delivery"
+  | "intake_correction";
 
 export type DeadlineSeverity = "safe" | "warning" | "critical" | "overdue";
 
@@ -344,7 +391,7 @@ export interface CaseDeadlineItem {
 
 export type QuestionnaireStatus =
   | "draft"
-  | "submitted"
+  | "grammar_qa"
   | "legal_review"
   | "changes_requested"
   | "approved"
@@ -355,7 +402,7 @@ export interface QuestionnaireItem {
   publicUuid: string;
   status: QuestionnaireStatus;
   contentJson: Record<string, unknown> | null;
-  chronologyJson: Record<string, unknown> | null;
+  chronologyJson: Record<string, unknown> | unknown[] | null;
   technicalObservations: string | null;
   submittedAt: string | null;
   createdAt: string;
@@ -611,6 +658,9 @@ export interface TechnicalReportItem {
   status: TechnicalReportStatus;
   versionNumber: number;
   investigationSummary: string | null;
+  defendantQuestionnaireSummary: string | null;
+  plaintiffQuestionnaireSummary: string | null;
+  photoCatalogJson: Record<string, unknown> | null;
   conclusions: string | null;
   submittedAt: string | null;
   approvedAt: string | null;
@@ -652,6 +702,8 @@ export interface LawFirmSummary {
   status: "active" | "inactive";
   city: string | null;
   state: string | null;
+  /** Preferred juzgado for new expedientes from this despacho. */
+  defaultCourtName?: string | null;
 }
 
 export interface CaseDetailResponse {
@@ -676,6 +728,7 @@ export interface CaseDetailResponse {
   trips: LogisticsTripItem[];
   expenses: LogisticsExpenseItem[];
   technicalReports: TechnicalReportItem[];
+  invoices: InvoiceSummary[];
   allowedNextStatuses: CaseStatus[];
   hasUnpaidInvoices: boolean;
   processGate: CaseProcessGateSnapshot;
@@ -701,7 +754,7 @@ export interface ExpertDeliveryDeadlineResponse {
 
 export interface CreateQuestionnaireRequest {
   contentJson?: Record<string, unknown>;
-  chronologyJson?: Record<string, unknown>;
+  chronologyJson?: Record<string, unknown> | unknown[] | null;
   technicalObservations?: string;
   submit?: boolean;
 }
@@ -752,8 +805,26 @@ export interface CreateLogisticsExpenseRequest {
 
 export interface CreateTechnicalReportRequest {
   investigationSummary?: string;
+  defendantQuestionnaireSummary?: string;
+  plaintiffQuestionnaireSummary?: string;
+  photoCatalogJson?: Record<string, unknown> | null;
   conclusions?: string;
   submit?: boolean;
+}
+
+export interface ConfirmDocumentsHandoffResponse {
+  case: Pick<
+    CaseDetail,
+    "documentsHandoffConfirmedAt" | "publicUuid" | "updatedAt"
+  >;
+}
+
+export interface SetRatificationScheduledRequest {
+  ratificationScheduledAt: string | null;
+}
+
+export interface SetRatificationScheduledResponse {
+  case: Pick<CaseDetail, "ratificationScheduledAt" | "publicUuid" | "updatedAt">;
 }
 
 export interface UpdateTechnicalReportStatusRequest {
@@ -772,6 +843,13 @@ export interface CreateLawFirmRequest {
   phone?: string;
   city?: string;
   state?: string;
+  defaultCourtName?: string;
+  /** Required primary owner invite (Q2-C). */
+  ownerEmail: string;
+  ownerFirstName: string;
+  ownerLastName: string;
+  ownerPhone?: string;
+  preferredLanguage?: string | null;
 }
 
 export interface CreateCalendarEventRequest {
@@ -816,6 +894,43 @@ export interface InviteTeamMemberRequest {
   role: UserRole | "law_firm_user";
   phone?: string;
   lawFirmId?: number | null;
+  /** Inline despacho create when inviting the primary owner (Equipo). */
+  createLawFirm?: {
+    name: string;
+    email?: string | null;
+    city?: string | null;
+    state?: string | null;
+    defaultCourtName?: string | null;
+  } | null;
+  memberRole?: LawFirmMemberRole | null;
+  preferredLanguage?: string | null;
+}
+
+export interface FirmMemberItem {
+  id: number;
+  publicUuid: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  memberRole: LawFirmMemberRole;
+  isPrimaryContact: boolean;
+  status: UserStatus;
+  lastLoginAt: string | null;
+}
+
+export interface FirmMembersResponse {
+  members: FirmMemberItem[];
+  canManage: boolean;
+  lawFirmId: number;
+  lawFirmName: string | null;
+}
+
+export interface InviteFirmMemberRequest {
+  email: string;
+  firstName: string;
+  lastName: string;
+  phone?: string;
+  memberRole?: LawFirmMemberRole | null;
   preferredLanguage?: string | null;
 }
 
@@ -928,6 +1043,10 @@ export interface TeamMemberItem {
   role: UserRole | "law_firm_user";
   status: UserStatus;
   lastLoginAt: string | null;
+  /** Present when role is law_firm_user (admin Equipo despacho roster). */
+  memberRole?: LawFirmMemberRole | null;
+  lawFirmId?: number | null;
+  lawFirmName?: string | null;
 }
 
 export interface CreateCaseRequest {
@@ -947,10 +1066,43 @@ export interface CreateCaseRequest {
   propertyLat?: number | null;
   propertyLng?: number | null;
   involvesFatality?: boolean;
+  /** Optional external court plazo; omit or null = no external clock. */
+  externalCourtDeadlineAt?: string | null;
 }
 
 export interface UpdateCaseFlagsRequest {
-  involvesFatality: boolean;
+  involvesFatality?: boolean;
+  /** P6 protesta path: presencial (print+scan) or virtual (signed upload). */
+  protestaModality?: "presencial" | "virtual" | null;
+  /** Optional external court plazo; null clears. */
+  externalCourtDeadlineAt?: string | null;
+  /** Dictamen finish date; null clears. Required before leaving field ops. */
+  dictamenDueAt?: string | null;
+  /** Paso 1 folio. Staff intake pack only. */
+  title?: string;
+  /** Paso 1 note. Empty string clears. Max 500 characters. */
+  description?: string | null;
+  /** Despacho that owns the expediente. */
+  lawFirmId?: number | null;
+}
+
+export interface ApproveCaseDocumentResponse {
+  document: CaseDocumentItem;
+}
+
+export interface RejectCaseDocumentRequest {
+  reason?: string | null;
+}
+
+export interface RejectCaseDocumentResponse {
+  document: CaseDocumentItem;
+}
+
+export interface ApproveExpedienteResponse {
+  case: Pick<
+    CaseDetail,
+    "publicUuid" | "expedienteApprovedAt" | "updatedAt"
+  >;
 }
 
 export interface UpdateCaseLocationRequest {

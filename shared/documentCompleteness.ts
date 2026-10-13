@@ -122,7 +122,7 @@ export function shouldEmitMissingDocumentsAlert(
     return caseStatus === "intake" || caseStatus === "assignment";
   }
   if (completeness.phase === "court_filing") {
-    return caseStatus === "court_delivery";
+    return caseStatus === "validation_delivery";
   }
   return caseStatus === "additional_docs";
 }
@@ -145,7 +145,7 @@ export function activeCompletenessForCaseStatus(
   documentCategories: readonly string[],
   opts: AdditionalDocsOptions = {},
 ): DocumentCompletenessStatus {
-  if (caseStatus === "court_delivery") {
+  if (caseStatus === "validation_delivery") {
     return getCourtFilingCompleteness(documentCategories);
   }
   if (caseStatus === "additional_docs") {
@@ -159,7 +159,7 @@ export const MISSING_DOCS_KPI_STATUSES = [
   "intake",
   "assignment",
   "additional_docs",
-  "court_delivery",
+  "validation_delivery",
 ] as const;
 
 export function caseStatusCountsTowardMissingDocsKpi(

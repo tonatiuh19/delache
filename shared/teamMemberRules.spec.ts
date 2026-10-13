@@ -27,8 +27,11 @@ const member = (
 describe("role / status classifiers", () => {
   it("accepts staff edit roles and rejects law_firm_user for edits", () => {
     expect(isStaffEditRole("expert")).toBe(true);
+    expect(isStaffEditRole("admin")).toBe(true);
     expect(isStaffEditRole("law_firm_user")).toBe(false);
+    expect(isStaffEditRole("case_coordinator")).toBe(false);
     expect(isInviteRole("law_firm_user")).toBe(true);
+    expect(isInviteRole("case_coordinator")).toBe(false);
     expect(isInviteRole("hacker")).toBe(false);
   });
 
@@ -205,10 +208,13 @@ describe("validateTeamInvite", () => {
       lastName: "Pérez",
       role: "expert",
       lawFirmId: null,
+      createLawFirm: null,
+      memberRole: null,
+      isPrimaryContact: false,
     });
   });
 
-  it("requires lawFirmId for law firm invites", () => {
+  it("requires existing firm or create payload for law firm invites", () => {
     expect(
       validateTeamInvite({
         email: "a@b.com",
@@ -227,12 +233,36 @@ describe("validateTeamInvite", () => {
         lastName: "B",
         role: "law_firm_user",
         lawFirmId: 3,
+        memberRole: "admin",
       }),
     ).toEqual(
       expect.objectContaining({
         ok: true,
         role: "law_firm_user",
         lawFirmId: 3,
+        createLawFirm: null,
+        memberRole: "admin",
+        isPrimaryContact: false,
+      }),
+    );
+  });
+
+  it("accepts inline despacho create as owner primary contact", () => {
+    expect(
+      validateTeamInvite({
+        email: "owner@firm.mx",
+        firstName: "Ana",
+        lastName: "Ruiz",
+        role: "law_firm_user",
+        createLawFirm: { name: "Bufete Norte", city: "CDMX" },
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        ok: true,
+        lawFirmId: null,
+        memberRole: "owner",
+        isPrimaryContact: true,
+        createLawFirm: expect.objectContaining({ name: "Bufete Norte" }),
       }),
     );
   });

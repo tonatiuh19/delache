@@ -1,0 +1,44 @@
+---
+description: Mandatory mobile responsiveness — no page-level horizontal scroll
+globs: client/**/*.{tsx,css}
+alwaysApply: true
+---
+
+# Mobile responsiveness (mandatory)
+
+Every page, component, form, and flow in **staff portal** and **client portal** must work on mobile viewports (320px–428px) without layout breaks or usability regressions.
+
+## Page-level rule (non-negotiable)
+
+- **No horizontal scrolling on the document** — only vertical scroll on `html`/`body`
+- Root shells use `overflow-x-clip` + `min-w-0` / `max-w-full` on layout containers
+- Never use `100vw` for widths inside padded layouts (use `100%`, `min(…,85vw)`, or `max-w-full`)
+- Decorative blurs/gradients must stay inside `overflow-x-clip` / `overflow-hidden` parents
+
+## Layout patterns
+
+- **Flex/grid children** that shrink: `min-w-0` on text columns; `truncate` / `break-words` on long titles
+- **Toolbars**: stack on mobile (`flex-col` or `flex-wrap`); inputs/selects `w-full sm:w-auto`
+- **Page headers**: `PortalPageHeader` — actions wrap; never force `flex-nowrap` on mobile
+- **Tables**: `DataGrid` shows stacked mobile cards below `sm`; desktop table scroll is **contained** (`overscroll-x-contain`, `max-w-full`) — must not widen the page
+- **Pipeline / steppers**: use `.table-scroll` or `.mobile-scroll-x` — scroll inside the widget, not the viewport
+- **Forms**: labels/inputs `w-full`; avoid fixed `min-w-[12rem+]` without `sm:` breakpoint
+
+## Utilities (`client/global.css`)
+
+- `.table-scroll` — contained horizontal scroll for kanban columns
+- `.mobile-scroll-x` — steppers/timeline chips
+- `.contain-layout` — `min-w-0 max-w-full`
+
+## Before marking UI done
+
+1. Mentally check **320px, 375px, 768px** — no overflow, tappable targets (≥44px), readable text
+2. Verify list pages use mobile card mode (custom `mobileCard` or DataGrid default fallback)
+3. Update `DESIGN_SYSTEM.md` when introducing new layout patterns
+
+## Anti-patterns
+
+- ❌ `w-screen`, `min-w-max` on page-level wrappers without a scroll container
+- ❌ Wide tables as the only mobile view
+- ❌ Fixed pixel widths on filter rows that exceed viewport
+- ❌ Shipping UI without testing narrow breakpoints

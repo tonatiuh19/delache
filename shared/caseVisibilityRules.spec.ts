@@ -8,18 +8,16 @@ import {
 } from "./caseVisibilityRules";
 
 describe("caseVisibilityRules", () => {
-  it("lets admin and coordinator list all cases", () => {
+  it("lets only admin list all cases", () => {
     expect(canListAllStaffCases("admin")).toBe(true);
-    expect(canListAllStaffCases("case_coordinator")).toBe(true);
     expect(canListAllStaffCases("expert")).toBe(false);
     expect(canListAllStaffCases("legal")).toBe(false);
     expect(canListAllStaffCases("logistics")).toBe(false);
     expect(canListAllStaffCases("accountant")).toBe(false);
   });
 
-  it("restricts staff case creation to admin and coordinator", () => {
+  it("restricts staff case creation to admin", () => {
     expect(canCreateStaffCase("admin")).toBe(true);
-    expect(canCreateStaffCase("case_coordinator")).toBe(true);
     expect(canCreateStaffCase("expert")).toBe(false);
     expect(canCreateStaffCase("legal")).toBe(false);
   });
@@ -27,21 +25,12 @@ describe("caseVisibilityRules", () => {
   it("maps staff roles to assignment roles", () => {
     expect(staffRoleToAssignmentRoles("expert")).toEqual(["expert"]);
     expect(staffRoleToAssignmentRoles("legal")).toEqual(["legal_reviewer"]);
-    expect(staffRoleToAssignmentRoles("case_coordinator")).toEqual([
-      "coordinator",
-    ]);
     expect(staffRoleToAssignmentRoles("admin")).toEqual([]);
   });
 
   it("builds no SQL filter for org-wide roles", () => {
     expect(
       buildStaffCaseVisibilityFilter({ role: "admin", userId: 1 }).sql,
-    ).toBe("");
-    expect(
-      buildStaffCaseVisibilityFilter({
-        role: "case_coordinator",
-        userId: 1,
-      }).sql,
     ).toBe("");
   });
 
